@@ -54,7 +54,7 @@ A V8-embedded runtime of our own. Workers AI, Vectorize or Hyperdrive replacemen
 
 Results will be published here per release, as a table of suite areas by target: Cloudflare, celld, native. Areas: IDs, KV storage, SQL storage, transactions, gates, alarms, WebSockets and hibernation, RPC, facets, compat flags, Agents SDK samples, PartyServer samples, Sandbox binding.
 
-The preliminary [M0 celld spike results](docs/conformance/m0-celld.md) record the checks completed so far; the compatibility gate remains open.
+The [M0 celld spike results](docs/conformance/m0-celld.md) passed the runtime gate; direct Wrangler config support and idle-eviction coverage remain open.
 
 ## How it fits with the rest of the family
 
