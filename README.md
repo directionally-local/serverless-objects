@@ -4,7 +4,7 @@ Run the Cloudflare Workers and Durable Objects programming model on your own har
 
 Part of the [Directionally Local](https://directionallylocal.com) family of self-hostable infrastructure for coding agents, alongside [Autopilot](https://github.com/sinameraji/autopilot), [Hotcell](https://github.com/sinameraji/hotcell) and [Camouflage](https://github.com/sinameraji/camouflage).
 
-> **Status: pre-alpha, v0.1 in development.** M0 passed its runtime gate with documented config caveats. The CLI installs pinned celld and provides `up`/`down`/`status`/`logs` plus `dev`/`deploy`; OS service integration, Vite-generated assets, TLS ingress, and npm publication remain pending.
+> **Status: pre-alpha; v0.1 CLI test candidate.** M0 passed its runtime gate with documented config caveats. The CLI installs pinned celld and provides `up`/`down`/`status`/`logs` plus `dev`/`deploy`; OS service units, Vite-generated assets, TLS ingress, dashboard, live bucket setup, and npm publication are not ready.
 
 ## What it is
 
@@ -30,7 +30,7 @@ Both engines share the same per-object SQLite and bucket layout, so the dashboar
 
 ## Early v0.1 CLI
 
-The npm package is not published yet. From a checkout, with Node.js 22 or newer:
+The npm package is not published yet. This is a CLI test candidate, not a production release. Unit and smoke tests cover the counter, Agents scheduler/SQL, and PartyServer WebSocket/SQL, including state persistence across a celld restart. Bucket-backed `sobjects up`, Vite-generated asset handling, TLS ingress, and dashboard are not yet validated or implemented. From a checkout, with Node.js 22 or newer:
 
 ```sh
 npm install

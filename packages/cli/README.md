@@ -37,5 +37,8 @@ values are filled from the project's `sobjects.toml`; explicit CLI flags and
 standard environment variables take precedence. Credentials continue to come
 from celld's normal credential chain.
 
-Requires Node.js 22 or newer. The npm package is not published. See the
+The CLI is a pre-alpha test candidate, not a production release. It has passed its
+unit and integration checks, including a loopback service-lifecycle smoke test;
+bucket-backed `up`, Vite-generated assets, TLS ingress, OS service units, and
+dashboard are not ready. The npm package is not published. See the
 [project README](../../README.md) for scope and roadmap.
