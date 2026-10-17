@@ -1,0 +1,16 @@
+{
+  "name": "serverless-objects-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hostable Workers and Durable Objects infrastructure for agents",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "test": "npm run test --workspaces --if-present"
+  }
+}

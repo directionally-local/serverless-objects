@@ -4,7 +4,7 @@ Run the Cloudflare Workers and Durable Objects programming model on your own har
 
 Part of the [Directionally Local](https://directionallylocal.com) family of self-hostable infrastructure for coding agents, alongside [Autopilot](https://github.com/sinameraji/autopilot), [Hotcell](https://github.com/sinameraji/hotcell) and [Camouflage](https://github.com/sinameraji/camouflage).
 
-> **Status: pre-alpha, planning.** There is nothing to install yet. This README describes what is being built and in what order.
+> **Status: pre-alpha, v0.1 in development.** M0 passed its runtime gate with documented config caveats. The unpublished CLI currently supports only `--help` and `--version`; there is still nothing to install from npm.
 
 ## What it is
 

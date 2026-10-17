@@ -1,0 +1,38 @@
+{
+  "name": "serverless-objects",
+  "version": "0.1.0",
+  "description": "Run a self-hosted Workers-compatible platform for agents",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "sobjects": "./bin/sobjects.mjs"
+  },
+  "files": [
+    "bin",
+    "src/cli.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "prepublishOnly": "npm test",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sinameraji/serverless-objects.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/sinameraji/serverless-objects#readme",
+  "bugs": {
+    "url": "https://github.com/sinameraji/serverless-objects/issues"
+  },
+  "keywords": [
+    "cloudflare-workers",
+    "durable-objects",
+    "agents",
+    "self-hosted",
+    "serverless"
+  ]
+}

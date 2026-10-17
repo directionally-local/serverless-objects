@@ -1,2 +1,8 @@
 # Private strategy and planning docs. Never commit.
 private/
+
+# Node.js workspaces and generated output.
+node_modules/
+dist/
+coverage/
+.celld/
