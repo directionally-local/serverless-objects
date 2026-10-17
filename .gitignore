@@ -6,3 +6,6 @@ node_modules/
 dist/
 coverage/
 .celld/
+
+# Project-local object-store configuration can contain infrastructure details.
+sobjects.toml
