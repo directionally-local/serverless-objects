@@ -9,7 +9,7 @@
   },
   "files": [
     "bin",
-    "src/cli.js",
+    "src",
     "README.md"
   ],
   "engines": {
@@ -34,5 +34,8 @@
     "agents",
     "self-hosted",
     "serverless"
-  ]
+  ],
+  "dependencies": {
+    "smol-toml": "^1.9.1"
+  }
 }

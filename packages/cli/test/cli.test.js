@@ -31,13 +31,14 @@ test("prints usage when invoked without arguments", async () => {
   assert.deepEqual(output.stderr, []);
 });
 
-test("supports both help flags", async () => {
-  for (const flag of ["--help", "-h"]) {
-    const output = capture();
-    const exitCode = await run([flag], output.io);
-    assert.equal(exitCode, 0);
-    assert.match(output.stdout.join("\n"), /dev \[project\]/);
-  }
+test("supports top-level and up help", async () => {
+  const topLevel = capture();
+  assert.equal(await run(["--help"], topLevel.io), 0);
+  assert.match(topLevel.stdout.join("\n"), /up \[--config PATH\]/);
+
+  const up = capture();
+  assert.equal(await run(["up", "--help"], up.io), 0);
+  assert.match(up.stdout.join("\n"), /foreground/);
 });
 
 test("prints the package version", async () => {
@@ -82,11 +83,11 @@ test("passes dev arguments and project-local binaries to celld", async () => {
   assert.equal(exitCode, 17);
 });
 
-test("passes deploy arguments to celld", async () => {
+test("passes deploy arguments to the configured celld binary", async () => {
   const output = capture();
   let invocation;
   const exitCode = await run(["deploy", "--bucket", "s3://test"], output.io, {
-    env: {},
+    env: { SOBJECTS_CELLD_BIN: "/opt/celld" },
     spawnProcess: (executable, args) => {
       invocation = { executable, args };
       return childWithExit(0);
@@ -94,16 +95,82 @@ test("passes deploy arguments to celld", async () => {
   });
 
   assert.deepEqual(invocation, {
-    executable: "celld",
+    executable: "/opt/celld",
     args: ["deploy", "--bucket", "s3://test"],
   });
   assert.equal(exitCode, 0);
 });
 
+test("up installs pinned celld and starts it with validated config", async () => {
+  const output = capture();
+  const cwd = "/work/app";
+  let installOptions;
+  let configPath;
+  let invocation;
+  const exitCode = await run(["up", "--config", "ops/sobjects.toml"], output.io, {
+    cwd,
+    env: { SOBJECTS_DATA_DIR: "/data/sobjects" },
+    installEngine: async (options) => {
+      installOptions = options;
+      return "/data/sobjects/engines/celld-0.6.2/celld";
+    },
+    loadConfig: async (path) => {
+      configPath = path;
+      return {
+        bucket: "s3://example/fleet",
+        listen: "127.0.0.1:8080",
+        endpoint: "https://s3.example.test",
+        region: "auto",
+      };
+    },
+    spawnProcess: (executable, args, options) => {
+      invocation = { executable, args, options };
+      return childWithExit(0);
+    },
+  });
+
+  assert.deepEqual(installOptions, { dataDirectory: "/data/sobjects" });
+  assert.equal(configPath, resolve(cwd, "ops/sobjects.toml"));
+  assert.deepEqual(invocation, {
+    executable: "/data/sobjects/engines/celld-0.6.2/celld",
+    args: [
+      "--bucket", "s3://example/fleet",
+      "--listen", "127.0.0.1:8080",
+      "--endpoint", "https://s3.example.test",
+      "--region", "auto",
+    ],
+    options: { stdio: "inherit" },
+  });
+  assert.equal(exitCode, 0);
+});
+
+test("up validates config before installing or starting celld", async () => {
+  const output = capture();
+  let installed = false;
+  let spawned = false;
+  const exitCode = await run(["up"], output.io, {
+    env: {},
+    loadConfig: async () => { throw new Error("Unknown config key 'listen_port'."); },
+    installEngine: async () => { installed = true; return "/celld"; },
+    spawnProcess: () => { spawned = true; return childWithExit(0); },
+  });
+
+  assert.equal(exitCode, 2);
+  assert.equal(installed, false);
+  assert.equal(spawned, false);
+  assert.match(output.stderr[0], /Unknown config key/);
+});
+
+test("up rejects unexpected options", async () => {
+  const output = capture();
+  assert.equal(await run(["up", "--unknown"], output.io), 2);
+  assert.match(output.stderr[0], /Unknown sobjects up option/);
+});
+
 test("reports a missing celld binary with an install hint", async () => {
   const output = capture();
   const exitCode = await run(["dev"], output.io, {
-    env: {},
+    env: { SOBJECTS_CELLD_BIN: "/missing/celld" },
     spawnProcess: () => {
       const child = new EventEmitter();
       queueMicrotask(() => {

@@ -1,0 +1,9 @@
+# Single-node celld settings for `sobjects up`.
+# Keep the listener on loopback unless a TLS-terminating ingress is in front.
+[celld]
+bucket = "s3://replace-with-your-bucket/serverless-objects"
+listen = "127.0.0.1:8080"
+
+# Optional S3-compatible endpoint and region:
+# endpoint = "https://account.example-storage.com"
+# region = "auto"

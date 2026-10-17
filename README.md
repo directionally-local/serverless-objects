@@ -4,7 +4,7 @@ Run the Cloudflare Workers and Durable Objects programming model on your own har
 
 Part of the [Directionally Local](https://directionallylocal.com) family of self-hostable infrastructure for coding agents, alongside [Autopilot](https://github.com/sinameraji/autopilot), [Hotcell](https://github.com/sinameraji/hotcell) and [Camouflage](https://github.com/sinameraji/camouflage).
 
-> **Status: pre-alpha, v0.1 in development.** M0 passed its runtime gate with documented config caveats. The unpublished CLI now wraps `celld dev` and `celld deploy`, plus help/version; `sobjects up` and config normalization are not implemented yet.
+> **Status: pre-alpha, v0.1 in development.** M0 passed its runtime gate with documented config caveats. The CLI now installs pinned celld and provides foreground `sobjects up` plus `dev`/`deploy` wrappers; Wrangler config normalization, service supervision, and npm publication are still pending.
 
 ## What it is
 
@@ -27,6 +27,21 @@ Serverless Objects does not implement the Workers runtime itself. It drives an e
 | native | planned | A Node-native engine exposing the Durable Objects API with full Node APIs inside objects, no isolate, no memory cap. Code that uses Node APIs is marked non-portable by `sobjects build --strict`. |
 
 Both engines share the same per-object SQLite and bucket layout, so the dashboard, backups and migration tooling work with either.
+
+## Early v0.1 CLI
+
+The npm package is not published yet. From a checkout, with Node.js 22 or newer:
+
+```sh
+npm install
+cp sobjects.example.toml sobjects.toml
+# Edit celld.bucket in sobjects.toml, then:
+npm exec --workspace=serverless-objects -- sobjects up
+```
+
+`up` verifies the config, installs pinned celld `v0.6.2` on first use, and runs a single-node celld process in the foreground. Storage credentials come from celld's standard credential chain or environment; keep them out of `sobjects.toml`. The default listener is loopback-only at `127.0.0.1:8080`; do not expose it publicly without TLS ingress.
+
+`sobjects dev [project]` runs local development. `sobjects deploy [project]` forwards flags to `celld deploy`; provide a bucket with `--bucket` or `CELLD_BUCKET`. Wrangler config normalization, service supervision, TLS ingress, and dashboard are not implemented yet.
 
 ## Why
 
