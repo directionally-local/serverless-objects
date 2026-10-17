@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
+import { access } from "node:fs/promises";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { loadSobjectsConfig } from "./config.js";
 import { defaultDataDirectory, installCelld } from "./engine.js";
@@ -57,7 +58,7 @@ export async function run(
     return runUp(args, io, { spawnProcess, env, cwd, installEngine, loadConfig });
   }
   if (command === "dev" || command === "deploy") {
-    return runCelld(command, args, io, { spawnProcess, env, cwd, installEngine, prepareProject });
+    return runCelld(command, args, io, { spawnProcess, env, cwd, installEngine, prepareProject, loadConfig });
   }
 
   io.error(`Unknown option or command: ${command}`);
@@ -118,9 +119,19 @@ async function runUp(args, io, dependencies) {
 }
 
 async function runCelld(command, args, io, dependencies) {
+  let effectiveArgs = args;
+  if (command === "deploy") {
+    try {
+      effectiveArgs = await deployArgsFromConfig(args, dependencies);
+    } catch (error) {
+      io.error(error.message);
+      return 2;
+    }
+  }
+
   let prepared;
   try {
-    prepared = await dependencies.prepareProject(args, { cwd: dependencies.cwd });
+    prepared = await dependencies.prepareProject(effectiveArgs, { cwd: dependencies.cwd });
   } catch (error) {
     io.error(error.message);
     return 2;
@@ -212,19 +223,49 @@ function reportProcessError(error, executable, io, context) {
   }
 }
 
-function projectEnvironment(args, env, cwd) {
+async function deployArgsFromConfig(args, { cwd, env, loadConfig }) {
+  const configPath = join(projectDirectory(args, cwd), "sobjects.toml");
+  try {
+    await access(configPath);
+  } catch (error) {
+    if (error.code === "ENOENT") return args;
+    throw new Error(`Could not access ${configPath}: ${error.message}`);
+  }
+
+  const config = await loadConfig(configPath);
+  const result = [...args];
+  if (!hasOption(result, "--bucket") && !env.CELLD_BUCKET) {
+    result.push("--bucket", config.bucket);
+  }
+  if (config.endpoint && !hasOption(result, "--endpoint") && !env.S3_ENDPOINT) {
+    result.push("--endpoint", config.endpoint);
+  }
+  if (config.region && !hasOption(result, "--region") && !env.AWS_REGION && !env.AWS_DEFAULT_REGION) {
+    result.push("--region", config.region);
+  }
+  return result;
+}
+
+function hasOption(args, name) {
+  return args.some((argument) => argument === name || argument.startsWith(`${name}=`));
+}
+
+function projectDirectory(args, cwd) {
   const firstArgument = args[0];
   const projectArgument = firstArgument && !firstArgument.startsWith("-")
     ? firstArgument
     : ".";
   const projectPath = resolve(cwd, projectArgument);
-  let projectDirectory = projectPath;
   try {
-    if (statSync(projectPath).isFile()) projectDirectory = dirname(projectPath);
+    if (statSync(projectPath).isFile()) return dirname(projectPath);
   } catch {
     // Let celld report a missing project with its normal diagnostic.
   }
-  const localBin = join(projectDirectory, "node_modules", ".bin");
+  return projectPath;
+}
+
+function projectEnvironment(args, env, cwd) {
+  const localBin = join(projectDirectory(args, cwd), "node_modules", ".bin");
   const pathValue = env.PATH ?? env.Path ?? "";
   return {
     ...env,

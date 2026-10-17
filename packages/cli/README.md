@@ -31,8 +31,10 @@ keys, and remove `observability` / `upload_source_maps` with warnings. A declare
 requires an explicit `assets.directory`; Vite-plugin-generated asset directories
 are not inferred. Other config differences remain celld limitations.
 
-`deploy` forwards its arguments to celld; provide `--bucket` or `CELLD_BUCKET`
-and normal storage credentials. It does not yet consume `sobjects.toml`.
+`deploy` forwards its arguments to celld. Missing bucket, endpoint, and region
+values are filled from the project's `sobjects.toml`; explicit CLI flags and
+standard environment variables take precedence. Credentials continue to come
+from celld's normal credential chain.
 
 Requires Node.js 22 or newer. The npm package is not published. See the
 [project README](../../README.md) for scope and roadmap.
