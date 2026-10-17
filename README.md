@@ -41,10 +41,10 @@ Order is firm. Dates are targets, not promises.
 | Milestone | Target | Scope |
 |---|---|---|
 | **M0 · Compatibility spike** | Oct 2026 | Run Cloudflare Agents SDK and PartyServer samples unmodified on celld. Verify a Hotcell sandbox can be created from an object and reattached after eviction. Publish the findings as the first conformance results. |
-| **v0.1 · Operating layer** | Nov 2026 | `sobjects` CLI and supervisor, ingress with TLS, dashboard with storage inspector and backup browser, conformance suite v0 with Cloudflare and celld runners, porting guide. Single host. |
-| **v0.2 · Agent layer** | Nov 2026 | Hotcell `Sandbox` binding with per-object egress tokens. Autopilot runs as objects with a registry, alarms and event streams. Showcase: start a run, kill the node, restart, watch it resume from its event log in Camouflage. |
-| **v0.3 · Native engine, single node** | Jan 2027 | Node-native engine with the Durable Objects API: IDs, stubs with fetch and RPC, serialized execution with input and output gates, SQLite storage with KV and SQL, durable alarms, WebSockets with the hibernation API. `sobjects build --strict`. Conformance parity target with celld on the Durable Objects suite. Two-week soak under fault injection before beta. |
-| **v0.4 · Multi-node and Teams** | Q1 2027 | Placement and object migration through the bucket, ingress routing by owner, true WebSocket hibernation, rolling deploys, point-in-time recovery. Multiple apps and tenants per cluster, SSO, audit logs, air-gapped install, Helm. |
+| **v0.1 · Operating layer** | 31 Oct 2026 | `sobjects` CLI and supervisor, ingress with TLS, dashboard with storage inspector and backup browser, conformance suite v0 with Cloudflare and celld runners, porting guide. Single host. |
+| **v0.2 · Agent layer** | 7 Nov 2026 | Hotcell `Sandbox` binding with per-object egress tokens. Autopilot runs as objects with a registry, alarms and event streams. Showcase: start a run, kill the node, restart, watch it resume from its event log in Camouflage. |
+| **v0.3 · Native engine, single node** | 21 Nov 2026 | Node-native engine with the Durable Objects API: IDs, stubs with fetch and RPC, serialized execution with input and output gates, SQLite storage with KV and SQL, durable alarms, WebSockets with the hibernation API. `sobjects build --strict`. Conformance parity target with celld on the Durable Objects suite. Two-week soak under fault injection runs alongside v0.4; the beta label follows the soak. |
+| **v0.4 · Multi-node and Teams** | 30 Nov 2026 | Placement and object migration through the bucket, ingress routing by owner, true WebSocket hibernation, rolling deploys, point-in-time recovery. Multiple apps and tenants per cluster, SSO, audit logs, air-gapped install, Helm. |
 
 ### Not planned
 
