@@ -30,10 +30,10 @@ The sample source code above was not modified, but `celld dev` rejected these co
 - `assets: {}` — celld requires `assets.directory` to be a string.
 - `build` and `upload_source_maps` — unsupported config keys.
 
-Removing only those entries from temporary config copies allowed the Worker/DO code paths to run. Classify this as an **above-runtime config adapter/validation issue**, not a deep runtime issue. The v0.1 CLI must report or normalize such keys intentionally; it must not silently imply full Wrangler config compatibility.
+Removing only those entries from temporary config copies allowed the Worker/DO code paths to run. Classify this as an **above-runtime config adapter/validation issue**, not a deep runtime issue. The v0.1 CLI now rejects unknown top-level keys, strips `observability` and `upload_source_maps` with warnings, and runs `build.command`; it requires an explicit `assets.directory` and does not infer Vite-generated assets.
 
 ## Gate and next work
 
-**M0 gate: proceed to M1.** The tested Agents and PartyServer code paths needed no celld runtime patch. Before claiming full compatibility, add a repeatable idle-eviction test that calls `exec` after reattachment, and implement or document the celld config-key policy.
+**M0 gate: proceed to M1.** The tested Agents and PartyServer code paths needed no celld runtime patch. The CLI's limited JSONC preflight and build-command bridge are verified against the scheduler and PartyServer samples. Before claiming full compatibility, add a repeatable idle-eviction test that calls `exec` after reattachment, and exercise Vite-generated asset configs.
 
 **First v0.1 slice:** bootstrap the `sobjects` npm workspace/CLI with `--help` and `--version`, Node 22+ metadata, tests, and a GitHub Actions CI check. Release Please, npm publishing, and Homebrew distribution follow once the CLI and release metadata are stable.
