@@ -1,0 +1,17 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "node",
+  "packages": {
+    "packages/cli": {
+      "release-type": "node",
+      "package-name": "serverless-objects",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "package-lock.json",
+          "jsonpath": "$.packages['packages/cli'].version"
+        }
+      ]
+    }
+  }
+}
