@@ -185,6 +185,55 @@ test("reports a missing celld binary with an install hint", async () => {
   assert.match(output.stderr.join("\n"), /Install celld v0\.6\.2/);
 });
 
+test("rejects Wrangler preflight errors before installing or starting celld", async () => {
+  const output = capture();
+  let installed = false;
+  let spawned = false;
+  const exitCode = await run(["dev"], output.io, {
+    env: {},
+    prepareProject: async () => { throw new Error("Unsupported Wrangler config keys: routes"); },
+    installEngine: async () => { installed = true; return "/celld"; },
+    spawnProcess: () => { spawned = true; return childWithExit(0); },
+  });
+
+  assert.equal(exitCode, 2);
+  assert.equal(installed, false);
+  assert.equal(spawned, false);
+  assert.match(output.stderr[0], /Unsupported Wrangler config keys/);
+});
+
+test("runs a declared build command before celld and cleans up the normalized config", async () => {
+  const output = capture();
+  const order = [];
+  const exitCode = await run(["dev", "/work/app"], output.io, {
+    cwd: "/work",
+    env: { SOBJECTS_CELLD_BIN: "/celld", PATH: "/usr/bin" },
+    prepareProject: async () => ({
+      args: ["/work/app/.sobjects-wrangler-test.json"],
+      warnings: ["normalized optional key"],
+      buildCommand: "npm run build",
+      buildDirectory: "/work/app",
+      cleanup: async () => { order.push("cleanup"); },
+    }),
+    spawnProcess: (executable, args, options) => {
+      if (options.shell) {
+        order.push("build");
+        assert.equal(executable, "npm run build");
+        assert.equal(options.cwd, "/work/app");
+      } else {
+        order.push("celld");
+        assert.equal(executable, "/celld");
+        assert.deepEqual(args, ["dev", "/work/app/.sobjects-wrangler-test.json"]);
+      }
+      return childWithExit(0);
+    },
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(order, ["build", "celld", "cleanup"]);
+  assert.equal(output.stderr[0], "Warning: normalized optional key");
+});
+
 test("rejects commands that are not implemented", async () => {
   const output = capture();
   const exitCode = await run(["migrate"], output.io);

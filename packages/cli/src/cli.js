@@ -3,6 +3,7 @@ import { readFileSync, statSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { loadSobjectsConfig } from "./config.js";
 import { defaultDataDirectory, installCelld } from "./engine.js";
+import { prepareWranglerProject } from "./wrangler.js";
 
 const { version } = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
@@ -38,6 +39,7 @@ export async function run(
     cwd = process.cwd(),
     installEngine = installCelld,
     loadConfig = loadSobjectsConfig,
+    prepareProject = prepareWranglerProject,
   } = {},
 ) {
   if (argv.length === 0 || (argv.length === 1 && ["--help", "-h"].includes(argv[0]))) {
@@ -55,7 +57,7 @@ export async function run(
     return runUp(args, io, { spawnProcess, env, cwd, installEngine, loadConfig });
   }
   if (command === "dev" || command === "deploy") {
-    return runCelld(command, args, io, { spawnProcess, env, cwd, installEngine });
+    return runCelld(command, args, io, { spawnProcess, env, cwd, installEngine, prepareProject });
   }
 
   io.error(`Unknown option or command: ${command}`);
@@ -116,15 +118,47 @@ async function runUp(args, io, dependencies) {
 }
 
 async function runCelld(command, args, io, dependencies) {
-  let executable;
+  let prepared;
   try {
-    executable = await resolveCelld(dependencies.env, dependencies.installEngine);
+    prepared = await dependencies.prepareProject(args, { cwd: dependencies.cwd });
   } catch (error) {
     io.error(error.message);
-    return 1;
+    return 2;
   }
-  const childEnv = projectEnvironment(args, dependencies.env, dependencies.cwd);
-  return runProcess(executable, [command, ...args], io, dependencies.spawnProcess, childEnv);
+
+  for (const warning of prepared.warnings) io.error(`Warning: ${warning}`);
+  try {
+    const childEnv = projectEnvironment(prepared.args, dependencies.env, dependencies.cwd);
+    if (prepared.buildCommand) {
+      const buildExitCode = await runProcess(
+        prepared.buildCommand,
+        [],
+        io,
+        dependencies.spawnProcess,
+        childEnv,
+        { shell: true, cwd: prepared.buildDirectory },
+        "Wrangler build.command",
+      );
+      if (buildExitCode !== 0) return buildExitCode;
+    }
+
+    let executable;
+    try {
+      executable = await resolveCelld(dependencies.env, dependencies.installEngine);
+    } catch (error) {
+      io.error(error.message);
+      return 1;
+    }
+    return await runProcess(
+      executable,
+      [command, ...prepared.args],
+      io,
+      dependencies.spawnProcess,
+      childEnv,
+    );
+  } finally {
+    await prepared.cleanup();
+  }
 }
 
 async function resolveCelld(env, installEngine) {
@@ -132,7 +166,7 @@ async function resolveCelld(env, installEngine) {
   return installEngine({ dataDirectory: defaultDataDirectory(env) });
 }
 
-function runProcess(executable, args, io, spawnProcess, env) {
+function runProcess(executable, args, io, spawnProcess, env, extraOptions = {}, errorContext = "celld") {
   return new Promise((resolvePromise) => {
     let settled = false;
     const finish = (code) => {
@@ -143,18 +177,18 @@ function runProcess(executable, args, io, spawnProcess, env) {
 
     let child;
     try {
-      const options = { stdio: "inherit" };
+      const options = { stdio: "inherit", ...extraOptions };
       if (env) options.env = env;
       child = spawnProcess(executable, args, options);
     } catch (error) {
-      reportSpawnError(error, executable, io);
-      finish(error.code === "ENOENT" ? 127 : 1);
+      reportProcessError(error, executable, io, errorContext);
+      finish(error.code === "ENOENT" && errorContext === "celld" ? 127 : 1);
       return;
     }
 
     child.once("error", (error) => {
-      reportSpawnError(error, executable, io);
-      finish(error.code === "ENOENT" ? 127 : 1);
+      reportProcessError(error, executable, io, errorContext);
+      finish(error.code === "ENOENT" && errorContext === "celld" ? 127 : 1);
     });
     child.once("exit", (code, signal) => {
       if (typeof code === "number") {
@@ -168,6 +202,14 @@ function runProcess(executable, args, io, spawnProcess, env) {
       }
     });
   });
+}
+
+function reportProcessError(error, executable, io, context) {
+  if (context === "celld") {
+    reportSpawnError(error, executable, io);
+  } else {
+    io.error(`Could not start ${context}: ${error.message}`);
+  }
 }
 
 function projectEnvironment(args, env, cwd) {
