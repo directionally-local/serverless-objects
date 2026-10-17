@@ -5,6 +5,13 @@ import { delimiter, dirname, join, resolve } from "node:path";
 import { loadSobjectsConfig } from "./config.js";
 import { defaultDataDirectory, installCelld } from "./engine.js";
 import { prepareWranglerProject } from "./wrangler.js";
+import {
+  defaultStateDirectory,
+  getCelldStatus,
+  readCelldLogs,
+  startCelldDetached,
+  stopCelld,
+} from "./service.js";
 
 const { version } = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
@@ -15,9 +22,12 @@ export const helpText = `Serverless Objects — self-hostable Workers infrastruc
 Usage: sobjects <command> [options]
 
 Commands:
-  up [--config PATH]          Start a celld node in the foreground
-  dev [project] [options]     Run a project locally with celld
-  deploy [project] [options]  Deploy a project with celld
+  up [--config PATH] [--detach]  Start a celld node
+  down                           Stop a detached celld node
+  status                         Show detached celld process status
+  logs [--tail N]                Show recent detached celld logs
+  dev [project] [options]        Run a project locally with celld
+  deploy [project] [options]     Deploy a project with celld
 
 Options:
   -h, --help      Show this help
@@ -26,10 +36,11 @@ Options:
 The CLI installs the pinned celld v0.6.2 release on first use. Set
 SOBJECTS_CELLD_BIN to use an existing binary instead.`;
 
-const upHelpText = `Usage: sobjects up [--config PATH]
+const upHelpText = `Usage: sobjects up [--config PATH] [--detach]
 
 Read [celld] settings from sobjects.toml, install pinned celld if needed, and
-run the node in the foreground. The default config path is ./sobjects.toml.`;
+run the node in the foreground by default. Use --detach to run it in the
+background. The default config path is ./sobjects.toml.`;
 
 export async function run(
   argv = process.argv.slice(2),
@@ -41,6 +52,10 @@ export async function run(
     installEngine = installCelld,
     loadConfig = loadSobjectsConfig,
     prepareProject = prepareWranglerProject,
+    startService = startCelldDetached,
+    getServiceStatus = getCelldStatus,
+    readServiceLogs = readCelldLogs,
+    stopService = stopCelld,
   } = {},
 ) {
   if (argv.length === 0 || (argv.length === 1 && ["--help", "-h"].includes(argv[0]))) {
@@ -55,8 +70,11 @@ export async function run(
 
   const [command, ...args] = argv;
   if (command === "up") {
-    return runUp(args, io, { spawnProcess, env, cwd, installEngine, loadConfig });
+    return runUp(args, io, { spawnProcess, env, cwd, installEngine, loadConfig, startService });
   }
+  if (command === "down") return runDown(args, io, { env, stopService });
+  if (command === "status") return runStatus(args, io, { env, getServiceStatus });
+  if (command === "logs") return runLogs(args, io, { env, readServiceLogs });
   if (command === "dev" || command === "deploy") {
     return runCelld(command, args, io, { spawnProcess, env, cwd, installEngine, prepareProject, loadConfig });
   }
@@ -73,9 +91,12 @@ async function runUp(args, io, dependencies) {
   }
 
   let configPath = "sobjects.toml";
+  let detached = false;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
-    if (argument === "--config") {
+    if (argument === "--detach" || argument === "-d") {
+      detached = true;
+    } else if (argument === "--config") {
       const value = args[index + 1];
       if (!value || value.startsWith("--")) {
         io.error("Option --config requires a path.");
@@ -115,7 +136,103 @@ async function runUp(args, io, dependencies) {
   const argsForCelld = ["--bucket", config.bucket, "--listen", config.listen];
   if (config.endpoint) argsForCelld.push("--endpoint", config.endpoint);
   if (config.region) argsForCelld.push("--region", config.region);
+  if (detached) {
+    try {
+      const state = await dependencies.startService({
+        executable,
+        args: argsForCelld,
+        env: dependencies.env,
+        cwd: dependencies.cwd,
+        stateDirectory: defaultStateDirectory(dependencies.env),
+        spawnProcess: dependencies.spawnProcess,
+      });
+      io.log(`Started celld in the background (pid ${state.pid}).`);
+      io.log(`Log file: ${state.logPath}`);
+      return 0;
+    } catch (error) {
+      io.error(error.message);
+      return 1;
+    }
+  }
   return runProcess(executable, argsForCelld, io, dependencies.spawnProcess);
+}
+
+async function runStatus(args, io, { env, getServiceStatus }) {
+  if (args.length > 0) {
+    io.error("Usage: sobjects status");
+    return 2;
+  }
+  try {
+    const result = await getServiceStatus({ stateDirectory: defaultStateDirectory(env) });
+    if (!result.running) {
+      io.log(result.stale ? "celld is not running (stale state removed)." : "celld is not running.");
+      return 1;
+    }
+    io.log(`celld is running (pid ${result.state.pid}; started ${result.state.startedAt}).`);
+    io.log(`Log file: ${result.state.logPath}`);
+    return 0;
+  } catch (error) {
+    io.error(error.message);
+    return 1;
+  }
+}
+
+async function runDown(args, io, { env, stopService }) {
+  if (args.length === 1 && ["--help", "-h"].includes(args[0])) {
+    io.log("Usage: sobjects down");
+    return 0;
+  }
+  if (args.length > 0) {
+    io.error("Usage: sobjects down");
+    return 2;
+  }
+  try {
+    const result = await stopService({ stateDirectory: defaultStateDirectory(env) });
+    if (result.stopped) io.log(`Stopped celld (pid ${result.state.pid}).`);
+    else io.log(result.stale ? "celld was not running (stale state removed)." : "celld is not running.");
+    return 0;
+  } catch (error) {
+    io.error(error.message);
+    return 1;
+  }
+}
+
+async function runLogs(args, io, { env, readServiceLogs }) {
+  if (args.length === 1 && ["--help", "-h"].includes(args[0])) {
+    io.log("Usage: sobjects logs [--tail N]");
+    return 0;
+  }
+  let lines = 100;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (argument === "--tail" || argument === "-n") {
+      const value = Number(args[index + 1]);
+      if (!Number.isInteger(value) || value < 1 || value > 10_000) {
+        io.error("--tail requires a number from 1 to 10000.");
+        return 2;
+      }
+      lines = value;
+      index += 1;
+    } else if (argument.startsWith("--tail=")) {
+      const value = Number(argument.slice("--tail=".length));
+      if (!Number.isInteger(value) || value < 1 || value > 10_000) {
+        io.error("--tail requires a number from 1 to 10000.");
+        return 2;
+      }
+      lines = value;
+    } else {
+      io.error("Usage: sobjects logs [--tail N]");
+      return 2;
+    }
+  }
+  try {
+    const result = await readServiceLogs({ stateDirectory: defaultStateDirectory(env), lines });
+    if (result.output) io.log(result.output);
+    return 0;
+  } catch (error) {
+    io.error(error.message);
+    return 1;
+  }
 }
 
 async function runCelld(command, args, io, dependencies) {

@@ -4,9 +4,10 @@ The `sobjects` CLI package for Serverless Objects.
 
 ## Commands in this pre-alpha
 
-- `sobjects up [--config PATH]` validates `sobjects.toml`, installs pinned celld `v0.6.2` if needed, and starts a single-node celld process in the foreground.
+- `sobjects up [--config PATH] [--detach]` validates `sobjects.toml`, installs pinned celld `v0.6.2` if needed, and starts a single-node process (foreground by default).
+- `sobjects status`, `sobjects logs [--tail N]`, and `sobjects down` manage an `up --detach` process.
 - `sobjects dev [project] [celld dev options]` runs local development with celld.
-- `sobjects deploy [project] [celld deploy options]` forwards a deployment to celld.
+- `sobjects deploy [project] [celld deploy options]` deploys through celld.
 - `sobjects --help` and `sobjects --version` show CLI help and version.
 
 `dev` and `deploy` use the pinned celld install. Set `SOBJECTS_CELLD_BIN` to
@@ -20,8 +21,8 @@ Copy [`sobjects.example.toml`](https://github.com/sinameraji/serverless-objects/
 and set `celld.bucket` to an S3-, GCS-, or Azure-compatible bucket URI. Credentials
 come from celld's standard provider chain / environment; do not put credentials
 in this file. The default listener is `127.0.0.1:8080`. Do not expose celld's
-HTTP listener directly to the internet; TLS ingress and service supervision are
-not implemented yet.
+HTTP listener directly to the internet; TLS ingress and systemd/launchd unit
+generation are not implemented yet. Detached mode only manages a local PID and log.
 
 ## Wrangler config handling
 

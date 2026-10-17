@@ -234,6 +234,69 @@ test("runs a declared build command before celld and cleans up the normalized co
   assert.equal(output.stderr[0], "Warning: normalized optional key");
 });
 
+test("up --detach starts the service manager instead of running in the foreground", async () => {
+  const output = capture();
+  let startOptions;
+  const exitCode = await run(["up", "--detach"], output.io, {
+    cwd: "/work/app",
+    env: { SOBJECTS_STATE_DIR: "/tmp/sobjects-state" },
+    loadConfig: async () => ({ bucket: "s3://example/fleet", listen: "127.0.0.1:8080" }),
+    installEngine: async () => "/opt/celld",
+    startService: async (options) => {
+      startOptions = options;
+      return { pid: 456, logPath: "/tmp/sobjects-state/celld.log" };
+    },
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(startOptions.executable, "/opt/celld");
+  assert.deepEqual(startOptions.args, ["--bucket", "s3://example/fleet", "--listen", "127.0.0.1:8080"]);
+  assert.equal(startOptions.stateDirectory, "/tmp/sobjects-state");
+  assert.match(output.stdout.join("\n"), /pid 456/);
+});
+
+test("status, down, and logs delegate with the configured state directory", async () => {
+  const env = { SOBJECTS_STATE_DIR: "/tmp/sobjects-state" };
+  const statusOutput = capture();
+  let stateDirectory;
+  assert.equal(await run(["status"], statusOutput.io, {
+    env,
+    getServiceStatus: async (options) => {
+      stateDirectory = options.stateDirectory;
+      return { running: true, state: { pid: 321, startedAt: "now", logPath: "/tmp/celld.log" } };
+    },
+  }), 0);
+  assert.equal(stateDirectory, "/tmp/sobjects-state");
+  assert.match(statusOutput.stdout.join("\n"), /pid 321/);
+
+  const downOutput = capture();
+  assert.equal(await run(["down"], downOutput.io, {
+    env,
+    stopService: async (options) => {
+      assert.equal(options.stateDirectory, "/tmp/sobjects-state");
+      return { stopped: true, state: { pid: 321 } };
+    },
+  }), 0);
+  assert.match(downOutput.stdout[0], /Stopped celld/);
+
+  const logsOutput = capture();
+  assert.equal(await run(["logs", "--tail", "3"], logsOutput.io, {
+    env,
+    readServiceLogs: async (options) => {
+      assert.equal(options.stateDirectory, "/tmp/sobjects-state");
+      assert.equal(options.lines, 3);
+      return { output: "log line 1\\nlog line 2", logPath: "/tmp/celld.log" };
+    },
+  }), 0);
+  assert.equal(logsOutput.stdout[0], "log line 1\\nlog line 2");
+});
+
+test("rejects an invalid logs tail value", async () => {
+  const output = capture();
+  assert.equal(await run(["logs", "--tail", "0"], output.io), 2);
+  assert.match(output.stderr[0], /number from 1 to 10000/);
+});
+
 test("rejects commands that are not implemented", async () => {
   const output = capture();
   const exitCode = await run(["migrate"], output.io);
