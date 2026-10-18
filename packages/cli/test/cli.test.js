@@ -489,3 +489,105 @@ test("logs --ingress reads the ingress service log", async () => {
   assert.equal(name, "ingress");
   assert.deepEqual(output.stdout, ["ingress line"]);
 });
+
+test("service print renders a unit for the resolved config after validating it", async () => {
+  const output = capture();
+  let loaded;
+  const exitCode = await run(["service", "print", "--kind", "systemd", "--config", "ops/sobjects.toml"], output.io, {
+    cwd: "/srv/app",
+    env: { SOBJECTS_STATE_DIR: "/var/lib/so", SOBJECTS_DATA_DIR: "/opt/so" },
+    nodeExecutable: "/usr/bin/node",
+    loadConfig: async (path) => { loaded = path; return { bucket: "s3://b/p", listen: "127.0.0.1:8080" }; },
+  });
+  assert.equal(exitCode, 0);
+  assert.equal(loaded, "/srv/app/ops/sobjects.toml");
+  const unit = output.stdout.join("\n");
+  assert.match(unit, /ExecStart=\/usr\/bin\/node \S+bin\/sobjects\.mjs up --config \/srv\/app\/ops\/sobjects\.toml/);
+  assert.match(unit, /Environment=SOBJECTS_STATE_DIR=\/var\/lib\/so/);
+  assert.match(unit, /Environment=SOBJECTS_DATA_DIR=\/opt\/so/);
+});
+
+test("service install writes the unit and prints enable commands", async () => {
+  const home = await mkdtemp(join(tmpdir(), "sobjects-service-home-"));
+  try {
+    const output = capture();
+    const env = { XDG_CONFIG_HOME: join(home, ".config"), SOBJECTS_STATE_DIR: join(home, "state") };
+    const dependencies = {
+      cwd: home,
+      env,
+      platform: "linux",
+      loadConfig: async () => ({ bucket: "s3://b/p", listen: "127.0.0.1:8080" }),
+    };
+    assert.equal(await run(["service", "install"], output.io, dependencies), 0);
+    const path = join(home, ".config", "systemd", "user", "serverless-objects.service");
+    assert.match(await readFile(path, "utf8"), /up --config/);
+    assert.match(output.stdout.join("\n"), /systemctl --user enable --now serverless-objects\.service/);
+
+    const again = capture();
+    assert.equal(await run(["service", "install"], again.io, dependencies), 1);
+    assert.match(again.stderr[0], /already exists/);
+    assert.equal(await run(["service", "install", "--force"], capture().io, dependencies), 0);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("service rejects invalid options and configs before writing", async () => {
+  const cases = [
+    [["service"], /Usage: sobjects service/],
+    [["service", "start"], /Unknown sobjects service action/],
+    [["service", "print", "--kind", "upstart"], /--kind must be/],
+    [["service", "print", "--user", "x"], /only to --system/],
+    [["service", "print", "--force"], /Unknown sobjects service option: --force/],
+    [["service", "print", "--kind", "launchd", "--system"], /per user/],
+  ];
+  for (const [argv, pattern] of cases) {
+    const output = capture();
+    assert.equal(await run(argv, output.io, {
+      platform: "linux",
+      loadConfig: async () => ({ bucket: "s3://b/p", listen: "127.0.0.1:8080" }),
+    }), 2, argv.join(" "));
+    assert.match([...output.stdout, ...output.stderr].join("\n"), pattern);
+  }
+  const broken = capture();
+  assert.equal(await run(["service", "print"], broken.io, {
+    loadConfig: async () => { throw new Error("Unknown config key 'x'."); },
+  }), 2);
+});
+
+test("foreground up forwards SIGTERM to celld and stops listening afterwards", async () => {
+  const handlers = new Map();
+  const child = new EventEmitter();
+  const signals = [];
+  child.kill = (signal) => {
+    signals.push(signal);
+    queueMicrotask(() => child.emit("exit", null, signal));
+  };
+  const result = run(["up"], capture().io, {
+    env: { SOBJECTS_CELLD_BIN: "/opt/celld" },
+    loadConfig: async () => ({ bucket: "s3://b/p", listen: "127.0.0.1:8080" }),
+    spawnProcess: () => child,
+    onSignal: (signal, handler) => {
+      handlers.set(signal, handler);
+      return () => handlers.delete(signal);
+    },
+  });
+  while (!handlers.has("SIGTERM")) await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  handlers.get("SIGINT")();
+  assert.deepEqual(signals, []);
+  handlers.get("SIGTERM")();
+  assert.equal(await result, 143);
+  assert.deepEqual(signals, ["SIGTERM"]);
+  assert.equal(handlers.size, 0);
+});
+
+test("service print for a system unit uses the systemd state directory", async () => {
+  const output = capture();
+  assert.equal(await run(["service", "print", "--kind", "systemd", "--system", "--user", "so"], output.io, {
+    env: { SOBJECTS_STATE_DIR: "/home/me/state" },
+    loadConfig: async () => ({ bucket: "s3://b/p", listen: "127.0.0.1:8080" }),
+  }), 0);
+  const unit = output.stdout.join("\n");
+  assert.match(unit, /Environment=SOBJECTS_STATE_DIR=\/var\/lib\/serverless-objects\/state/);
+  assert.doesNotMatch(unit, /\/home\/me/);
+});

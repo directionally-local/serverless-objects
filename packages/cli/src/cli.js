@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { loadSobjectsConfig } from "./config.js";
 import { defaultDataDirectory, installCelld } from "./engine.js";
 import { HEALTH_PATH, startIngress } from "./ingress.js";
+import { renderLaunchdPlist, renderSystemdUnit, unitTarget, writeUnit } from "./units.js";
 import { prepareWranglerProject } from "./wrangler.js";
 import {
   defaultStateDirectory,
@@ -31,6 +32,7 @@ Commands:
   status                         Show detached process status
   logs [--ingress] [--tail N]    Show recent detached celld or ingress logs
   ingress [--config PATH]        Run only the TLS ingress in the foreground
+  service print|install [opts]   Generate a systemd or launchd unit for up
   dev [project] [options]        Run a project locally with celld
   deploy [project] [options]     Deploy a project with celld
 
@@ -47,6 +49,21 @@ Read [celld] settings from sobjects.toml, install pinned celld if needed, and
 run the node in the foreground by default. When [ingress] is configured, the
 TLS ingress starts first and proxies to celld. Use --detach to run both in the
 background. The default config path is ./sobjects.toml.`;
+
+const serviceHelpText = `Usage: sobjects service print|install [options]
+
+Generate a service unit that runs 'sobjects up' in the foreground.
+
+Options:
+  --config PATH      sobjects.toml to run (default: ./sobjects.toml)
+  --kind KIND        systemd or launchd (default: launchd on macOS, else systemd)
+  --system           systemd only: system unit with CAP_NET_BIND_SERVICE
+  --user NAME        account for a --system unit
+  --force            install: replace an existing unit file
+
+'install' writes the unit and prints the commands that enable it; it does not
+start the service. Put object-store credentials in sobjects.env beside the
+config (systemd) or in the unit's environment, never in sobjects.toml.`;
 
 const ingressHelpText = `Usage: sobjects ingress [--config PATH]
 
@@ -70,6 +87,7 @@ export async function run(
     startIngressServer = startIngress,
     onSignal = subscribeToSignal,
     nodeExecutable = process.execPath,
+    ...dependencies
   } = {},
 ) {
   if (argv.length === 0 || (argv.length === 1 && ["--help", "-h"].includes(argv[0]))) {
@@ -99,6 +117,9 @@ export async function run(
   }
   if (command === "ingress") {
     return runIngress(args, io, { env, cwd, loadConfig, startIngressServer, onSignal });
+  }
+  if (command === "service") {
+    return runService(args, io, { env, cwd, loadConfig, nodeExecutable, platform: dependencies.platform });
   }
   if (command === "down") return runDown(args, io, { env, stopService });
   if (command === "status") return runStatus(args, io, { env, getServiceStatus });
@@ -192,9 +213,38 @@ async function runUp(args, io, dependencies) {
       return 1;
     }
   }
+
+  // Service managers (launchd, systemd KillMode=mixed) signal only this
+  // process, so forward SIGTERM to let celld flush and exit cleanly. A
+  // terminal SIGINT already reaches celld through the process group.
+  let child;
+  const unsubscribe = [
+    dependencies.onSignal("SIGTERM", () => child?.kill("SIGTERM")),
+    dependencies.onSignal("SIGINT", () => {}),
+  ];
+  if (ingress) {
+    unsubscribe.push(dependencies.onSignal("SIGHUP", () => {
+      try {
+        ingress.reloadCertificates();
+        io.log("Reloaded ingress TLS certificates.");
+      } catch (error) {
+        io.error(`Kept the previous certificates: ${error.message}`);
+      }
+    }));
+  }
   try {
-    return await runProcess(executable, argsForCelld, io, dependencies.spawnProcess);
+    return await runProcess(
+      executable,
+      argsForCelld,
+      io,
+      dependencies.spawnProcess,
+      undefined,
+      {},
+      "celld",
+      (spawned) => { child = spawned; },
+    );
   } finally {
+    for (const off of unsubscribe) off();
     await ingress?.close();
   }
 }
@@ -319,6 +369,92 @@ function parseConfigOptions(args, io, command, { allowDetach = false } = {}) {
     }
   }
   return { configPath, detached };
+}
+
+async function runService(args, io, { env, cwd, loadConfig, nodeExecutable, platform = process.platform }) {
+  const [action, ...rest] = args;
+  if (!action || ["--help", "-h"].includes(action)) {
+    io.log(serviceHelpText);
+    return action ? 0 : 2;
+  }
+  if (action !== "print" && action !== "install") {
+    io.error(`Unknown sobjects service action: ${action}`);
+    io.error("Run 'sobjects service --help' for usage.");
+    return 2;
+  }
+
+  const options = { configPath: "sobjects.toml", kind: platform === "darwin" ? "launchd" : "systemd", system: false, force: false };
+  for (let index = 0; index < rest.length; index += 1) {
+    const argument = rest[index];
+    const takeValue = () => {
+      const value = rest[index + 1];
+      index += 1;
+      if (!value || value.startsWith("--")) throw new Error(`Option ${argument} requires a value.`);
+      return value;
+    };
+    try {
+      if (argument === "--config") options.configPath = takeValue();
+      else if (argument === "--kind") options.kind = takeValue();
+      else if (argument === "--user") options.user = takeValue();
+      else if (argument === "--system") options.system = true;
+      else if (argument === "--force" && action === "install") options.force = true;
+      else throw new Error(`Unknown sobjects service option: ${argument}`);
+    } catch (error) {
+      io.error(error.message);
+      return 2;
+    }
+  }
+  if (!["systemd", "launchd"].includes(options.kind)) {
+    io.error("--kind must be systemd or launchd.");
+    return 2;
+  }
+  if (options.user && !options.system) {
+    io.error("--user applies only to --system units.");
+    return 2;
+  }
+
+  const configPath = resolve(cwd, options.configPath);
+  try {
+    // Validate now so a broken config fails here rather than in a restart loop.
+    await loadConfig(configPath);
+  } catch (error) {
+    io.error(error.message);
+    return 2;
+  }
+
+  // Pin the state and data directories the unit will use, since service
+  // managers do not inherit the shell's XDG variables. A system unit runs as
+  // another account and uses the directory systemd creates for it.
+  const unitEnv = options.system
+    ? { SOBJECTS_STATE_DIR: "/var/lib/serverless-objects/state", SOBJECTS_DATA_DIR: "/var/lib/serverless-objects" }
+    : { SOBJECTS_STATE_DIR: defaultStateDirectory(env), SOBJECTS_DATA_DIR: defaultDataDirectory(env) };
+  if (env.SOBJECTS_CELLD_BIN) unitEnv.SOBJECTS_CELLD_BIN = env.SOBJECTS_CELLD_BIN;
+  let contents;
+  let target;
+  try {
+    contents = options.kind === "launchd"
+      ? renderLaunchdPlist({ nodeExecutable, cliScript: CLI_SCRIPT, configPath, logDirectory: unitEnv.SOBJECTS_STATE_DIR, env: unitEnv })
+      : renderSystemdUnit({ nodeExecutable, cliScript: CLI_SCRIPT, configPath, system: options.system, user: options.user, env: unitEnv });
+    target = unitTarget({ kind: options.kind, system: options.system, env });
+  } catch (error) {
+    io.error(error.message);
+    return 2;
+  }
+
+  if (action === "print") {
+    io.log(contents.trimEnd());
+    return 0;
+  }
+  try {
+    await writeUnit(target.path, contents, { force: options.force });
+  } catch (error) {
+    io.error(error.message);
+    return 1;
+  }
+  io.log(`Wrote ${target.path}.`);
+  io.log("Enable and start it with:");
+  for (const command of target.next) io.log(`  ${command}`);
+  return 0;
 }
 
 function subscribeToSignal(signal, handler) {
@@ -485,7 +621,7 @@ async function resolveCelld(env, installEngine) {
   return installEngine({ dataDirectory: defaultDataDirectory(env) });
 }
 
-function runProcess(executable, args, io, spawnProcess, env, extraOptions = {}, errorContext = "celld") {
+function runProcess(executable, args, io, spawnProcess, env, extraOptions = {}, errorContext = "celld", onSpawn) {
   return new Promise((resolvePromise) => {
     let settled = false;
     const finish = (code) => {
@@ -499,6 +635,7 @@ function runProcess(executable, args, io, spawnProcess, env, extraOptions = {}, 
       const options = { stdio: "inherit", ...extraOptions };
       if (env) options.env = env;
       child = spawnProcess(executable, args, options);
+      onSpawn?.(child);
     } catch (error) {
       reportProcessError(error, executable, io, errorContext);
       finish(error.code === "ENOENT" && errorContext === "celld" ? 127 : 1);

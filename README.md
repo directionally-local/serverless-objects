@@ -4,7 +4,7 @@ Run the Cloudflare Workers and Durable Objects programming model on your own har
 
 Part of the [Directionally Local](https://directionallylocal.com) family of self-hostable infrastructure for coding agents, alongside [Autopilot](https://github.com/sinameraji/autopilot), [Hotcell](https://github.com/sinameraji/hotcell) and [Camouflage](https://github.com/sinameraji/camouflage).
 
-> **Status: pre-alpha; v0.1 CLI test candidate.** M0 passed its runtime gate with documented config caveats. The CLI installs pinned celld and provides `up`/`down`/`status`/`logs` plus `dev`/`deploy`, and a TLS ingress with static certificates; ACME, OS service units, dashboard, live bucket setup, and npm publication are not ready. Vite static-asset build/discovery is implemented and tested with the Cloudflare Vite plugin, but the full Agents SDK example has not yet been run through this CLI.
+> **Status: pre-alpha; v0.1 CLI test candidate.** M0 passed its runtime gate with documented config caveats. The CLI installs pinned celld and provides `up`/`down`/`status`/`logs` plus `dev`/`deploy`, a TLS ingress with static certificates, and systemd/launchd unit generation; ACME, dashboard, live bucket setup, and npm publication are not ready. Vite static-asset build/discovery is implemented and tested with the Cloudflare Vite plugin, but the full Agents SDK example has not yet been run through this CLI.
 
 ## What it is
 
@@ -55,7 +55,7 @@ Add an `[ingress]` table to `sobjects.toml` (see [`sobjects.example.toml`](sobje
 
 Without `[ingress.tls]`, the ingress may only listen on loopback. ACME certificate issuance is not implemented yet. Known difference from Cloudflare: celld builds `request.url` from its own plaintext listener, so a Worker behind the ingress sees `http://` in `request.url`; read `X-Forwarded-Proto` when the scheme matters.
 
-`sobjects dev [project]` runs local development. `sobjects deploy [project]` forwards flags to `celld deploy`; bucket, endpoint, and region can come from explicit flags, environment variables, or the project's `sobjects.toml`. The CLI rejects unknown top-level Wrangler keys, warns while removing celld-incompatible `observability`/`upload_source_maps`, and runs a declared `build.command`. If `assets.directory` is missing and the project declares `@cloudflare/vite-plugin` plus a Vite config, it runs `vite build` and requires a unique generated `index.html` under `.cloudflare/output/v0/workers/*/assets` or `dist` (including one-level subdirectories); otherwise set `assets.directory` explicitly. Ambiguous outputs fail before celld starts. OS service supervision, ACME, and the dashboard are not implemented yet.
+`sobjects dev [project]` runs local development. `sobjects deploy [project]` forwards flags to `celld deploy`; bucket, endpoint, and region can come from explicit flags, environment variables, or the project's `sobjects.toml`. The CLI rejects unknown top-level Wrangler keys, warns while removing celld-incompatible `observability`/`upload_source_maps`, and runs a declared `build.command`. If `assets.directory` is missing and the project declares `@cloudflare/vite-plugin` plus a Vite config, it runs `vite build` and requires a unique generated `index.html` under `.cloudflare/output/v0/workers/*/assets` or `dist` (including one-level subdirectories); otherwise set `assets.directory` explicitly. Ambiguous outputs fail before celld starts. `sobjects service install` generates a systemd or launchd unit that runs `up` under the OS service manager. ACME and the dashboard are not implemented yet.
 
 ## Why
 
