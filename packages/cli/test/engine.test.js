@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
 import { gzipSync } from "node:zlib";
-import { installCelld } from "../src/engine.js";
+import { CELLD_RELEASES, CELLD_VERSION, installCelld, readEngineSelection, writeEngineSelection } from "../src/engine.js";
 
 const directories = [];
 afterEach(async () => {
@@ -89,4 +89,30 @@ test("reports non-200 release downloads", async () => {
     }),
     /HTTP 503/,
   );
+});
+
+test("pins checksums for every supported target of every known version", () => {
+  assert.ok(CELLD_RELEASES[CELLD_VERSION]);
+  for (const [version, assets] of Object.entries(CELLD_RELEASES)) {
+    assert.deepEqual(Object.keys(assets).sort(), ["darwin-arm64", "linux-arm64", "linux-x64"], version);
+    for (const asset of Object.values(assets)) assert.match(asset.sha256, /^[0-9a-f]{64}$/);
+  }
+});
+
+test("refuses versions without pinned checksums", async () => {
+  await assert.rejects(
+    installCelld({ version: "9.9.9", fetchImpl: async () => assert.fail("must not fetch") }),
+    /not a pinned release/,
+  );
+});
+
+test("round-trips the engine selection", async () => {
+  const dataDirectory = await mkdtemp(join(tmpdir(), "sobjects-selection-"));
+  try {
+    assert.equal(await readEngineSelection(dataDirectory), undefined);
+    await writeEngineSelection(dataDirectory, { version: "0.6.1", previous: "0.6.2" });
+    assert.deepEqual(await readEngineSelection(dataDirectory), { version: "0.6.1", previous: "0.6.2" });
+  } finally {
+    await rm(dataDirectory, { recursive: true, force: true });
+  }
 });

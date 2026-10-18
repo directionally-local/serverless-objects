@@ -4,7 +4,15 @@ import { access, mkdir } from "node:fs/promises";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadSobjectsConfig } from "./config.js";
-import { defaultDataDirectory, installCelld } from "./engine.js";
+import {
+  CELLD_RELEASES,
+  CELLD_VERSION,
+  defaultDataDirectory,
+  installCelld,
+  isCelldInstalled,
+  readEngineSelection,
+  writeEngineSelection,
+} from "./engine.js";
 import { HEALTH_PATH, startIngress } from "./ingress.js";
 import { renderLaunchdPlist, renderSystemdUnit, unitTarget, writeUnit } from "./units.js";
 import { prepareWranglerProject } from "./wrangler.js";
@@ -33,6 +41,7 @@ Commands:
   logs [--ingress] [--tail N]    Show recent detached celld or ingress logs
   ingress [--config PATH]        Run only the TLS ingress in the foreground
   service print|install [opts]   Generate a systemd or launchd unit for up
+  upgrade [--rollback|--status]  Install and select a pinned celld version
   dev [project] [options]        Run a project locally with celld
   deploy [project] [options]     Deploy a project with celld
 
@@ -40,7 +49,7 @@ Options:
   -h, --help      Show this help
   -v, --version   Show the installed version
 
-The CLI installs the pinned celld v0.6.2 release on first use. Set
+The CLI installs the pinned celld v${CELLD_VERSION} release on first use. Set
 SOBJECTS_CELLD_BIN to use an existing binary instead.`;
 
 const upHelpText = `Usage: sobjects up [--config PATH] [--detach]
@@ -87,6 +96,9 @@ export async function run(
     startIngressServer = startIngress,
     onSignal = subscribeToSignal,
     nodeExecutable = process.execPath,
+    readSelection = readEngineSelection,
+    writeSelection = writeEngineSelection,
+    isInstalled = isCelldInstalled,
     ...dependencies
   } = {},
 ) {
@@ -113,10 +125,14 @@ export async function run(
       startIngressServer,
       onSignal,
       nodeExecutable,
+      readSelection,
     });
   }
   if (command === "ingress") {
     return runIngress(args, io, { env, cwd, loadConfig, startIngressServer, onSignal });
+  }
+  if (command === "upgrade") {
+    return runUpgrade(args, io, { env, installEngine, readSelection, writeSelection, isInstalled, getServiceStatus });
   }
   if (command === "service") {
     return runService(args, io, { env, cwd, loadConfig, nodeExecutable, platform: dependencies.platform });
@@ -125,7 +141,7 @@ export async function run(
   if (command === "status") return runStatus(args, io, { env, getServiceStatus });
   if (command === "logs") return runLogs(args, io, { env, readServiceLogs });
   if (command === "dev" || command === "deploy") {
-    return runCelld(command, args, io, { spawnProcess, env, cwd, installEngine, prepareProject, loadConfig });
+    return runCelld(command, args, io, { spawnProcess, env, cwd, installEngine, prepareProject, loadConfig, readSelection });
   }
 
   io.error(`Unknown option or command: ${command}`);
@@ -153,7 +169,7 @@ async function runUp(args, io, dependencies) {
 
   let executable;
   try {
-    executable = await resolveCelld(dependencies.env, dependencies.installEngine);
+    executable = await resolveCelld(dependencies);
   } catch (error) {
     io.error(error.message);
     return 1;
@@ -599,7 +615,7 @@ async function runCelld(command, args, io, dependencies) {
 
     let executable;
     try {
-      executable = await resolveCelld(dependencies.env, dependencies.installEngine);
+      executable = await resolveCelld(dependencies);
     } catch (error) {
       io.error(error.message);
       return 1;
@@ -616,9 +632,114 @@ async function runCelld(command, args, io, dependencies) {
   }
 }
 
-async function resolveCelld(env, installEngine) {
+async function resolveCelld({ env, installEngine, readSelection }) {
   if (env.SOBJECTS_CELLD_BIN) return env.SOBJECTS_CELLD_BIN;
-  return installEngine({ dataDirectory: defaultDataDirectory(env) });
+  const dataDirectory = defaultDataDirectory(env);
+  const selection = await readSelection(dataDirectory);
+  return installEngine({ dataDirectory, version: selection?.version ?? CELLD_VERSION });
+}
+
+async function runUpgrade(args, io, { env, installEngine, readSelection, writeSelection, isInstalled, getServiceStatus }) {
+  const usage = "Usage: sobjects upgrade [--engine-version VERSION | --rollback | --status]";
+  let mode = "upgrade";
+  let target = CELLD_VERSION;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (["--help", "-h"].includes(argument)) {
+      io.log(`${usage}
+
+Install and select a pinned celld release (default: ${CELLD_VERSION}, the
+version this CLI pins). --rollback selects the previously selected version.
+Known versions: ${Object.keys(CELLD_RELEASES).join(", ")}. The running node
+keeps its version until it is restarted.`);
+      return 0;
+    }
+    if (argument === "--rollback") mode = "rollback";
+    else if (argument === "--status") mode = "status";
+    else if (argument === "--engine-version") {
+      target = args[index + 1];
+      index += 1;
+      if (!target) {
+        io.error("Option --engine-version requires a version.");
+        return 2;
+      }
+    } else if (argument.startsWith("--engine-version=")) {
+      target = argument.slice("--engine-version=".length);
+    } else {
+      io.error(usage);
+      return 2;
+    }
+  }
+  if (mode !== "upgrade" && args.length !== 1) {
+    io.error(usage);
+    return 2;
+  }
+  target = target.replace(/^v/, "");
+
+  const dataDirectory = defaultDataDirectory(env);
+  let selection;
+  try {
+    selection = await readSelection(dataDirectory);
+  } catch (error) {
+    io.error(error.message);
+    return 1;
+  }
+  const current = selection?.version ?? CELLD_VERSION;
+  if (env.SOBJECTS_CELLD_BIN) {
+    io.error(`Warning: SOBJECTS_CELLD_BIN=${env.SOBJECTS_CELLD_BIN} overrides the selected celld version.`);
+  }
+
+  if (mode === "status") {
+    io.log(`Selected celld: ${current}${selection ? "" : " (CLI default)"}`);
+    if (selection?.previous) io.log(`Rollback target: ${selection.previous}`);
+    for (const version of Object.keys(CELLD_RELEASES)) {
+      const installed = await isInstalled(dataDirectory, version);
+      io.log(`  ${version === current ? "*" : " "} ${version}${installed ? " (installed)" : ""}`);
+    }
+    return 0;
+  }
+
+  if (mode === "rollback") {
+    if (!selection?.previous) {
+      io.error("No previous celld version is recorded; nothing to roll back to.");
+      return 1;
+    }
+    target = selection.previous;
+  }
+  if (!CELLD_RELEASES[target]) {
+    io.error(`celld ${target} is not a pinned release. Known versions: ${Object.keys(CELLD_RELEASES).join(", ")}.`);
+    return 2;
+  }
+  if (target === current) {
+    try {
+      await installEngine({ dataDirectory, version: target });
+    } catch (error) {
+      io.error(error.message);
+      return 1;
+    }
+    io.log(`celld ${target} is already selected and installed.`);
+    return 0;
+  }
+
+  try {
+    await installEngine({ dataDirectory, version: target });
+    await writeSelection(dataDirectory, { version: target, previous: current, selectedAt: new Date().toISOString() });
+  } catch (error) {
+    io.error(error.message);
+    io.error(`celld ${current} remains selected.`);
+    return 1;
+  }
+  io.log(`Selected celld ${target} (was ${current}). Roll back with 'sobjects upgrade --rollback'.`);
+  try {
+    const status = await getServiceStatus({ stateDirectory: defaultStateDirectory(env) });
+    if (status.running) {
+      io.log("The detached node still runs the old version; restart it with 'sobjects down' and 'sobjects up --detach'.");
+    }
+  } catch {
+    // Status is advisory here.
+  }
+  io.log("Restart any service unit running 'sobjects up' to use the new version.");
+  return 0;
 }
 
 function runProcess(executable, args, io, spawnProcess, env, extraOptions = {}, errorContext = "celld", onSpawn) {

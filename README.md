@@ -4,7 +4,7 @@ Run the Cloudflare Workers and Durable Objects programming model on your own har
 
 Part of the [Directionally Local](https://directionallylocal.com) family of self-hostable infrastructure for coding agents, alongside [Autopilot](https://github.com/sinameraji/autopilot), [Hotcell](https://github.com/sinameraji/hotcell) and [Camouflage](https://github.com/sinameraji/camouflage).
 
-> **Status: pre-alpha; v0.1 CLI test candidate.** M0 passed its runtime gate with documented config caveats. The CLI installs pinned celld and provides `up`/`down`/`status`/`logs` plus `dev`/`deploy`, a TLS ingress with static certificates, and systemd/launchd unit generation; ACME, dashboard, live bucket setup, and npm publication are not ready. Vite static-asset build/discovery is implemented and tested with the Cloudflare Vite plugin, but the full Agents SDK example has not yet been run through this CLI.
+> **Status: pre-alpha; v0.1 CLI test candidate.** M0 passed its runtime gate with documented config caveats. The CLI installs pinned celld and provides `up`/`down`/`status`/`logs` plus `dev`/`deploy`, a TLS ingress with static certificates, systemd/launchd unit generation, and checksum-pinned engine upgrades with rollback; ACME, dashboard, live bucket setup, and npm publication are not ready. Vite static-asset build/discovery is implemented and tested with the Cloudflare Vite plugin, but the full Agents SDK example has not yet been run through this CLI.
 
 ## What it is
 
