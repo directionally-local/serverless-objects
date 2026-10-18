@@ -96,3 +96,93 @@ test("loads config from a path and reports a missing file clearly", async () => 
     /Create an sobjects.toml/,
   );
 });
+
+const CELLD = '[celld]\nbucket = "s3://example/fleet"\n';
+
+test("parses an ingress with TLS, routes, and default celld upstream", () => {
+  const config = parseSobjectsConfig(`
+[celld]
+bucket = "s3://example/fleet"
+listen = "0.0.0.0:8080"
+
+[ingress]
+listen = "0.0.0.0:443"
+redirect_http = "0.0.0.0:80"
+access_log = "logs/access.log"
+
+[ingress.tls]
+cert = "/etc/tls/fullchain.pem"
+key = "tls/key.pem"
+
+[[ingress.routes]]
+hostname = "Agents.Example.com"
+
+[[ingress.routes]]
+hostname = "*.preview.example.com"
+upstream = "http://127.0.0.1:9000/"
+tls = { cert = "preview.pem", key = "preview-key.pem" }
+`, "sobjects.toml", { baseDirectory: "/srv/app" });
+
+  assert.deepEqual(config.ingress, {
+    listen: "0.0.0.0:443",
+    redirectHttp: "0.0.0.0:80",
+    accessLog: "/srv/app/logs/access.log",
+    tls: { cert: "/etc/tls/fullchain.pem", key: "/srv/app/tls/key.pem" },
+    routes: [
+      { hostname: "agents.example.com", upstream: "http://127.0.0.1:8080" },
+      {
+        hostname: "*.preview.example.com",
+        upstream: "http://127.0.0.1:9000",
+        tls: { cert: "/srv/app/preview.pem", key: "/srv/app/preview-key.pem" },
+      },
+    ],
+  });
+});
+
+test("allows plaintext ingress only on loopback", () => {
+  const plain = parseSobjectsConfig(
+    `${CELLD}[ingress]\nlisten = "127.0.0.1:8443"\n[[ingress.routes]]\nhostname = "*"\n`,
+  );
+  assert.equal(plain.ingress.tls, undefined);
+  assert.equal(plain.ingress.routes[0].upstream, "http://127.0.0.1:8080");
+
+  assert.throws(
+    () => parseSobjectsConfig(`${CELLD}[ingress]\nlisten = "0.0.0.0:80"\n[[ingress.routes]]\nhostname = "*"\n`),
+    /not loopback; add \[ingress.tls\]/,
+  );
+  assert.throws(
+    () => parseSobjectsConfig(
+      `${CELLD}[ingress]\nlisten = "127.0.0.1:8443"\nredirect_http = "127.0.0.1:8081"\n[[ingress.routes]]\nhostname = "*"\n`,
+    ),
+    /redirect_http requires \[ingress.tls\]/,
+  );
+});
+
+test("rejects invalid ingress settings", () => {
+  const withIngress = (body) => `${CELLD}[ingress]\nlisten = "127.0.0.1:8443"\n${body}`;
+  assert.throws(() => parseSobjectsConfig(withIngress("")), /at least one \[\[ingress.routes\]\]/);
+  assert.throws(
+    () => parseSobjectsConfig(withIngress('[[ingress.routes]]\nhostname = "bad host"\n')),
+    /hostname must be a hostname/,
+  );
+  assert.throws(
+    () => parseSobjectsConfig(withIngress('[[ingress.routes]]\nhostname = "a.test"\n[[ingress.routes]]\nhostname = "A.test"\n')),
+    /listed more than once/,
+  );
+  assert.throws(
+    () => parseSobjectsConfig(withIngress('[[ingress.routes]]\nhostname = "a.test"\nupstream = "https://x"\n')),
+    /http:\/\/ origin/,
+  );
+  assert.throws(
+    () => parseSobjectsConfig(withIngress('[[ingress.routes]]\nhostname = "a.test"\ntls = { cert = "c", key = "k" }\n')),
+    /requires a default \[ingress.tls\]/,
+  );
+  assert.throws(
+    () => parseSobjectsConfig(withIngress('mode = "x"\n[[ingress.routes]]\nhostname = "a.test"\n')),
+    /Unknown config key 'mode'/,
+  );
+  assert.throws(
+    () => parseSobjectsConfig(`${CELLD}[ingress]\nlisten = "127.0.0.1:8080"\n[[ingress.routes]]\nhostname = "*"\n`),
+    /must differ from \[celld\].listen/,
+  );
+});
