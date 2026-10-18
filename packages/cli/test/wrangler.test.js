@@ -55,14 +55,97 @@ test("extracts and removes a supported build.command for the CLI to run", () => 
   assert.equal(result.changed, true);
 });
 
-test("rejects unsupported nested build options and asset configs without a directory", () => {
+test("rejects unsupported nested build options", () => {
   assert.throws(
     () => normalizeWranglerConfig('{"name":"chat","main":"src/index.ts","build":{"command":"npm run build","watch_dir":"src"}}'),
     /Unsupported Wrangler build keys.*watch_dir/,
   );
-  assert.throws(
-    () => normalizeWranglerConfig('{"name":"chat","main":"src/index.ts","assets":{"run_worker_first":["/agents/*"]}}'),
-    /assets.directory/,
+});
+
+test("recognizes assets configs that need a Vite-generated directory", () => {
+  const result = normalizeWranglerConfig(
+    '{"name":"chat","main":"src/index.ts","assets":{"run_worker_first":["/agents/*"]}}',
+  );
+  assert.equal(result.requiresAssetsDirectory, true);
+  assert.equal(result.changed, true);
+  assert.equal(result.config.assets.directory, undefined);
+});
+
+test("builds Cloudflare Vite projects and records the unique dist/client assets directory", async () => {
+  const cwd = await temporaryDirectory();
+  await writeFile(
+    join(cwd, "package.json"),
+    JSON.stringify({ devDependencies: { "@cloudflare/vite-plugin": "1.0.0" } }),
+  );
+  await writeFile(join(cwd, "vite.config.ts"), "export default {};");
+  await writeFile(join(cwd, "index.html"), "source html");
+  await writeFile(
+    join(cwd, "wrangler.jsonc"),
+    '{"name":"chat","main":"src/index.ts","assets":{"run_worker_first":["/agents/*"]}}',
+  );
+
+  const prepared = await prepareWranglerProject(["."], { cwd });
+  assert.equal(prepared.buildCommand, "vite build");
+  assert.match(prepared.warnings.join(" "), /Cloudflare Vite build/);
+  const assetsDirectory = join(cwd, "dist", "client");
+  await mkdir(assetsDirectory, { recursive: true });
+  await writeFile(join(assetsDirectory, "index.html"), "<main>app</main>");
+  await prepared.afterBuild();
+
+  const normalized = JSON.parse(await readFile(prepared.args[0], "utf8"));
+  assert.equal(normalized.assets.directory, "dist/client");
+  assert.deepEqual(normalized.assets.run_worker_first, ["/agents/*"]);
+  await prepared.cleanup();
+});
+
+test("discovers assets in Cloudflare Build Output worker directories", async () => {
+  const cwd = await temporaryDirectory();
+  await writeFile(
+    join(cwd, "package.json"),
+    JSON.stringify({ devDependencies: { "@cloudflare/vite-plugin": "1.0.0" } }),
+  );
+  await writeFile(join(cwd, "vite.config.ts"), "export default {};");
+  await writeFile(
+    join(cwd, "wrangler.jsonc"),
+    '{"name":"chat","main":"src/index.ts","assets":{}}',
+  );
+  const prepared = await prepareWranglerProject(["."], { cwd });
+  const assetsDirectory = join(cwd, ".cloudflare", "output", "v0", "workers", "default", "assets");
+  await mkdir(assetsDirectory, { recursive: true });
+  await writeFile(join(assetsDirectory, "index.html"), "<main>app</main>");
+  await prepared.afterBuild();
+  const normalized = JSON.parse(await readFile(prepared.args[0], "utf8"));
+  assert.equal(normalized.assets.directory, ".cloudflare/output/v0/workers/default/assets");
+  await prepared.cleanup();
+});
+
+test("does not infer ambiguous Vite assets or run discovery outside the plugin case", async () => {
+  const cwd = await temporaryDirectory();
+  await writeFile(
+    join(cwd, "package.json"),
+    JSON.stringify({ devDependencies: { "@cloudflare/vite-plugin": "1.0.0" } }),
+  );
+  await writeFile(join(cwd, "vite.config.ts"), "export default {};");
+  await writeFile(
+    join(cwd, "wrangler.jsonc"),
+    '{"name":"chat","main":"src/index.ts","assets":{}}',
+  );
+  const prepared = await prepareWranglerProject(["."], { cwd });
+  await mkdir(join(cwd, "dist", "client"), { recursive: true });
+  await mkdir(join(cwd, "dist", "admin"), { recursive: true });
+  await writeFile(join(cwd, "dist", "client", "index.html"), "client");
+  await writeFile(join(cwd, "dist", "admin", "index.html"), "admin");
+  await assert.rejects(prepared.afterBuild(), /multiple asset roots.*Set assets.directory explicitly/);
+  await prepared.cleanup();
+
+  const plain = await temporaryDirectory();
+  await writeFile(
+    join(plain, "wrangler.jsonc"),
+    '{"name":"chat","main":"src/index.ts","assets":{}}',
+  );
+  await assert.rejects(
+    prepareWranglerProject(["."], { cwd: plain }),
+    /Set the built asset path explicitly.*@cloudflare\/vite-plugin/,
   );
 });
 

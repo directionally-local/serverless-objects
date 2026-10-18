@@ -28,17 +28,17 @@ generation are not implemented yet. Detached mode only manages a local PID and l
 
 `dev` and `deploy` parse JSONC before invoking celld, reject unknown top-level
 keys, and remove `observability` / `upload_source_maps` with warnings. A declared
-`build.command` runs before celld; only that build key is supported. `assets`
-requires an explicit `assets.directory`; Vite-plugin-generated asset directories
-are not inferred. Other config differences remain celld limitations.
+`build.command` runs before celld; only that build key is supported. If
+`assets.directory` is missing in a project with `@cloudflare/vite-plugin` and a
+Vite config, `dev`/`deploy` run `vite build` and discover a unique `index.html`
+under the Cloudflare Build Output worker assets or conventional `dist` output.
+Missing or ambiguous outputs fail safely; other projects must set
+`assets.directory` explicitly. The full Agents SDK sample has not yet been tested
+end-to-end through this Vite path.
 
 `deploy` forwards its arguments to celld. Missing bucket, endpoint, and region
 values are filled from the project's `sobjects.toml`; explicit CLI flags and
 standard environment variables take precedence. Credentials continue to come
 from celld's normal credential chain.
 
-The CLI is a pre-alpha test candidate, not a production release. It has passed its
-unit and integration checks, including a loopback service-lifecycle smoke test;
-bucket-backed `up`, Vite-generated assets, TLS ingress, OS service units, and
-dashboard are not ready. The npm package is not published. See the
-[project README](../../README.md) for scope and roadmap.
+The CLI is a pre-alpha test candidate, not a production release. Unit and integration checks include loopback service lifecycle and a real build using `@cloudflare/vite-plugin` 1.62.3; the full Agents SDK app has not yet been run end-to-end through the CLI. Bucket-backed `up`, TLS ingress, OS service units, and dashboard are not ready. The npm package is not published. See the [project README](../../README.md) for scope and roadmap.

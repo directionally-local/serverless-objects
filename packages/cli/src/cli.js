@@ -269,6 +269,12 @@ async function runCelld(command, args, io, dependencies) {
       );
       if (buildExitCode !== 0) return buildExitCode;
     }
+    try {
+      await prepared.afterBuild?.();
+    } catch (error) {
+      io.error(error.message);
+      return 2;
+    }
 
     let executable;
     try {
