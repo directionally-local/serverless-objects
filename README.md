@@ -4,7 +4,7 @@ Run the Cloudflare Workers and Durable Objects programming model on your own har
 
 Part of the [Directionally Local](https://directionallylocal.com) family of self-hostable infrastructure for coding agents, alongside [Autopilot](https://github.com/sinameraji/autopilot), [Hotcell](https://github.com/sinameraji/hotcell) and [Camouflage](https://github.com/sinameraji/camouflage).
 
-> **Status: pre-alpha; v0.1 CLI test candidate.** M0 passed its runtime gate with documented config caveats. The CLI installs pinned celld and provides `up`/`down`/`status`/`logs` plus `dev`/`deploy`; OS service units, TLS ingress, dashboard, live bucket setup, and npm publication are not ready. Vite static-asset build/discovery is implemented and tested with the Cloudflare Vite plugin, but the full Agents SDK example has not yet been run through this CLI.
+> **Status: pre-alpha; v0.1 CLI test candidate.** M0 passed its runtime gate with documented config caveats. The CLI installs pinned celld and provides `up`/`down`/`status`/`logs` plus `dev`/`deploy`, and a TLS ingress with static certificates; ACME, OS service units, dashboard, live bucket setup, and npm publication are not ready. Vite static-asset build/discovery is implemented and tested with the Cloudflare Vite plugin, but the full Agents SDK example has not yet been run through this CLI.
 
 ## What it is
 
@@ -30,7 +30,7 @@ Both engines share the same per-object SQLite and bucket layout, so the dashboar
 
 ## Early v0.1 CLI
 
-The npm package is not published yet. This is a CLI test candidate, not a production release. Unit and smoke tests cover the counter, Agents scheduler/SQL, and PartyServer WebSocket/SQL, including state persistence across a celld restart. Vite static-asset build/discovery is tested against `@cloudflare/vite-plugin` 1.62.3 with a minimal fixture; the full Agents SDK sample has not yet been run through this CLI. Bucket-backed `sobjects up`, TLS ingress, and dashboard are not yet validated or implemented. From a checkout, with Node.js 22 or newer:
+The npm package is not published yet. This is a CLI test candidate, not a production release. Unit and smoke tests cover the counter, Agents scheduler/SQL, and PartyServer WebSocket/SQL, including state persistence across a celld restart. Vite static-asset build/discovery is tested against `@cloudflare/vite-plugin` 1.62.3 with a minimal fixture; the full Agents SDK sample has not yet been run through this CLI. The TLS ingress has been smoke-tested in front of `celld dev` (HTTPS, Durable Object state, WebSocket echo, access logs). Bucket-backed `sobjects up` and the dashboard are not yet validated or implemented. From a checkout, with Node.js 22 or newer:
 
 ```sh
 npm install
@@ -39,9 +39,23 @@ cp sobjects.example.toml sobjects.toml
 npm exec --workspace=serverless-objects -- sobjects up
 ```
 
-`up` verifies the config, installs pinned celld `v0.6.2` on first use, and runs a single-node celld process in the foreground. Add `--detach` to store a PID record and log under the user state directory; `sobjects status`, `sobjects logs`, and `sobjects down` manage that detached process. Storage credentials come from celld's standard credential chain or environment; keep them out of `sobjects.toml`. The default listener is loopback-only at `127.0.0.1:8080`; do not expose it publicly without TLS ingress.
+`up` verifies the config, installs pinned celld `v0.6.2` on first use, and runs a single-node celld process in the foreground. Add `--detach` to store a PID record and log under the user state directory; `sobjects status`, `sobjects logs`, and `sobjects down` manage that detached process. Storage credentials come from celld's standard credential chain or environment; keep them out of `sobjects.toml`. The default listener is loopback-only at `127.0.0.1:8080`; do not expose it publicly.
 
-`sobjects dev [project]` runs local development. `sobjects deploy [project]` forwards flags to `celld deploy`; bucket, endpoint, and region can come from explicit flags, environment variables, or the project's `sobjects.toml`. The CLI rejects unknown top-level Wrangler keys, warns while removing celld-incompatible `observability`/`upload_source_maps`, and runs a declared `build.command`. If `assets.directory` is missing and the project declares `@cloudflare/vite-plugin` plus a Vite config, it runs `vite build` and requires a unique generated `index.html` under `.cloudflare/output/v0/workers/*/assets` or `dist` (including one-level subdirectories); otherwise set `assets.directory` explicitly. Ambiguous outputs fail before celld starts. Service supervision, TLS ingress, and the dashboard are not implemented yet.
+### Ingress
+
+Add an `[ingress]` table to `sobjects.toml` (see [`sobjects.example.toml`](sobjects.example.toml)) and `sobjects up` starts a TLS-terminating proxy in front of celld, in the foreground or with `--detach`. `sobjects ingress` runs it on its own. It:
+
+- terminates TLS with static PEM certificates, with an optional certificate per route chosen by SNI; `SIGHUP` reloads them from disk;
+- routes by exact, `*.wildcard`, or `*` hostname and answers `421` for anything else;
+- tunnels WebSocket upgrades;
+- replaces client-supplied `X-Forwarded-*` and `CF-Connecting-IP` headers with the real peer address;
+- optionally redirects plain HTTP to HTTPS with `308`;
+- serves `/.well-known/sobjects/health`, which checks the upstream;
+- writes JSON access logs without query strings to `access.log` in the state directory, a configured path, or stdout (`"-"`).
+
+Without `[ingress.tls]`, the ingress may only listen on loopback. ACME certificate issuance is not implemented yet. Known difference from Cloudflare: celld builds `request.url` from its own plaintext listener, so a Worker behind the ingress sees `http://` in `request.url`; read `X-Forwarded-Proto` when the scheme matters.
+
+`sobjects dev [project]` runs local development. `sobjects deploy [project]` forwards flags to `celld deploy`; bucket, endpoint, and region can come from explicit flags, environment variables, or the project's `sobjects.toml`. The CLI rejects unknown top-level Wrangler keys, warns while removing celld-incompatible `observability`/`upload_source_maps`, and runs a declared `build.command`. If `assets.directory` is missing and the project declares `@cloudflare/vite-plugin` plus a Vite config, it runs `vite build` and requires a unique generated `index.html` under `.cloudflare/output/v0/workers/*/assets` or `dist` (including one-level subdirectories); otherwise set `assets.directory` explicitly. Ambiguous outputs fail before celld starts. OS service supervision, ACME, and the dashboard are not implemented yet.
 
 ## Why
 
