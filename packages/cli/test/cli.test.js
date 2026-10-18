@@ -213,6 +213,7 @@ test("runs a declared build command before celld and cleans up the normalized co
       warnings: ["normalized optional key"],
       buildCommand: "npm run build",
       buildDirectory: "/work/app",
+      afterBuild: async () => { order.push("after-build"); },
       cleanup: async () => { order.push("cleanup"); },
     }),
     spawnProcess: (executable, args, options) => {
@@ -230,7 +231,7 @@ test("runs a declared build command before celld and cleans up the normalized co
   });
 
   assert.equal(exitCode, 0);
-  assert.deepEqual(order, ["build", "celld", "cleanup"]);
+  assert.deepEqual(order, ["build", "after-build", "celld", "cleanup"]);
   assert.equal(output.stderr[0], "Warning: normalized optional key");
 });
 

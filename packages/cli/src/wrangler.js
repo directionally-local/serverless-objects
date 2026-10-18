@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { readFile, stat, unlink, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
+import { dirname, join, relative, resolve } from "node:path";
 import { parse, printParseErrorCode } from "jsonc-parser";
 
 const CELLD_WRANGLER_KEYS = new Set([
@@ -46,29 +46,52 @@ export async function prepareWranglerProject(args, { cwd = process.cwd() } = {})
 
   const source = await readFile(configPath, "utf8");
   const normalized = normalizeWranglerConfig(source, configPath);
+  const projectDirectory = dirname(configPath);
+  const needsViteAssets = normalized.requiresAssetsDirectory;
+  let buildCommand = normalized.buildCommand;
+  if (needsViteAssets) {
+    if (!(await hasCloudflareVitePlugin(projectDirectory))) {
+      throw new Error(
+        `Wrangler config ${configPath} sets assets without assets.directory. Set the built asset path explicitly; automatic discovery is limited to projects using @cloudflare/vite-plugin.`,
+      );
+    }
+    buildCommand ??= "vite build";
+    normalized.warnings.push("Running the Cloudflare Vite build to discover Wrangler assets.directory.");
+  }
+
   const result = {
     args: [...args],
     warnings: normalized.warnings,
-    buildCommand: normalized.buildCommand,
-    buildDirectory: dirname(configPath),
+    buildCommand,
+    buildDirectory: projectDirectory,
+    afterBuild: async () => {},
     cleanup: async () => {},
   };
 
   if (!normalized.changed) return result;
 
   const temporaryPath = join(
-    dirname(configPath),
+    projectDirectory,
     `.sobjects-wrangler-${process.pid}-${randomUUID()}.json`,
   );
-  await writeFile(temporaryPath, `${JSON.stringify(normalized.config, null, 2)}\n`, {
-    encoding: "utf8",
-    flag: "wx",
-    mode: 0o600,
-  });
+  const writeNormalizedConfig = () =>
+    writeFile(temporaryPath, `${JSON.stringify(normalized.config, null, 2)}\n`, {
+      encoding: "utf8",
+      flag: "w",
+      mode: 0o600,
+    });
+  await writeNormalizedConfig();
   if (args[0] && !args[0].startsWith("-")) {
     result.args[0] = temporaryPath;
   } else {
     result.args.unshift(temporaryPath);
+  }
+  if (needsViteAssets) {
+    result.afterBuild = async () => {
+      const assetsDirectory = await discoverViteAssetsDirectory(projectDirectory, configPath);
+      normalized.config.assets = { ...normalized.config.assets, directory: assetsDirectory };
+      await writeNormalizedConfig();
+    };
   }
   result.cleanup = async () => unlink(temporaryPath).catch((error) => {
     if (error.code !== "ENOENT") throw error;
@@ -102,6 +125,7 @@ export function normalizeWranglerConfig(source, sourceName = "wrangler.jsonc") {
   const normalized = { ...config };
   const warnings = [];
   let buildCommand;
+  let requiresAssetsDirectory = false;
   if (Object.hasOwn(normalized, "observability")) {
     delete normalized.observability;
     warnings.push("celld does not implement Wrangler observability settings; ignoring `observability`.");
@@ -126,10 +150,13 @@ export function normalizeWranglerConfig(source, sourceName = "wrangler.jsonc") {
     warnings.push("Running Wrangler build.command before starting celld.");
   }
   if (Object.hasOwn(normalized, "assets")) {
-    if (!isRecord(normalized.assets) || typeof normalized.assets.directory !== "string" || !normalized.assets.directory.trim()) {
-      throw new Error(
-        `Wrangler config ${sourceName} sets assets without assets.directory. celld needs a built asset directory; Vite-generated asset bindings are not supported automatically yet.`,
-      );
+    if (!isRecord(normalized.assets)) {
+      throw new Error(`Wrangler config ${sourceName} has an invalid assets config; expected an object.`);
+    }
+    if (!Object.hasOwn(normalized.assets, "directory")) {
+      requiresAssetsDirectory = true;
+    } else if (typeof normalized.assets.directory !== "string" || !normalized.assets.directory.trim()) {
+      throw new Error(`Wrangler config ${sourceName} has an invalid assets.directory; expected a non-empty path.`);
     }
   }
 
@@ -137,8 +164,90 @@ export function normalizeWranglerConfig(source, sourceName = "wrangler.jsonc") {
     config: normalized,
     warnings,
     buildCommand,
-    changed: warnings.length > 0,
+    requiresAssetsDirectory,
+    changed: warnings.length > 0 || requiresAssetsDirectory,
   };
+}
+
+async function hasCloudflareVitePlugin(projectDirectory) {
+  let packageJson;
+  try {
+    packageJson = JSON.parse(await readFile(join(projectDirectory, "package.json"), "utf8"));
+  } catch {
+    return false;
+  }
+  if (!isRecord(packageJson)) return false;
+  const dependencies = {
+    ...packageJson.dependencies,
+    ...packageJson.devDependencies,
+    ...packageJson.optionalDependencies,
+  };
+  if (!Object.hasOwn(dependencies, "@cloudflare/vite-plugin")) return false;
+
+  for (const name of [
+    "vite.config.js",
+    "vite.config.mjs",
+    "vite.config.cjs",
+    "vite.config.ts",
+    "vite.config.mts",
+    "vite.config.cts",
+  ]) {
+    try {
+      if ((await stat(join(projectDirectory, name))).isFile()) return true;
+    } catch {
+      // Try the next supported Vite config extension.
+    }
+  }
+  return false;
+}
+
+async function discoverViteAssetsDirectory(projectDirectory, configPath) {
+  const candidates = [];
+
+  const distDirectory = join(projectDirectory, "dist");
+  await addAssetRootIfPresent(distDirectory, candidates);
+  let distEntries = [];
+  try {
+    distEntries = await readdir(distDirectory, { withFileTypes: true });
+  } catch {
+    // The project may emit assets only through the Cloudflare Build Output format.
+  }
+  for (const entry of distEntries) {
+    if (entry.isDirectory()) {
+      await addAssetRootIfPresent(join(distDirectory, entry.name), candidates);
+    }
+  }
+
+  const workersDirectory = join(projectDirectory, ".cloudflare", "output", "v0", "workers");
+  let workerEntries = [];
+  try {
+    workerEntries = await readdir(workersDirectory, { withFileTypes: true });
+  } catch {
+    // No Cloudflare Build Output was generated.
+  }
+  for (const entry of workerEntries) {
+    if (!entry.isDirectory()) continue;
+    await addAssetRootIfPresent(join(workersDirectory, entry.name, "assets"), candidates);
+  }
+
+  const uniqueCandidates = [...new Set(candidates)];
+  if (uniqueCandidates.length !== 1) {
+    const reason = uniqueCandidates.length === 0
+      ? "no index.html was found in the Cloudflare Build Output assets or conventional dist directories"
+      : `multiple asset roots were found: ${uniqueCandidates.map((path) => relative(projectDirectory, path)).join(", ")}`;
+    throw new Error(
+      `Could not safely infer assets.directory for ${configPath}: ${reason}. Set assets.directory explicitly in your Wrangler config.`,
+    );
+  }
+  return relative(projectDirectory, uniqueCandidates[0]);
+}
+
+async function addAssetRootIfPresent(candidate, candidates) {
+  try {
+    if ((await stat(join(candidate, "index.html"))).isFile()) candidates.push(candidate);
+  } catch {
+    // This candidate is not an emitted SPA asset directory.
+  }
 }
 
 async function findConfig(projectDirectory) {
