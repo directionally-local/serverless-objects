@@ -7,3 +7,19 @@ listen = "127.0.0.1:8080"
 # Optional S3-compatible endpoint and region:
 # endpoint = "https://account.example-storage.com"
 # region = "auto"
+
+# Optional TLS ingress in front of celld, started by `sobjects up`.
+# Relative paths resolve from this file's directory. Without [ingress.tls],
+# the ingress may only listen on loopback.
+# [ingress]
+# listen = "0.0.0.0:443"
+# redirect_http = "0.0.0.0:80"
+# access_log = "-"  # "-" writes JSON lines to stdout; default is the state directory
+#
+# [ingress.tls]
+# cert = "/etc/serverless-objects/tls/fullchain.pem"
+# key = "/etc/serverless-objects/tls/privkey.pem"
+#
+# [[ingress.routes]]
+# hostname = "agents.example.com"
+# # upstream defaults to the [celld] listener
