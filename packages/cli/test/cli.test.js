@@ -279,6 +279,7 @@ test("status, down, and logs delegate with the configured state directory", asyn
     env,
     stopService: async (options) => {
       assert.equal(options.stateDirectory, "/tmp/sobjects-state");
+      if (options.name === "celld") assert.equal(options.timeoutMs, 45_000);
       return options.name === "celld" ? { stopped: true, state: { pid: 321 } } : { stopped: false };
     },
   }), 0);
@@ -337,14 +338,15 @@ test("up starts the configured ingress before celld and closes it after celld ex
     env: { SOBJECTS_CELLD_BIN: "/opt/celld" },
     loadConfig: async () => INGRESS_CONFIG,
     startIngressServer: fakeIngress(events),
-    spawnProcess: () => {
-      events.push(["celld"]);
+    spawnProcess: (_executable, args) => {
+      events.push(["celld", args]);
       return childWithExit(0);
     },
   });
 
   assert.equal(exitCode, 0);
   assert.deepEqual(events.map(([name]) => name), ["start", "celld", "close"]);
+  assert.equal(events[1][1].at(-1), "--trust-forwarded-headers");
   assert.equal(events[0][1].listen, "0.0.0.0:443");
   assert.deepEqual(events[0][1].tls, INGRESS_CONFIG.ingress.tls);
   assert.match(output.stdout[0], /Ingress listening on https:\/\/0\.0\.0\.0:443 for agents\.example\.test/);
@@ -665,4 +667,18 @@ test("up and dev run the selected celld version", async () => {
   assert.equal(await run(["up"], capture().io, dependencies), 0);
   assert.equal(await run(["dev"], capture().io, dependencies), 0);
   assert.deepEqual(versions, ["0.6.1", "/celld-0.6.1", "0.6.1", "/celld-0.6.1"]);
+});
+
+test("up does not trust forwarded headers when celld is reachable beyond loopback", async () => {
+  const output = capture();
+  let celldArgs;
+  const exitCode = await run(["up"], output.io, {
+    env: { SOBJECTS_CELLD_BIN: "/opt/celld" },
+    loadConfig: async () => ({ ...INGRESS_CONFIG, listen: "10.0.0.5:8080" }),
+    startIngressServer: fakeIngress([]),
+    spawnProcess: (_executable, args) => { celldArgs = args; return childWithExit(0); },
+  });
+  assert.equal(exitCode, 0);
+  assert.equal(celldArgs.includes("--trust-forwarded-headers"), false);
+  assert.match(output.stderr[0], /not loopback, so celld will not trust/);
 });

@@ -107,6 +107,7 @@ export async function stopService({
   isRunning = pidMatchesExecutable,
   wait = delay,
   timeoutMs = 10_000,
+  onWait = () => {},
 } = {}) {
   const statePath = join(stateDirectory, serviceFiles(name).stateFile);
   const state = await readState(statePath);
@@ -124,9 +125,17 @@ export async function stopService({
   }
 
   const deadline = Date.now() + timeoutMs;
-  while (isRunning(state.pid, state.executable, state.marker) && Date.now() < deadline) await wait(100);
+  let announced = false;
+  const announceAfter = Date.now() + 1_000;
+  while (isRunning(state.pid, state.executable, state.marker) && Date.now() < deadline) {
+    if (!announced && Date.now() >= announceAfter) {
+      announced = true;
+      onWait();
+    }
+    await wait(100);
+  }
   if (isRunning(state.pid, state.executable, state.marker)) {
-    throw new Error(`${name} pid ${state.pid} did not stop after SIGTERM; it was left running.`);
+    throw new Error(`${name} pid ${state.pid} did not stop within ${Math.round(timeoutMs / 1000)}s of SIGTERM; it was left running.`);
   }
   await unlink(statePath).catch(() => {});
   return { stopped: true, state };

@@ -32,7 +32,8 @@ export function renderSystemdUnit({ nodeExecutable, cliScript, configPath, syste
     "Restart=on-failure",
     "RestartSec=2",
     "KillMode=mixed",
-    "TimeoutStopSec=30",
+    // celld drains for up to CELLD_SHUTDOWN_TOTAL_MS (40 s by default).
+    "TimeoutStopSec=45",
     "SuccessExitStatus=143",
     "NoNewPrivileges=true",
   );
