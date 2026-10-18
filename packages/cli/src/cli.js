@@ -178,6 +178,18 @@ async function runUp(args, io, dependencies) {
   const argsForCelld = ["--bucket", config.bucket, "--listen", config.listen];
   if (config.endpoint) argsForCelld.push("--endpoint", config.endpoint);
   if (config.region) argsForCelld.push("--region", config.region);
+  if (config.ingress) {
+    // The ingress replaces X-Forwarded-Host/Proto, so celld can use them for
+    // request.url. Only trust them when nothing but local processes, such as
+    // the ingress, can reach celld; otherwise clients could spoof them.
+    if (isLoopbackAddress(config.listen)) {
+      argsForCelld.push("--trust-forwarded-headers");
+    } else {
+      io.error(
+        `Warning: [celld].listen ${config.listen} is not loopback, so celld will not trust the ingress's forwarded headers and request.url keeps celld's own scheme and host.`,
+      );
+    }
+  }
   const stateDirectory = defaultStateDirectory(dependencies.env);
   if (detached) {
     let state;
@@ -473,6 +485,16 @@ async function runService(args, io, { env, cwd, loadConfig, nodeExecutable, plat
   return 0;
 }
 
+function celldShutdownBoundMs(env) {
+  const value = Number(env.CELLD_SHUTDOWN_TOTAL_MS);
+  return Number.isInteger(value) && value > 0 ? value : 40_000;
+}
+
+function isLoopbackAddress(address) {
+  const host = address.slice(0, address.lastIndexOf(":")).replace(/^\[(.*)\]$/, "$1");
+  return host === "localhost" || host === "::1" || /^127\./.test(host);
+}
+
 function subscribeToSignal(signal, handler) {
   process.on(signal, handler);
   return () => process.off(signal, handler);
@@ -521,7 +543,14 @@ async function runDown(args, io, { env, stopService }) {
   // Stop the ingress first so clients see a refused connection rather than a 502.
   for (const name of ["ingress", "celld"]) {
     try {
-      const result = await stopService({ name, stateDirectory });
+      const options = { name, stateDirectory };
+      if (name === "celld") {
+        // celld drains cells and releases its lease before exiting, bounded by
+        // CELLD_SHUTDOWN_TOTAL_MS; wait a little longer than that bound.
+        options.timeoutMs = celldShutdownBoundMs(env) + 5_000;
+        options.onWait = () => io.log("Waiting for celld to drain and release its lease...");
+      }
+      const result = await stopService(options);
       if (result.stopped) io.log(`Stopped ${name} (pid ${result.state.pid}).`);
       else if (result.stale) io.log(`${name} was not running (stale state removed).`);
       else if (name === "celld") io.log("celld is not running.");

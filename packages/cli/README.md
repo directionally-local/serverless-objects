@@ -62,8 +62,10 @@ selected by SNI) and reload on `SIGHUP`. The ingress tunnels WebSockets,
 rewrites `X-Forwarded-*` and `CF-Connecting-IP`, can redirect HTTP to HTTPS,
 answers `/.well-known/sobjects/health`, and writes JSON access logs without
 query strings. Plaintext listeners are allowed only on loopback. ACME is not
-implemented yet. celld still reports `http://` in a Worker's `request.url`;
-use `X-Forwarded-Proto` for the client scheme.
+implemented yet. When `[celld].listen` is loopback, `up` passes
+`--trust-forwarded-headers` so a Worker's `request.url` has the client's
+scheme and host; with a non-loopback listener it warns and leaves them off,
+since clients could reach celld directly and spoof those headers.
 
 ## Wrangler config handling
 
@@ -82,4 +84,4 @@ values are filled from the project's `sobjects.toml`; explicit CLI flags and
 standard environment variables take precedence. Credentials continue to come
 from celld's normal credential chain.
 
-The CLI is a pre-alpha test candidate, not a production release. Unit and integration checks include loopback service lifecycle and a real build using `@cloudflare/vite-plugin` 1.62.3; the full Agents SDK app has not yet been run end-to-end through the CLI. The ingress was smoke-tested in front of `celld dev` with HTTPS, Durable Object state, and a WebSocket echo. Generated plists pass `plutil -lint`; units have not yet been loaded into launchd or systemd. Bucket-backed `up`, ACME, and dashboard are not ready. The npm package is not published. See the [project README](../../README.md) for scope and roadmap.
+The CLI is a pre-alpha test candidate, not a production release. Unit and integration checks include loopback service lifecycle and a real build using `@cloudflare/vite-plugin` 1.62.3; the full Agents SDK app has not yet been run end-to-end through the CLI. Bucket-backed `deploy` and `up --detach` with the ingress were verified against a local S3-compatible store (SeaweedFS), including restore from an empty local cache; hosted buckets such as R2 are untested. Generated plists pass `plutil -lint`; units have not yet been loaded into launchd or systemd. ACME and dashboard are not ready. The npm package is not published. See the [project README](../../README.md) for scope and roadmap.
