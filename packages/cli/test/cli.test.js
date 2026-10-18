@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { request } from "node:http";
+import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { test } from "node:test";
 import { run } from "../src/cli.js";
@@ -264,6 +267,7 @@ test("status, down, and logs delegate with the configured state directory", asyn
     env,
     getServiceStatus: async (options) => {
       stateDirectory = options.stateDirectory;
+      if (options.name === "ingress") return { running: false };
       return { running: true, state: { pid: 321, startedAt: "now", logPath: "/tmp/celld.log" } };
     },
   }), 0);
@@ -275,10 +279,10 @@ test("status, down, and logs delegate with the configured state directory", asyn
     env,
     stopService: async (options) => {
       assert.equal(options.stateDirectory, "/tmp/sobjects-state");
-      return { stopped: true, state: { pid: 321 } };
+      return options.name === "celld" ? { stopped: true, state: { pid: 321 } } : { stopped: false };
     },
   }), 0);
-  assert.match(downOutput.stdout[0], /Stopped celld/);
+  assert.deepEqual(downOutput.stdout, ["Stopped celld (pid 321)."]);
 
   const logsOutput = capture();
   assert.equal(await run(["logs", "--tail", "3"], logsOutput.io, {
@@ -303,4 +307,185 @@ test("rejects commands that are not implemented", async () => {
   const exitCode = await run(["migrate"], output.io);
   assert.equal(exitCode, 2);
   assert.match(output.stderr[0], /Unknown option or command: migrate/);
+});
+
+const INGRESS_CONFIG = Object.freeze({
+  bucket: "s3://example/fleet",
+  listen: "127.0.0.1:8080",
+  ingress: {
+    listen: "0.0.0.0:443",
+    tls: { cert: "/tls/cert.pem", key: "/tls/key.pem" },
+    routes: [{ hostname: "agents.example.test", upstream: "http://127.0.0.1:8080" }],
+    accessLog: "-",
+  },
+});
+
+function fakeIngress(events) {
+  return async (options) => {
+    events.push(["start", options]);
+    return {
+      reloadCertificates: () => events.push(["reload"]),
+      close: async () => { events.push(["close"]); },
+    };
+  };
+}
+
+test("up starts the configured ingress before celld and closes it after celld exits", async () => {
+  const output = capture();
+  const events = [];
+  const exitCode = await run(["up"], output.io, {
+    env: { SOBJECTS_CELLD_BIN: "/opt/celld" },
+    loadConfig: async () => INGRESS_CONFIG,
+    startIngressServer: fakeIngress(events),
+    spawnProcess: () => {
+      events.push(["celld"]);
+      return childWithExit(0);
+    },
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(events.map(([name]) => name), ["start", "celld", "close"]);
+  assert.equal(events[0][1].listen, "0.0.0.0:443");
+  assert.deepEqual(events[0][1].tls, INGRESS_CONFIG.ingress.tls);
+  assert.match(output.stdout[0], /Ingress listening on https:\/\/0\.0\.0\.0:443 for agents\.example\.test/);
+});
+
+test("up does not start celld when the ingress cannot listen", async () => {
+  const output = capture();
+  let spawned = false;
+  const exitCode = await run(["up"], output.io, {
+    env: { SOBJECTS_CELLD_BIN: "/opt/celld" },
+    loadConfig: async () => INGRESS_CONFIG,
+    startIngressServer: async () => { throw new Error("Ingress could not listen on 0.0.0.0:443: EACCES"); },
+    spawnProcess: () => { spawned = true; return childWithExit(0); },
+  });
+  assert.equal(exitCode, 1);
+  assert.equal(spawned, false);
+  assert.match(output.stderr[0], /EACCES/);
+});
+
+test("up --detach starts celld and a detached ingress, rolling back celld on failure", async () => {
+  const started = [];
+  const stopped = [];
+  const dependencies = (failIngress) => ({
+    cwd: "/work/app",
+    env: { SOBJECTS_STATE_DIR: "/tmp/state", SOBJECTS_CELLD_BIN: "/opt/celld" },
+    nodeExecutable: "/usr/bin/node",
+    loadConfig: async () => INGRESS_CONFIG,
+    startService: async (options) => {
+      started.push(options);
+      if (failIngress && options.name === "ingress") throw new Error("ingress did not start");
+      return { pid: started.length, logPath: `/tmp/state/${options.name ?? "celld"}.log` };
+    },
+    stopService: async (options) => { stopped.push(options); return { stopped: true, state: { pid: 1 } }; },
+  });
+
+  const ok = capture();
+  assert.equal(await run(["up", "--detach", "--config", "ops/so.toml"], ok.io, dependencies(false)), 0);
+  assert.equal(started.length, 2);
+  assert.equal(started[1].name, "ingress");
+  assert.equal(started[1].executable, "/usr/bin/node");
+  assert.match(started[1].args[0], /bin\/sobjects\.mjs$/);
+  assert.deepEqual(started[1].args.slice(1), ["ingress", "--config", resolve("/work/app", "ops/so.toml")]);
+  assert.equal(started[1].marker, started[1].args[0]);
+  assert.match(ok.stdout.join("\n"), /Started ingress on 0\.0\.0\.0:443/);
+  assert.deepEqual(stopped, []);
+
+  started.length = 0;
+  const failed = capture();
+  assert.equal(await run(["up", "--detach"], failed.io, dependencies(true)), 1);
+  assert.deepEqual(stopped, [{ stateDirectory: "/tmp/state" }]);
+  assert.match(failed.stderr.join("\n"), /Stopping celld/);
+});
+
+test("ingress runs until a signal and reloads certificates on SIGHUP", async () => {
+  const output = capture();
+  const events = [];
+  const handlers = new Map();
+  const result = run(["ingress"], output.io, {
+    env: {},
+    loadConfig: async () => INGRESS_CONFIG,
+    startIngressServer: fakeIngress(events),
+    onSignal: (signal, handler) => {
+      handlers.set(signal, handler);
+      return () => handlers.delete(signal);
+    },
+  });
+  while (!handlers.has("SIGTERM")) await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  handlers.get("SIGHUP")();
+  handlers.get("SIGTERM")();
+  assert.equal(await result, 0);
+  assert.deepEqual(events.map(([name]) => name), ["start", "reload", "close"]);
+  assert.equal(handlers.size, 0);
+  assert.match(output.stdout.join("\n"), /Reloaded ingress TLS certificates/);
+});
+
+test("ingress requires an [ingress] table", async () => {
+  const output = capture();
+  const exitCode = await run(["ingress"], output.io, {
+    loadConfig: async () => ({ bucket: "s3://example/fleet", listen: "127.0.0.1:8080" }),
+  });
+  assert.equal(exitCode, 2);
+  assert.match(output.stderr[0], /No \[ingress\] table/);
+});
+
+test("ingress writes JSON access logs to the state directory by default", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "sobjects-cli-ingress-"));
+  try {
+    const output = capture();
+    const handlers = new Map();
+    let address;
+    const result = run(["ingress"], output.io, {
+      env: { SOBJECTS_STATE_DIR: stateDirectory },
+      loadConfig: async () => ({
+        ...INGRESS_CONFIG,
+        ingress: {
+          listen: "127.0.0.1:0",
+          routes: [{ hostname: "*", upstream: "http://127.0.0.1:1" }],
+        },
+      }),
+      startIngressServer: async (options) => {
+        const { startIngress } = await import("../src/ingress.js");
+        const instance = await startIngress(options);
+        address = instance.address;
+        return instance;
+      },
+      onSignal: (signal, handler) => {
+        handlers.set(signal, handler);
+        return () => handlers.delete(signal);
+      },
+    });
+    while (!handlers.has("SIGTERM")) await new Promise((resolvePromise) => setImmediate(resolvePromise));
+    const status = await new Promise((resolvePromise, reject) => {
+      request({ port: address.port, host: "127.0.0.1", path: "/x?secret=1", headers: { host: "a.test" } }, (response) => {
+        response.resume();
+        response.on("end", () => resolvePromise(response.statusCode));
+      }).on("error", reject).end();
+    });
+    assert.equal(status, 502);
+    handlers.get("SIGTERM")();
+    assert.equal(await result, 0);
+    const [line] = (await readFile(join(stateDirectory, "access.log"), "utf8")).trim().split("\n");
+    const entry = JSON.parse(line);
+    assert.equal(entry.status, 502);
+    assert.equal(entry.path, "/x");
+    assert.equal(entry.host, "a.test");
+  } finally {
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test("logs --ingress reads the ingress service log", async () => {
+  const output = capture();
+  let name;
+  assert.equal(await run(["logs", "--ingress", "--tail", "5"], output.io, {
+    env: {},
+    readServiceLogs: async (options) => {
+      name = options.name;
+      assert.equal(options.lines, 5);
+      return { output: "ingress line" };
+    },
+  }), 0);
+  assert.equal(name, "ingress");
+  assert.deepEqual(output.stdout, ["ingress line"]);
 });
