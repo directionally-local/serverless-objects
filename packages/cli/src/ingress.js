@@ -173,7 +173,7 @@ function createHandlers({ router, secure, accessLog, tunnels }) {
     }
 
     if (!route) {
-      sendText(clientResponse, 421, "No route for this hostname.\n");
+      bytes = sendText(clientResponse, 421, "No route for this hostname.\n");
       finish(421);
       return;
     }
@@ -198,7 +198,7 @@ function createHandlers({ router, secure, accessLog, tunnels }) {
     });
     upstreamRequest.on("error", () => {
       if (!clientResponse.headersSent) {
-        sendText(clientResponse, 502, "Upstream unavailable.\n");
+        bytes = sendText(clientResponse, 502, "Upstream unavailable.\n");
         finish(502);
       } else {
         clientResponse.destroy();
@@ -277,8 +277,8 @@ function createRedirectHandler({ router, httpsPort, accessLog }) {
     const route = router.match(clientRequest.headers.host);
     const entry = { ...baseLogEntry(clientRequest, route), redirect: true };
     if (!route) {
-      sendText(clientResponse, 421, "No route for this hostname.\n");
-      accessLog({ ...entry, status: 421, bytes: 0, duration_ms: elapsedMs(started) });
+      const bytes = sendText(clientResponse, 421, "No route for this hostname.\n");
+      accessLog({ ...entry, status: 421, bytes, duration_ms: elapsedMs(started) });
       return;
     }
     const host = normalizeHost(clientRequest.headers.host);
@@ -403,6 +403,7 @@ function sendText(response, status, body) {
     "content-length": Buffer.byteLength(body),
   });
   response.end(body);
+  return Buffer.byteLength(body);
 }
 
 function elapsedMs(started) {

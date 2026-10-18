@@ -1,17 +1,21 @@
 import { spawn } from "node:child_process";
-import { readFileSync, statSync } from "node:fs";
-import { access } from "node:fs/promises";
+import { createWriteStream, readFileSync, statSync } from "node:fs";
+import { access, mkdir } from "node:fs/promises";
 import { delimiter, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { loadSobjectsConfig } from "./config.js";
 import { defaultDataDirectory, installCelld } from "./engine.js";
+import { HEALTH_PATH, startIngress } from "./ingress.js";
 import { prepareWranglerProject } from "./wrangler.js";
 import {
   defaultStateDirectory,
-  getCelldStatus,
-  readCelldLogs,
-  startCelldDetached,
-  stopCelld,
+  getServiceStatus as getDetachedStatus,
+  readServiceLogs as readDetachedLogs,
+  startDetached,
+  stopService as stopDetached,
 } from "./service.js";
+
+const CLI_SCRIPT = fileURLToPath(new URL("../bin/sobjects.mjs", import.meta.url));
 
 const { version } = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
@@ -22,10 +26,11 @@ export const helpText = `Serverless Objects — self-hostable Workers infrastruc
 Usage: sobjects <command> [options]
 
 Commands:
-  up [--config PATH] [--detach]  Start a celld node
-  down                           Stop a detached celld node
-  status                         Show detached celld process status
-  logs [--tail N]                Show recent detached celld logs
+  up [--config PATH] [--detach]  Start a celld node and its ingress, if configured
+  down                           Stop a detached node and ingress
+  status                         Show detached process status
+  logs [--ingress] [--tail N]    Show recent detached celld or ingress logs
+  ingress [--config PATH]        Run only the TLS ingress in the foreground
   dev [project] [options]        Run a project locally with celld
   deploy [project] [options]     Deploy a project with celld
 
@@ -39,8 +44,14 @@ SOBJECTS_CELLD_BIN to use an existing binary instead.`;
 const upHelpText = `Usage: sobjects up [--config PATH] [--detach]
 
 Read [celld] settings from sobjects.toml, install pinned celld if needed, and
-run the node in the foreground by default. Use --detach to run it in the
+run the node in the foreground by default. When [ingress] is configured, the
+TLS ingress starts first and proxies to celld. Use --detach to run both in the
 background. The default config path is ./sobjects.toml.`;
+
+const ingressHelpText = `Usage: sobjects ingress [--config PATH]
+
+Run the ingress described by [ingress] in sobjects.toml in the foreground.
+SIGHUP reloads TLS certificates from disk. Health: ${HEALTH_PATH}`;
 
 export async function run(
   argv = process.argv.slice(2),
@@ -52,10 +63,13 @@ export async function run(
     installEngine = installCelld,
     loadConfig = loadSobjectsConfig,
     prepareProject = prepareWranglerProject,
-    startService = startCelldDetached,
-    getServiceStatus = getCelldStatus,
-    readServiceLogs = readCelldLogs,
-    stopService = stopCelld,
+    startService = startDetached,
+    getServiceStatus = getDetachedStatus,
+    readServiceLogs = readDetachedLogs,
+    stopService = stopDetached,
+    startIngressServer = startIngress,
+    onSignal = subscribeToSignal,
+    nodeExecutable = process.execPath,
   } = {},
 ) {
   if (argv.length === 0 || (argv.length === 1 && ["--help", "-h"].includes(argv[0]))) {
@@ -70,7 +84,21 @@ export async function run(
 
   const [command, ...args] = argv;
   if (command === "up") {
-    return runUp(args, io, { spawnProcess, env, cwd, installEngine, loadConfig, startService });
+    return runUp(args, io, {
+      spawnProcess,
+      env,
+      cwd,
+      installEngine,
+      loadConfig,
+      startService,
+      stopService,
+      startIngressServer,
+      onSignal,
+      nodeExecutable,
+    });
+  }
+  if (command === "ingress") {
+    return runIngress(args, io, { env, cwd, loadConfig, startIngressServer, onSignal });
   }
   if (command === "down") return runDown(args, io, { env, stopService });
   if (command === "status") return runStatus(args, io, { env, getServiceStatus });
@@ -90,32 +118,9 @@ async function runUp(args, io, dependencies) {
     return 0;
   }
 
-  let configPath = "sobjects.toml";
-  let detached = false;
-  for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index];
-    if (argument === "--detach" || argument === "-d") {
-      detached = true;
-    } else if (argument === "--config") {
-      const value = args[index + 1];
-      if (!value || value.startsWith("--")) {
-        io.error("Option --config requires a path.");
-        return 2;
-      }
-      configPath = value;
-      index += 1;
-    } else if (argument.startsWith("--config=")) {
-      configPath = argument.slice("--config=".length);
-      if (!configPath) {
-        io.error("Option --config requires a path.");
-        return 2;
-      }
-    } else {
-      io.error(`Unknown sobjects up option: ${argument}`);
-      io.error("Run 'sobjects up --help' for usage.");
-      return 2;
-    }
-  }
+  const options = parseConfigOptions(args, io, "up", { allowDetach: true });
+  if (!options) return 2;
+  const { configPath, detached } = options;
 
   let config;
   try {
@@ -136,25 +141,189 @@ async function runUp(args, io, dependencies) {
   const argsForCelld = ["--bucket", config.bucket, "--listen", config.listen];
   if (config.endpoint) argsForCelld.push("--endpoint", config.endpoint);
   if (config.region) argsForCelld.push("--region", config.region);
+  const stateDirectory = defaultStateDirectory(dependencies.env);
   if (detached) {
+    let state;
     try {
-      const state = await dependencies.startService({
+      state = await dependencies.startService({
         executable,
         args: argsForCelld,
         env: dependencies.env,
         cwd: dependencies.cwd,
-        stateDirectory: defaultStateDirectory(dependencies.env),
+        stateDirectory,
         spawnProcess: dependencies.spawnProcess,
       });
-      io.log(`Started celld in the background (pid ${state.pid}).`);
-      io.log(`Log file: ${state.logPath}`);
+    } catch (error) {
+      io.error(error.message);
+      return 1;
+    }
+    io.log(`Started celld in the background (pid ${state.pid}).`);
+    io.log(`Log file: ${state.logPath}`);
+    if (!config.ingress) return 0;
+
+    try {
+      const ingressState = await dependencies.startService({
+        name: "ingress",
+        executable: dependencies.nodeExecutable,
+        args: [CLI_SCRIPT, "ingress", "--config", resolve(dependencies.cwd, configPath)],
+        marker: CLI_SCRIPT,
+        env: dependencies.env,
+        cwd: dependencies.cwd,
+        stateDirectory,
+        spawnProcess: dependencies.spawnProcess,
+      });
+      io.log(`Started ingress on ${config.ingress.listen} in the background (pid ${ingressState.pid}).`);
+      io.log(`Log file: ${ingressState.logPath}`);
       return 0;
+    } catch (error) {
+      io.error(error.message);
+      io.error("Stopping celld because the ingress did not start.");
+      await dependencies.stopService({ stateDirectory }).catch((stopError) => io.error(stopError.message));
+      return 1;
+    }
+  }
+
+  let ingress;
+  if (config.ingress) {
+    try {
+      ingress = await startIngressRuntime(config.ingress, io, { ...dependencies, stateDirectory });
     } catch (error) {
       io.error(error.message);
       return 1;
     }
   }
-  return runProcess(executable, argsForCelld, io, dependencies.spawnProcess);
+  try {
+    return await runProcess(executable, argsForCelld, io, dependencies.spawnProcess);
+  } finally {
+    await ingress?.close();
+  }
+}
+
+async function runIngress(args, io, dependencies) {
+  if (args.length === 1 && ["--help", "-h"].includes(args[0])) {
+    io.log(ingressHelpText);
+    return 0;
+  }
+  const options = parseConfigOptions(args, io, "ingress");
+  if (!options) return 2;
+
+  let config;
+  try {
+    config = await dependencies.loadConfig(resolve(dependencies.cwd, options.configPath));
+  } catch (error) {
+    io.error(error.message);
+    return 2;
+  }
+  if (!config.ingress) {
+    io.error(`No [ingress] table in ${options.configPath}.`);
+    return 2;
+  }
+
+  let ingress;
+  try {
+    ingress = await startIngressRuntime(config.ingress, io, {
+      ...dependencies,
+      stateDirectory: defaultStateDirectory(dependencies.env),
+    });
+  } catch (error) {
+    io.error(error.message);
+    return 1;
+  }
+
+  return new Promise((resolvePromise) => {
+    const unsubscribe = [];
+    const stop = (code) => {
+      for (const off of unsubscribe) off();
+      ingress.close().then(() => resolvePromise(code));
+    };
+    unsubscribe.push(dependencies.onSignal("SIGINT", () => stop(130)));
+    unsubscribe.push(dependencies.onSignal("SIGTERM", () => stop(0)));
+    unsubscribe.push(dependencies.onSignal("SIGHUP", () => {
+      try {
+        ingress.reloadCertificates();
+        io.log("Reloaded ingress TLS certificates.");
+      } catch (error) {
+        io.error(`Kept the previous certificates: ${error.message}`);
+      }
+    }));
+  });
+}
+
+async function startIngressRuntime(ingressConfig, io, { startIngressServer, stateDirectory }) {
+  const accessLog = await openAccessLog(ingressConfig.accessLog ?? join(stateDirectory, "access.log"), io);
+  let ingress;
+  try {
+    ingress = await startIngressServer({
+      listen: ingressConfig.listen,
+      redirectHttp: ingressConfig.redirectHttp,
+      tls: ingressConfig.tls,
+      routes: ingressConfig.routes,
+      accessLog: accessLog.write,
+    });
+  } catch (error) {
+    await accessLog.close();
+    throw error;
+  }
+  const scheme = ingressConfig.tls ? "https" : "http";
+  io.log(`Ingress listening on ${scheme}://${ingressConfig.listen} for ${ingressConfig.routes.map((route) => route.hostname).join(", ")}.`);
+  return {
+    reloadCertificates: ingress.reloadCertificates,
+    close: async () => {
+      await ingress.close();
+      await accessLog.close();
+    },
+  };
+}
+
+async function openAccessLog(target, io) {
+  if (target === "-") {
+    return { write: (entry) => io.log(JSON.stringify(entry)), close: async () => {} };
+  }
+  await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+  const stream = createWriteStream(target, { flags: "a", mode: 0o600 });
+  await new Promise((resolvePromise, reject) => {
+    stream.once("open", resolvePromise);
+    stream.once("error", (error) => reject(new Error(`Could not open access log ${target}: ${error.message}`)));
+  });
+  return {
+    write: (entry) => stream.write(`${JSON.stringify(entry)}\n`),
+    close: () => new Promise((resolvePromise) => stream.end(resolvePromise)),
+  };
+}
+
+function parseConfigOptions(args, io, command, { allowDetach = false } = {}) {
+  let configPath = "sobjects.toml";
+  let detached = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (allowDetach && (argument === "--detach" || argument === "-d")) {
+      detached = true;
+    } else if (argument === "--config") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) {
+        io.error("Option --config requires a path.");
+        return undefined;
+      }
+      configPath = value;
+      index += 1;
+    } else if (argument.startsWith("--config=")) {
+      configPath = argument.slice("--config=".length);
+      if (!configPath) {
+        io.error("Option --config requires a path.");
+        return undefined;
+      }
+    } else {
+      io.error(`Unknown sobjects ${command} option: ${argument}`);
+      io.error(`Run 'sobjects ${command} --help' for usage.`);
+      return undefined;
+    }
+  }
+  return { configPath, detached };
+}
+
+function subscribeToSignal(signal, handler) {
+  process.on(signal, handler);
+  return () => process.off(signal, handler);
 }
 
 async function runStatus(args, io, { env, getServiceStatus }) {
@@ -162,15 +331,24 @@ async function runStatus(args, io, { env, getServiceStatus }) {
     io.error("Usage: sobjects status");
     return 2;
   }
+  const stateDirectory = defaultStateDirectory(env);
   try {
-    const result = await getServiceStatus({ stateDirectory: defaultStateDirectory(env) });
-    if (!result.running) {
+    const result = await getServiceStatus({ stateDirectory });
+    if (result.running) {
+      io.log(`celld is running (pid ${result.state.pid}; started ${result.state.startedAt}).`);
+      io.log(`Log file: ${result.state.logPath}`);
+    } else {
       io.log(result.stale ? "celld is not running (stale state removed)." : "celld is not running.");
-      return 1;
     }
-    io.log(`celld is running (pid ${result.state.pid}; started ${result.state.startedAt}).`);
-    io.log(`Log file: ${result.state.logPath}`);
-    return 0;
+
+    const ingress = await getServiceStatus({ name: "ingress", stateDirectory });
+    if (ingress.running) {
+      io.log(`ingress is running (pid ${ingress.state.pid}; started ${ingress.state.startedAt}).`);
+      io.log(`Log file: ${ingress.state.logPath}`);
+    } else if (ingress.stale) {
+      io.log("ingress is not running (stale state removed).");
+    }
+    return result.running && !ingress.stale ? 0 : 1;
   } catch (error) {
     io.error(error.message);
     return 1;
@@ -186,47 +364,54 @@ async function runDown(args, io, { env, stopService }) {
     io.error("Usage: sobjects down");
     return 2;
   }
-  try {
-    const result = await stopService({ stateDirectory: defaultStateDirectory(env) });
-    if (result.stopped) io.log(`Stopped celld (pid ${result.state.pid}).`);
-    else io.log(result.stale ? "celld was not running (stale state removed)." : "celld is not running.");
-    return 0;
-  } catch (error) {
-    io.error(error.message);
-    return 1;
+  const stateDirectory = defaultStateDirectory(env);
+  let exitCode = 0;
+  // Stop the ingress first so clients see a refused connection rather than a 502.
+  for (const name of ["ingress", "celld"]) {
+    try {
+      const result = await stopService({ name, stateDirectory });
+      if (result.stopped) io.log(`Stopped ${name} (pid ${result.state.pid}).`);
+      else if (result.stale) io.log(`${name} was not running (stale state removed).`);
+      else if (name === "celld") io.log("celld is not running.");
+    } catch (error) {
+      io.error(error.message);
+      exitCode = 1;
+    }
   }
+  return exitCode;
 }
 
 async function runLogs(args, io, { env, readServiceLogs }) {
+  const usage = "Usage: sobjects logs [--ingress] [--tail N]";
   if (args.length === 1 && ["--help", "-h"].includes(args[0])) {
-    io.log("Usage: sobjects logs [--tail N]");
+    io.log(usage);
     return 0;
   }
   let lines = 100;
+  let name = "celld";
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
-    if (argument === "--tail" || argument === "-n") {
-      const value = Number(args[index + 1]);
-      if (!Number.isInteger(value) || value < 1 || value > 10_000) {
-        io.error("--tail requires a number from 1 to 10000.");
-        return 2;
-      }
-      lines = value;
+    let value;
+    if (argument === "--ingress") {
+      name = "ingress";
+      continue;
+    } else if (argument === "--tail" || argument === "-n") {
+      value = args[index + 1];
       index += 1;
     } else if (argument.startsWith("--tail=")) {
-      const value = Number(argument.slice("--tail=".length));
-      if (!Number.isInteger(value) || value < 1 || value > 10_000) {
-        io.error("--tail requires a number from 1 to 10000.");
-        return 2;
-      }
-      lines = value;
+      value = argument.slice("--tail=".length);
     } else {
-      io.error("Usage: sobjects logs [--tail N]");
+      io.error(usage);
+      return 2;
+    }
+    lines = Number(value);
+    if (!Number.isInteger(lines) || lines < 1 || lines > 10_000) {
+      io.error("--tail requires a number from 1 to 10000.");
       return 2;
     }
   }
   try {
-    const result = await readServiceLogs({ stateDirectory: defaultStateDirectory(env), lines });
+    const result = await readServiceLogs({ name, stateDirectory: defaultStateDirectory(env), lines });
     if (result.output) io.log(result.output);
     return 0;
   } catch (error) {
