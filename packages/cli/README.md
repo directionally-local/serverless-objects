@@ -8,6 +8,7 @@ The `sobjects` CLI package for Serverless Objects.
 - `sobjects status`, `sobjects logs [--ingress] [--tail N]`, and `sobjects down` manage the processes started by `up --detach`.
 - `sobjects ingress [--config PATH]` runs only the TLS ingress in the foreground.
 - `sobjects service print|install` generates a systemd or launchd unit for `up`.
+- `sobjects upgrade [--engine-version V | --rollback | --status]` installs and selects a pinned celld release.
 - `sobjects dev [project] [celld dev options]` runs local development with celld.
 - `sobjects deploy [project] [celld deploy options]` deploys through celld.
 - `sobjects --help` and `sobjects --version` show CLI help and version.
@@ -26,6 +27,17 @@ in this file. The default listener is `127.0.0.1:8080`. Do not expose celld's
 HTTP listener directly to the internet; put the ingress in front of it.
 Detached mode only manages local PIDs and logs; for a supervised service use
 `sobjects service`.
+
+## Engine upgrades
+
+Every installable celld version is pinned in the CLI with a SHA-256 for each
+release asset (currently 0.6.2, the default, and 0.6.1). `sobjects upgrade`
+downloads and verifies the CLI's pinned version (or `--engine-version`),
+selects it, and records the previous selection; `--rollback` switches back and
+`--status` lists the versions. The selection is stored in
+`$SOBJECTS_DATA_DIR/engines/celld.json`, and `up`, `dev`, and `deploy` use it.
+A failed download or checksum leaves the current selection in place. Running
+nodes keep their version until restarted; `upgrade` does not restart them.
 
 ## Service units
 

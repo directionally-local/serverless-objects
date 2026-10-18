@@ -132,7 +132,7 @@ test("up installs pinned celld and starts it with validated config", async () =>
     },
   });
 
-  assert.deepEqual(installOptions, { dataDirectory: "/data/sobjects" });
+  assert.deepEqual(installOptions, { dataDirectory: "/data/sobjects", version: "0.6.2" });
   assert.equal(configPath, resolve(cwd, "ops/sobjects.toml"));
   assert.deepEqual(invocation, {
     executable: "/data/sobjects/engines/celld-0.6.2/celld",
@@ -590,4 +590,79 @@ test("service print for a system unit uses the systemd state directory", async (
   const unit = output.stdout.join("\n");
   assert.match(unit, /Environment=SOBJECTS_STATE_DIR=\/var\/lib\/serverless-objects\/state/);
   assert.doesNotMatch(unit, /\/home\/me/);
+});
+
+function upgradeHarness(initialSelection) {
+  const state = { selection: initialSelection, installs: [] };
+  const output = capture();
+  const dependencies = {
+    env: { SOBJECTS_DATA_DIR: "/data", SOBJECTS_STATE_DIR: "/state" },
+    installEngine: async ({ dataDirectory, version }) => {
+      assert.equal(dataDirectory, "/data");
+      state.installs.push(version);
+      return `/data/engines/celld-${version}/celld`;
+    },
+    readSelection: async () => state.selection,
+    writeSelection: async (_directory, selection) => { state.selection = selection; },
+    isInstalled: async (_directory, version) => state.installs.includes(version),
+    getServiceStatus: async () => ({ running: true }),
+  };
+  return { state, output, dependencies };
+}
+
+test("upgrade selects a pinned version, records the previous one, and rolls back", async () => {
+  const { state, output, dependencies } = upgradeHarness(undefined);
+  assert.equal(await run(["upgrade", "--engine-version", "v0.6.1"], output.io, dependencies), 0);
+  assert.deepEqual(state.installs, ["0.6.1"]);
+  assert.equal(state.selection.version, "0.6.1");
+  assert.equal(state.selection.previous, "0.6.2");
+  assert.match(output.stdout.join("\n"), /Selected celld 0\.6\.1 \(was 0\.6\.2\)/);
+  assert.match(output.stdout.join("\n"), /detached node still runs the old version/);
+
+  const rollback = capture();
+  assert.equal(await run(["upgrade", "--rollback"], rollback.io, dependencies), 0);
+  assert.equal(state.selection.version, "0.6.2");
+  assert.equal(state.selection.previous, "0.6.1");
+
+  const status = capture();
+  assert.equal(await run(["upgrade", "--status"], status.io, dependencies), 0);
+  assert.match(status.stdout.join("\n"), /Selected celld: 0\.6\.2\n/);
+  assert.match(status.stdout.join("\n"), /\* 0\.6\.2 \(installed\)/);
+  assert.match(status.stdout.join("\n"), /Rollback target: 0\.6\.1/);
+});
+
+test("upgrade keeps the current selection when installation fails or the version is unknown", async () => {
+  const { state, output, dependencies } = upgradeHarness({ version: "0.6.2" });
+  dependencies.installEngine = async () => { throw new Error("checksum mismatch"); };
+  assert.equal(await run(["upgrade", "--engine-version", "0.6.1"], output.io, dependencies), 1);
+  assert.deepEqual(state.selection, { version: "0.6.2" });
+  assert.match(output.stderr.join("\n"), /celld 0\.6\.2 remains selected/);
+
+  const unknown = capture();
+  assert.equal(await run(["upgrade", "--engine-version", "9.9.9"], unknown.io, dependencies), 2);
+  assert.match(unknown.stderr[0], /not a pinned release/);
+
+  const noPrevious = capture();
+  assert.equal(await run(["upgrade", "--rollback"], noPrevious.io, dependencies), 1);
+  assert.match(noPrevious.stderr[0], /nothing to roll back/);
+
+  assert.equal(await run(["upgrade", "--rollback", "--status"], capture().io, dependencies), 2);
+});
+
+test("up and dev run the selected celld version", async () => {
+  const versions = [];
+  const dependencies = {
+    env: { SOBJECTS_DATA_DIR: "/data" },
+    readSelection: async () => ({ version: "0.6.1", previous: "0.6.2" }),
+    installEngine: async ({ version }) => { versions.push(version); return `/celld-${version}`; },
+    loadConfig: async () => ({ bucket: "s3://b/p", listen: "127.0.0.1:8080" }),
+    prepareProject: async (args) => ({ args, warnings: [], cleanup: async () => {} }),
+    spawnProcess: (executable) => {
+      versions.push(executable);
+      return childWithExit(0);
+    },
+  };
+  assert.equal(await run(["up"], capture().io, dependencies), 0);
+  assert.equal(await run(["dev"], capture().io, dependencies), 0);
+  assert.deepEqual(versions, ["0.6.1", "/celld-0.6.1", "0.6.1", "/celld-0.6.1"]);
 });
