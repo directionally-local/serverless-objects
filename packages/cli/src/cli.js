@@ -13,6 +13,8 @@ import {
   readEngineSelection,
   writeEngineSelection,
 } from "./engine.js";
+import { createIngressMetrics, startAdmin } from "./admin.js";
+import { createCelldAdapter } from "./celld-adapter.js";
 import { HEALTH_PATH, startIngress } from "./ingress.js";
 import { renderLaunchdPlist, renderSystemdUnit, unitTarget, writeUnit } from "./units.js";
 import { prepareWranglerProject } from "./wrangler.js";
@@ -35,11 +37,11 @@ export const helpText = `Serverless Objects — self-hostable Workers infrastruc
 Usage: sobjects <command> [options]
 
 Commands:
-  up [--config PATH] [--detach]  Start a celld node and its ingress, if configured
-  down                           Stop a detached node and ingress
+  up [--config PATH] [--detach]  Start celld plus the configured ingress and admin API
+  down                           Stop a detached node and its supervisor
   status                         Show detached process status
-  logs [--ingress] [--tail N]    Show recent detached celld or ingress logs
-  ingress [--config PATH]        Run only the TLS ingress in the foreground
+  logs [--supervisor] [--tail N] Show recent detached celld or supervisor logs
+  supervise [--config PATH]      Run only the ingress and admin API in the foreground
   service print|install [opts]   Generate a systemd or launchd unit for up
   upgrade [--rollback|--status]  Install and select a pinned celld version
   dev [project] [options]        Run a project locally with celld
@@ -55,9 +57,9 @@ SOBJECTS_CELLD_BIN to use an existing binary instead.`;
 const upHelpText = `Usage: sobjects up [--config PATH] [--detach]
 
 Read [celld] settings from sobjects.toml, install pinned celld if needed, and
-run the node in the foreground by default. When [ingress] is configured, the
-TLS ingress starts first and proxies to celld. Use --detach to run both in the
-background. The default config path is ./sobjects.toml.`;
+run the node in the foreground by default. When [ingress] or [admin] is
+configured, the supervisor (TLS ingress and loopback admin API) starts first.
+Use --detach to run them in the background. The default config path is ./sobjects.toml.`;
 
 const serviceHelpText = `Usage: sobjects service print|install [options]
 
@@ -74,10 +76,12 @@ Options:
 start the service. Put object-store credentials in sobjects.env beside the
 config (systemd) or in the unit's environment, never in sobjects.toml.`;
 
-const ingressHelpText = `Usage: sobjects ingress [--config PATH]
+const superviseHelpText = `Usage: sobjects supervise [--config PATH]
 
-Run the ingress described by [ingress] in sobjects.toml in the foreground.
-SIGHUP reloads TLS certificates from disk. Health: ${HEALTH_PATH}`;
+Run the [ingress] and [admin] services from sobjects.toml in the foreground,
+next to a celld started separately. SIGHUP reloads TLS certificates from disk.
+Ingress health: ${HEALTH_PATH}. Admin API: /api/v1/health, /api/v1/node,
+/api/v1/objects, POST /api/v1/objects/<Class:id>/evict, and /metrics.`;
 
 export async function run(
   argv = process.argv.slice(2),
@@ -94,6 +98,8 @@ export async function run(
     readServiceLogs = readDetachedLogs,
     stopService = stopDetached,
     startIngressServer = startIngress,
+    startAdminServer = startAdmin,
+    createEngine = createCelldAdapter,
     onSignal = subscribeToSignal,
     nodeExecutable = process.execPath,
     readSelection = readEngineSelection,
@@ -126,10 +132,22 @@ export async function run(
       onSignal,
       nodeExecutable,
       readSelection,
+      startAdminServer,
+      createEngine,
     });
   }
-  if (command === "ingress") {
-    return runIngress(args, io, { env, cwd, loadConfig, startIngressServer, onSignal });
+  if (command === "supervise") {
+    return runSupervise(args, io, {
+      env,
+      cwd,
+      loadConfig,
+      startIngressServer,
+      startAdminServer,
+      createEngine,
+      onSignal,
+      installEngine,
+      readSelection,
+    });
   }
   if (command === "upgrade") {
     return runUpgrade(args, io, { env, installEngine, readSelection, writeSelection, isInstalled, getServiceStatus });
@@ -175,9 +193,9 @@ async function runUp(args, io, dependencies) {
     return 1;
   }
 
-  const argsForCelld = ["--bucket", config.bucket, "--listen", config.listen];
-  if (config.endpoint) argsForCelld.push("--endpoint", config.endpoint);
-  if (config.region) argsForCelld.push("--region", config.region);
+  const storageArgs = celldStorageArgs(config);
+  const argsForCelld = [...storageArgs, "--listen", config.listen];
+  if (config.internalListen) argsForCelld.push("--internal-listen", config.internalListen);
   if (config.ingress) {
     // The ingress replaces X-Forwarded-Host/Proto, so celld can use them for
     // request.url. Only trust them when nothing but local processes, such as
@@ -191,6 +209,7 @@ async function runUp(args, io, dependencies) {
     }
   }
   const stateDirectory = defaultStateDirectory(dependencies.env);
+  const needsSupervisor = Boolean(config.ingress || config.admin);
   if (detached) {
     let state;
     try {
@@ -208,34 +227,34 @@ async function runUp(args, io, dependencies) {
     }
     io.log(`Started celld in the background (pid ${state.pid}).`);
     io.log(`Log file: ${state.logPath}`);
-    if (!config.ingress) return 0;
+    if (!needsSupervisor) return 0;
 
     try {
-      const ingressState = await dependencies.startService({
-        name: "ingress",
+      const supervisorState = await dependencies.startService({
+        name: "supervisor",
         executable: dependencies.nodeExecutable,
-        args: [CLI_SCRIPT, "ingress", "--config", resolve(dependencies.cwd, configPath)],
+        args: [CLI_SCRIPT, "supervise", "--config", resolve(dependencies.cwd, configPath)],
         marker: CLI_SCRIPT,
         env: dependencies.env,
         cwd: dependencies.cwd,
         stateDirectory,
         spawnProcess: dependencies.spawnProcess,
       });
-      io.log(`Started ingress on ${config.ingress.listen} in the background (pid ${ingressState.pid}).`);
-      io.log(`Log file: ${ingressState.logPath}`);
+      io.log(`Started the supervisor (${describeSupervisor(config)}) in the background (pid ${supervisorState.pid}).`);
+      io.log(`Log file: ${supervisorState.logPath}`);
       return 0;
     } catch (error) {
       io.error(error.message);
-      io.error("Stopping celld because the ingress did not start.");
+      io.error("Stopping celld because the supervisor did not start.");
       await dependencies.stopService({ stateDirectory }).catch((stopError) => io.error(stopError.message));
       return 1;
     }
   }
 
-  let ingress;
-  if (config.ingress) {
+  let supervisor;
+  if (needsSupervisor) {
     try {
-      ingress = await startIngressRuntime(config.ingress, io, { ...dependencies, stateDirectory });
+      supervisor = await startSupervisorRuntime(config, io, { ...dependencies, stateDirectory, executable, storageArgs });
     } catch (error) {
       io.error(error.message);
       return 1;
@@ -250,15 +269,8 @@ async function runUp(args, io, dependencies) {
     dependencies.onSignal("SIGTERM", () => child?.kill("SIGTERM")),
     dependencies.onSignal("SIGINT", () => {}),
   ];
-  if (ingress) {
-    unsubscribe.push(dependencies.onSignal("SIGHUP", () => {
-      try {
-        ingress.reloadCertificates();
-        io.log("Reloaded ingress TLS certificates.");
-      } catch (error) {
-        io.error(`Kept the previous certificates: ${error.message}`);
-      }
-    }));
+  if (supervisor?.reloadCertificates) {
+    unsubscribe.push(dependencies.onSignal("SIGHUP", () => reloadCertificates(supervisor, io)));
   }
   try {
     return await runProcess(
@@ -273,16 +285,16 @@ async function runUp(args, io, dependencies) {
     );
   } finally {
     for (const off of unsubscribe) off();
-    await ingress?.close();
+    await supervisor?.close();
   }
 }
 
-async function runIngress(args, io, dependencies) {
+async function runSupervise(args, io, dependencies) {
   if (args.length === 1 && ["--help", "-h"].includes(args[0])) {
-    io.log(ingressHelpText);
+    io.log(superviseHelpText);
     return 0;
   }
-  const options = parseConfigOptions(args, io, "ingress");
+  const options = parseConfigOptions(args, io, "supervise");
   if (!options) return 2;
 
   let config;
@@ -292,15 +304,18 @@ async function runIngress(args, io, dependencies) {
     io.error(error.message);
     return 2;
   }
-  if (!config.ingress) {
-    io.error(`No [ingress] table in ${options.configPath}.`);
+  if (!config.ingress && !config.admin) {
+    io.error(`No [ingress] or [admin] table in ${options.configPath}; there is nothing to supervise.`);
     return 2;
   }
 
-  let ingress;
+  let supervisor;
   try {
-    ingress = await startIngressRuntime(config.ingress, io, {
+    const executable = config.admin ? await resolveCelld(dependencies) : undefined;
+    supervisor = await startSupervisorRuntime(config, io, {
       ...dependencies,
+      executable,
+      storageArgs: celldStorageArgs(config),
       stateDirectory: defaultStateDirectory(dependencies.env),
     });
   } catch (error) {
@@ -312,45 +327,83 @@ async function runIngress(args, io, dependencies) {
     const unsubscribe = [];
     const stop = (code) => {
       for (const off of unsubscribe) off();
-      ingress.close().then(() => resolvePromise(code));
+      supervisor.close().then(() => resolvePromise(code));
     };
     unsubscribe.push(dependencies.onSignal("SIGINT", () => stop(130)));
     unsubscribe.push(dependencies.onSignal("SIGTERM", () => stop(0)));
-    unsubscribe.push(dependencies.onSignal("SIGHUP", () => {
-      try {
-        ingress.reloadCertificates();
-        io.log("Reloaded ingress TLS certificates.");
-      } catch (error) {
-        io.error(`Kept the previous certificates: ${error.message}`);
-      }
-    }));
+    if (supervisor.reloadCertificates) {
+      unsubscribe.push(dependencies.onSignal("SIGHUP", () => reloadCertificates(supervisor, io)));
+    }
   });
 }
 
-async function startIngressRuntime(ingressConfig, io, { startIngressServer, stateDirectory }) {
-  const accessLog = await openAccessLog(ingressConfig.accessLog ?? join(stateDirectory, "access.log"), io);
+function reloadCertificates(supervisor, io) {
+  try {
+    supervisor.reloadCertificates();
+    io.log("Reloaded ingress TLS certificates.");
+  } catch (error) {
+    io.error(`Kept the previous certificates: ${error.message}`);
+  }
+}
+
+function celldStorageArgs(config) {
+  const args = ["--bucket", config.bucket];
+  if (config.endpoint) args.push("--endpoint", config.endpoint);
+  if (config.region) args.push("--region", config.region);
+  return args;
+}
+
+function describeSupervisor(config) {
+  const parts = [];
+  if (config.ingress) parts.push(`ingress on ${config.ingress.listen}`);
+  if (config.admin) parts.push(`admin API on ${config.admin.listen}`);
+  return parts.join(", ");
+}
+
+// The supervisor hosts everything sobjects runs beside celld: the TLS ingress
+// and the loopback admin API, which share the ingress request metrics.
+async function startSupervisorRuntime(config, io, dependencies) {
+  const closers = [];
+  const close = async () => {
+    for (const closer of closers.reverse()) await closer();
+  };
+  const metrics = createIngressMetrics();
   let ingress;
   try {
-    ingress = await startIngressServer({
-      listen: ingressConfig.listen,
-      redirectHttp: ingressConfig.redirectHttp,
-      tls: ingressConfig.tls,
-      routes: ingressConfig.routes,
-      accessLog: accessLog.write,
-    });
+    if (config.ingress) {
+      const accessLog = await openAccessLog(config.ingress.accessLog ?? join(dependencies.stateDirectory, "access.log"), io);
+      closers.push(accessLog.close);
+      ingress = await dependencies.startIngressServer({
+        listen: config.ingress.listen,
+        redirectHttp: config.ingress.redirectHttp,
+        tls: config.ingress.tls,
+        routes: config.ingress.routes,
+        accessLog: (entry) => {
+          metrics.observe(entry);
+          accessLog.write(entry);
+        },
+      });
+      closers.push(ingress.close);
+      const scheme = config.ingress.tls ? "https" : "http";
+      io.log(`Ingress listening on ${scheme}://${config.ingress.listen} for ${config.ingress.routes.map((route) => route.hostname).join(", ")}.`);
+    }
+    if (config.admin) {
+      const engine = dependencies.createEngine({
+        listen: config.listen,
+        internalListen: config.internalListen,
+        executable: dependencies.executable,
+        storageArgs: dependencies.storageArgs,
+        env: dependencies.env,
+      });
+      const admin = await dependencies.startAdminServer({ listen: config.admin.listen, engine, metrics, version });
+      closers.push(admin.close);
+      io.log(`Admin API listening on http://${config.admin.listen} (metrics at /metrics).`);
+    }
   } catch (error) {
-    await accessLog.close();
+    await close();
     throw error;
   }
-  const scheme = ingressConfig.tls ? "https" : "http";
-  io.log(`Ingress listening on ${scheme}://${ingressConfig.listen} for ${ingressConfig.routes.map((route) => route.hostname).join(", ")}.`);
-  return {
-    reloadCertificates: ingress.reloadCertificates,
-    close: async () => {
-      await ingress.close();
-      await accessLog.close();
-    },
-  };
+  return { reloadCertificates: ingress?.reloadCertificates, close };
 }
 
 async function openAccessLog(target, io) {
@@ -515,14 +568,14 @@ async function runStatus(args, io, { env, getServiceStatus }) {
       io.log(result.stale ? "celld is not running (stale state removed)." : "celld is not running.");
     }
 
-    const ingress = await getServiceStatus({ name: "ingress", stateDirectory });
-    if (ingress.running) {
-      io.log(`ingress is running (pid ${ingress.state.pid}; started ${ingress.state.startedAt}).`);
-      io.log(`Log file: ${ingress.state.logPath}`);
-    } else if (ingress.stale) {
-      io.log("ingress is not running (stale state removed).");
+    const supervisor = await getServiceStatus({ name: "supervisor", stateDirectory });
+    if (supervisor.running) {
+      io.log(`supervisor is running (pid ${supervisor.state.pid}; started ${supervisor.state.startedAt}).`);
+      io.log(`Log file: ${supervisor.state.logPath}`);
+    } else if (supervisor.stale) {
+      io.log("supervisor is not running (stale state removed).");
     }
-    return result.running && !ingress.stale ? 0 : 1;
+    return result.running && !supervisor.stale ? 0 : 1;
   } catch (error) {
     io.error(error.message);
     return 1;
@@ -540,8 +593,8 @@ async function runDown(args, io, { env, stopService }) {
   }
   const stateDirectory = defaultStateDirectory(env);
   let exitCode = 0;
-  // Stop the ingress first so clients see a refused connection rather than a 502.
-  for (const name of ["ingress", "celld"]) {
+  // Stop the supervisor first so clients see a refused connection rather than a 502.
+  for (const name of ["supervisor", "celld"]) {
     try {
       const options = { name, stateDirectory };
       if (name === "celld") {
@@ -563,7 +616,7 @@ async function runDown(args, io, { env, stopService }) {
 }
 
 async function runLogs(args, io, { env, readServiceLogs }) {
-  const usage = "Usage: sobjects logs [--ingress] [--tail N]";
+  const usage = "Usage: sobjects logs [--supervisor] [--tail N]";
   if (args.length === 1 && ["--help", "-h"].includes(args[0])) {
     io.log(usage);
     return 0;
@@ -573,8 +626,8 @@ async function runLogs(args, io, { env, readServiceLogs }) {
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     let value;
-    if (argument === "--ingress") {
-      name = "ingress";
+    if (argument === "--supervisor") {
+      name = "supervisor";
       continue;
     } else if (argument === "--tail" || argument === "-n") {
       value = args[index + 1];

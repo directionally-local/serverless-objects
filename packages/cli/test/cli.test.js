@@ -138,9 +138,9 @@ test("up installs pinned celld and starts it with validated config", async () =>
     executable: "/data/sobjects/engines/celld-0.6.2/celld",
     args: [
       "--bucket", "s3://example/fleet",
-      "--listen", "127.0.0.1:8080",
       "--endpoint", "https://s3.example.test",
       "--region", "auto",
+      "--listen", "127.0.0.1:8080",
     ],
     options: { stdio: "inherit" },
   });
@@ -267,7 +267,7 @@ test("status, down, and logs delegate with the configured state directory", asyn
     env,
     getServiceStatus: async (options) => {
       stateDirectory = options.stateDirectory;
-      if (options.name === "ingress") return { running: false };
+      if (options.name === "supervisor") return { running: false };
       return { running: true, state: { pid: 321, startedAt: "now", logPath: "/tmp/celld.log" } };
     },
   }), 0);
@@ -366,7 +366,7 @@ test("up does not start celld when the ingress cannot listen", async () => {
   assert.match(output.stderr[0], /EACCES/);
 });
 
-test("up --detach starts celld and a detached ingress, rolling back celld on failure", async () => {
+test("up --detach starts celld and a detached supervisor, rolling back celld on failure", async () => {
   const started = [];
   const stopped = [];
   const dependencies = (failIngress) => ({
@@ -376,7 +376,7 @@ test("up --detach starts celld and a detached ingress, rolling back celld on fai
     loadConfig: async () => INGRESS_CONFIG,
     startService: async (options) => {
       started.push(options);
-      if (failIngress && options.name === "ingress") throw new Error("ingress did not start");
+      if (failIngress && options.name === "supervisor") throw new Error("supervisor did not start");
       return { pid: started.length, logPath: `/tmp/state/${options.name ?? "celld"}.log` };
     },
     stopService: async (options) => { stopped.push(options); return { stopped: true, state: { pid: 1 } }; },
@@ -385,12 +385,12 @@ test("up --detach starts celld and a detached ingress, rolling back celld on fai
   const ok = capture();
   assert.equal(await run(["up", "--detach", "--config", "ops/so.toml"], ok.io, dependencies(false)), 0);
   assert.equal(started.length, 2);
-  assert.equal(started[1].name, "ingress");
+  assert.equal(started[1].name, "supervisor");
   assert.equal(started[1].executable, "/usr/bin/node");
   assert.match(started[1].args[0], /bin\/sobjects\.mjs$/);
-  assert.deepEqual(started[1].args.slice(1), ["ingress", "--config", resolve("/work/app", "ops/so.toml")]);
+  assert.deepEqual(started[1].args.slice(1), ["supervise", "--config", resolve("/work/app", "ops/so.toml")]);
   assert.equal(started[1].marker, started[1].args[0]);
-  assert.match(ok.stdout.join("\n"), /Started ingress on 0\.0\.0\.0:443/);
+  assert.match(ok.stdout.join("\n"), /Started the supervisor \(ingress on 0\.0\.0\.0:443\)/);
   assert.deepEqual(stopped, []);
 
   started.length = 0;
@@ -400,11 +400,11 @@ test("up --detach starts celld and a detached ingress, rolling back celld on fai
   assert.match(failed.stderr.join("\n"), /Stopping celld/);
 });
 
-test("ingress runs until a signal and reloads certificates on SIGHUP", async () => {
+test("supervise runs until a signal and reloads certificates on SIGHUP", async () => {
   const output = capture();
   const events = [];
   const handlers = new Map();
-  const result = run(["ingress"], output.io, {
+  const result = run(["supervise"], output.io, {
     env: {},
     loadConfig: async () => INGRESS_CONFIG,
     startIngressServer: fakeIngress(events),
@@ -422,22 +422,22 @@ test("ingress runs until a signal and reloads certificates on SIGHUP", async () 
   assert.match(output.stdout.join("\n"), /Reloaded ingress TLS certificates/);
 });
 
-test("ingress requires an [ingress] table", async () => {
+test("supervise requires an [ingress] or [admin] table", async () => {
   const output = capture();
-  const exitCode = await run(["ingress"], output.io, {
+  const exitCode = await run(["supervise"], output.io, {
     loadConfig: async () => ({ bucket: "s3://example/fleet", listen: "127.0.0.1:8080" }),
   });
   assert.equal(exitCode, 2);
-  assert.match(output.stderr[0], /No \[ingress\] table/);
+  assert.match(output.stderr[0], /No \[ingress\] or \[admin\] table/);
 });
 
-test("ingress writes JSON access logs to the state directory by default", async () => {
+test("supervise writes JSON access logs to the state directory by default", async () => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "sobjects-cli-ingress-"));
   try {
     const output = capture();
     const handlers = new Map();
     let address;
-    const result = run(["ingress"], output.io, {
+    const result = run(["supervise"], output.io, {
       env: { SOBJECTS_STATE_DIR: stateDirectory },
       loadConfig: async () => ({
         ...INGRESS_CONFIG,
@@ -477,10 +477,10 @@ test("ingress writes JSON access logs to the state directory by default", async 
   }
 });
 
-test("logs --ingress reads the ingress service log", async () => {
+test("logs --supervisor reads the supervisor service log", async () => {
   const output = capture();
   let name;
-  assert.equal(await run(["logs", "--ingress", "--tail", "5"], output.io, {
+  assert.equal(await run(["logs", "--supervisor", "--tail", "5"], output.io, {
     env: {},
     readServiceLogs: async (options) => {
       name = options.name;
@@ -488,7 +488,7 @@ test("logs --ingress reads the ingress service log", async () => {
       return { output: "ingress line" };
     },
   }), 0);
-  assert.equal(name, "ingress");
+  assert.equal(name, "supervisor");
   assert.deepEqual(output.stdout, ["ingress line"]);
 });
 
@@ -681,4 +681,38 @@ test("up does not trust forwarded headers when celld is reachable beyond loopbac
   assert.equal(exitCode, 0);
   assert.equal(celldArgs.includes("--trust-forwarded-headers"), false);
   assert.match(output.stderr[0], /not loopback, so celld will not trust/);
+});
+
+test("up with [admin] pins celld's operator listener and starts the admin API on the same engine", async () => {
+  const output = capture();
+  let celldArgs;
+  let engineOptions;
+  let adminOptions;
+  const exitCode = await run(["up"], output.io, {
+    env: { SOBJECTS_CELLD_BIN: "/opt/celld" },
+    loadConfig: async () => ({
+      bucket: "s3://b/p",
+      endpoint: "http://127.0.0.1:19000",
+      listen: "127.0.0.1:8080",
+      internalListen: "127.0.0.1:8081",
+      admin: { listen: "127.0.0.1:8790" },
+    }),
+    createEngine: (options) => { engineOptions = options; return { kind: "engine" }; },
+    startAdminServer: async (options) => {
+      adminOptions = options;
+      return { close: async () => {} };
+    },
+    spawnProcess: (_executable, args) => { celldArgs = args; return childWithExit(0); },
+  });
+  assert.equal(exitCode, 0);
+  assert.deepEqual(celldArgs, [
+    "--bucket", "s3://b/p", "--endpoint", "http://127.0.0.1:19000",
+    "--listen", "127.0.0.1:8080", "--internal-listen", "127.0.0.1:8081",
+  ]);
+  assert.deepEqual(engineOptions.storageArgs, ["--bucket", "s3://b/p", "--endpoint", "http://127.0.0.1:19000"]);
+  assert.equal(engineOptions.internalListen, "127.0.0.1:8081");
+  assert.equal(engineOptions.executable, "/opt/celld");
+  assert.equal(adminOptions.listen, "127.0.0.1:8790");
+  assert.deepEqual(adminOptions.engine, { kind: "engine" });
+  assert.match(output.stdout.join("\n"), /Admin API listening on http:\/\/127\.0\.0\.1:8790/);
 });

@@ -23,3 +23,8 @@ listen = "127.0.0.1:8080"
 # [[ingress.routes]]
 # hostname = "agents.example.com"
 # # upstream defaults to the [celld] listener
+
+# Optional loopback admin API and Prometheus metrics, served by the supervisor.
+# Enabling it pins celld's operator listener (default: [celld] port + 1).
+# [admin]
+# listen = "127.0.0.1:8790"
