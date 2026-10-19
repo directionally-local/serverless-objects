@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Serverless Objects</title>
+  <link rel="stylesheet" href="/dashboard/app.css">
+  <script type="module" src="/dashboard/app.js"></script>
+</head>
+<body>
+  <header class="bar">
+    <h1>Serverless Objects</h1>
+    <span id="health" class="pill">checking…</span>
+    <span id="version" class="muted"></span>
+  </header>
+
+  <main>
+    <section class="node" aria-labelledby="node-title">
+      <h2 id="node-title">Node</h2>
+      <dl id="node" class="stats"></dl>
+    </section>
+
+    <section class="objects" aria-labelledby="objects-title">
+      <div class="section-head">
+        <h2 id="objects-title">Objects</h2>
+        <form id="filter">
+          <label>Class <input id="class" name="class" placeholder="All classes" autocomplete="off"></label>
+          <button type="submit">Filter</button>
+        </form>
+      </div>
+      <table>
+        <thead><tr><th>Class</th><th>ID</th><th>State</th></tr></thead>
+        <tbody id="object-rows"></tbody>
+      </table>
+      <button id="more" type="button" hidden>Load more</button>
+    </section>
+
+    <section id="detail" class="detail" hidden aria-labelledby="detail-title">
+      <div class="section-head">
+        <h2 id="detail-title">Object</h2>
+        <button id="evict" type="button" class="danger">Evict</button>
+      </div>
+      <p id="detail-scope" class="mono"></p>
+      <dl id="summary" class="stats"></dl>
+      <div id="tables"></div>
+
+      <h3>Key-value storage</h3>
+      <form id="kv-form" class="inline">
+        <label>Prefix <input id="kv-prefix" autocomplete="off"></label>
+        <button type="submit">List</button>
+      </form>
+      <table>
+        <thead><tr><th>Key</th><th>Value</th></tr></thead>
+        <tbody id="kv-rows"></tbody>
+      </table>
+      <button id="kv-more" type="button" hidden>Load more</button>
+
+      <h3>SQL console <span class="muted">(read-only)</span></h3>
+      <form id="sql-form">
+        <textarea id="sql" rows="3" spellcheck="false">SELECT name FROM sqlite_master WHERE type = 'table'</textarea>
+        <button type="submit">Run</button>
+      </form>
+      <div id="sql-result"></div>
+    </section>
+  </main>
+  <p id="error" class="error" role="alert" hidden></p>
+</body>
+</html>

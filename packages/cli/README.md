@@ -28,9 +28,11 @@ HTTP listener directly to the internet; put the ingress in front of it.
 Detached mode only manages local PIDs and logs; for a supervised service use
 `sobjects service`.
 
-## Admin API and metrics
+## Admin API, dashboard, and metrics
 
-An `[admin]` table (loopback only) makes the supervisor serve:
+An `[admin]` table (loopback only) makes the supervisor serve a dashboard at
+`/` (node health and load, objects, per-object storage with a key-value browser
+and read-only SQL console, eviction) and:
 
 - `GET /api/v1/health`: celld listener and operator API health
 - `GET /api/v1/node`: resident and owned objects, memory, CPU, WebSockets, deployment version, drain state
