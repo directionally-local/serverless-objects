@@ -121,3 +121,22 @@ test("evicts through the operator listener and reports refusals", async () => {
   assert.deepEqual(calls, [["POST", `http://127.0.0.1:8081/evict/Counter:${ID}`]]);
   await assert.rejects(engine.evict("Counter:../../shutdown"), RangeError);
 });
+
+test("inspects through the app's public listener with the inspector token", async () => {
+  const calls = [];
+  const engine = adapter({
+    inspectorToken: "tok",
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify({ tables: [] }), { status: 200 });
+    },
+  });
+  assert.deepEqual(await engine.inspect(`Counter:${ID}`, { op: "summary" }), { tables: [] });
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/");
+  assert.equal(calls[0].init.headers["x-sobjects-inspect"], "tok");
+  assert.deepEqual(JSON.parse(calls[0].init.body), { op: "summary", className: "Counter", id: ID });
+
+  const rejected = adapter({ inspectorToken: "tok", fetchImpl: async () => new Response("{}", { status: 401 }) });
+  await assert.rejects(rejected.inspect(`Counter:${ID}`, { op: "summary" }), /redeploy it/);
+  await assert.rejects(adapter().inspect(`Counter:${ID}`, { op: "summary" }), /No inspector token/);
+});

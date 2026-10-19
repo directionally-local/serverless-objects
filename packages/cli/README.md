@@ -43,7 +43,20 @@ whose `Host` header is not a loopback name (DNS rebinding). Mutations need the
 custom header, which browsers cannot send cross-origin without a preflight this
 server never approves. Enabling it pins celld's unauthenticated operator
 listener (`[celld].internal_listen`, default: the celld port + 1) on loopback.
-Per-object storage inspection is not available yet: celld 0.6 has no API for it.
+Object storage inspection:
+
+- `GET /api/v1/objects/<Class:id>`: SQL tables with row counts, pending alarm, WebSocket count and tags
+- `GET /api/v1/objects/<Class:id>/kv?prefix=&startAfter=&limit=`: key-value entries, with `Date`, `Map`, `Set`, bytes and `bigint` encoded as tagged JSON
+- `POST /api/v1/objects/<Class:id>/sql` with `{"query": "..."}`: read-only SELECT/WITH/EXPLAIN/PRAGMA, up to 500 rows
+
+celld 0.6 has no storage API, so `sobjects deploy` bundles a small generated
+entry that re-exports the app and wraps its Durable Object classes and default
+handler. A request carrying `x-sobjects-inspect` with this host's token is
+answered by the hook; every other request reaches the app unchanged. The token
+lives in `$SOBJECTS_DATA_DIR/inspector-token` and only its SHA-256 goes into the
+bundle. The ingress strips the header from client requests. Inspection activates
+the object. Deploy from the host that runs the supervisor, or copy the token,
+or pass `--no-inspector` to deploy the app unwrapped.
 
 ## Engine upgrades
 
