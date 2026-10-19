@@ -15,8 +15,25 @@ concurrency:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    outputs:
+      cli_release_created: ${{ steps.release.outputs['packages/cli--release_created'] }}
+      cli_tag: ${{ steps.release.outputs['packages/cli--tag_name'] }}
     steps:
-      - uses: googleapis/release-please-action@v4
+      - id: release
+        uses: googleapis/release-please-action@v4
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  # A release created with GITHUB_TOKEN does not trigger other workflows, so
+  # publishing runs from here.
+  publish-npm:
+    needs: release-please
+    if: needs.release-please.outputs.cli_release_created == 'true'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/npm-publish.yml
+    with:
+      tag: ${{ needs.release-please.outputs.cli_tag }}
+    secrets: inherit
