@@ -1,151 +1,177 @@
 # serverless-objects
 
-The `sobjects` CLI package for Serverless Objects.
+[![npm](https://img.shields.io/npm/v/serverless-objects)](https://www.npmjs.com/package/serverless-objects)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/sinameraji/serverless-objects/blob/main/LICENSE)
 
-## Commands in this pre-alpha
+`sobjects` runs Cloudflare Workers and Durable Objects apps on your own hardware. Deploy an ordinary Wrangler project and it runs on a host you control, with Durable Object state in your own S3-compatible bucket, plus TLS ingress, a local dashboard, engine upgrades and service units. The runtime underneath is [celld](https://github.com/denoland/celld) 0.6.2, which the CLI downloads and verifies by checksum.
 
-- `sobjects up [--config PATH] [--detach]` validates `sobjects.toml`, installs pinned celld `v0.6.2` if needed, and starts a single-node process (foreground by default).
-- `sobjects status`, `sobjects logs [--supervisor] [--tail N]`, and `sobjects down` manage the processes started by `up --detach`.
-- `sobjects supervise [--config PATH]` runs only the ingress and admin API in the foreground.
-- `sobjects service print|install` generates a systemd or launchd unit for `up`.
-- `sobjects upgrade [--engine-version V | --rollback | --status]` installs and selects a pinned celld release.
-- `sobjects dev [project] [celld dev options]` runs local development with celld.
-- `sobjects deploy [project] [celld deploy options]` deploys through celld.
-- `sobjects --help` and `sobjects --version` show CLI help and version.
+> **Status: pre-alpha (0.1.x).** For evaluation and testing, not production. Single host; macOS arm64 or Linux arm64/x64; Node.js 22 or newer. See the [compatibility table](https://github.com/sinameraji/serverless-objects/blob/main/docs/compatibility.md).
 
-`dev` and `deploy` use the pinned celld install. Set `SOBJECTS_CELLD_BIN` to
-use an existing binary or `SOBJECTS_DATA_DIR` to choose the engine install
-location. `dev` and `deploy` add the project's `node_modules/.bin` to the
-child `PATH`, so a project-local esbuild is used first; otherwise celld finds
-esbuild on `PATH` or falls back to the copy installed with this package.
+Project home, roadmap and conformance results: [github.com/sinameraji/serverless-objects](https://github.com/sinameraji/serverless-objects).
 
-## `sobjects up` configuration
+## Install
 
-Copy [`sobjects.example.toml`](https://github.com/sinameraji/serverless-objects/blob/main/sobjects.example.toml) to `sobjects.toml`
-and set `celld.bucket` to an S3-, GCS-, or Azure-compatible bucket URI. Credentials
-come from celld's standard provider chain / environment; do not put credentials
-in this file. The default listener is `127.0.0.1:8080`. Do not expose celld's
-HTTP listener directly to the internet; put the ingress in front of it.
-Detached mode only manages local PIDs and logs; for a supervised service use
-`sobjects service`.
+```sh
+npm install --global serverless-objects
+sobjects --help
+```
 
-## TLS ingress and ACME HTTP-01
+## Quick start
 
-The ingress accepts either static PEM files in `[ingress.tls]` or automatic
-certificates in `[ingress.acme]` (not both). ACME requires `email`, explicit
-`agree_to_terms = true`, `redirect_http` listening on port 80, DNS records for
-each exact route hostname, and public HTTP reachability on port 80. Wildcard
-routes cannot use HTTP-01; assign them their own static route certificate.
+In a Wrangler project (`wrangler.json` or `wrangler.jsonc`):
 
-The default ACME directory is Let's Encrypt production. Set `directory_url` to
-the Let's Encrypt staging directory while validating DNS and firewall setup.
-ACME account keys and certificates are stored under `SOBJECTS_STATE_DIR/acme`
-(or the default user state directory), with private files mode 0600 and
-containing directories mode 0700. Valid certificates are reused at startup and
-renewed 30 days before expiry; failed renewals retry every six hours while the
-current certificate remains valid. The initial issuance completes before HTTPS
-starts, so the HTTP-01 listener must be reachable during `sobjects up`.
+```sh
+sobjects dev . --port 8787     # local development, no bucket needed
+```
 
-By enabling ACME and setting `agree_to_terms = true`, the operator agrees to the
-configured CA's subscriber terms. ACME directory URLs must use HTTPS; plain HTTP
-is allowed only for loopback test servers. Static certificates continue to
-support `SIGHUP` reloads.
+To run it as a node, create `sobjects.toml` next to the project:
 
-## Admin API, dashboard, and metrics
+```toml
+[celld]
+bucket = "s3://my-bucket/serverless-objects"
+```
 
-An `[admin]` table (loopback only) makes the supervisor serve a dashboard at
-`/` (node health and load, objects, per-object storage with a key-value browser
-and read-only SQL console, eviction) and:
+Then, with bucket credentials in the environment (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, ...):
 
-- `GET /api/v1/health`: celld listener and operator API health
-- `GET /api/v1/node`: resident and owned objects, memory, CPU, WebSockets, deployment version, drain state
-- `GET /api/v1/objects?class=&limit=&after=`: objects from `celld cell list`, marked resident or not
-- `POST /api/v1/objects/<Class:id>/evict`: evict a resident object; requires the `x-sobjects-request: 1` header
-- `GET /metrics`: Prometheus text with engine gauges and ingress request counters
+```sh
+sobjects deploy .
+sobjects up --detach           # serves on 127.0.0.1:8080
+sobjects status
+sobjects logs
+sobjects down
+```
 
-It has no authentication, so it refuses non-loopback addresses and requests
-whose `Host` header is not a loopback name (DNS rebinding). Mutations need the
-custom header, which browsers cannot send cross-origin without a preflight this
-server never approves. Enabling it pins celld's unauthenticated operator
-listener (`[celld].internal_listen`, default: the celld port + 1) on loopback.
-Object storage inspection:
+The [project README](https://github.com/sinameraji/serverless-objects#quick-start) walks through a complete Durable Object example.
 
-- `GET /api/v1/objects/<Class:id>`: SQL tables with row counts, pending alarm, WebSocket count and tags
-- `GET /api/v1/objects/<Class:id>/kv?prefix=&startAfter=&limit=`: key-value entries, with `Date`, `Map`, `Set`, bytes and `bigint` encoded as tagged JSON
-- `POST /api/v1/objects/<Class:id>/sql` with `{"query": "..."}`: read-only SELECT/WITH/EXPLAIN/PRAGMA, up to 500 rows
+## Commands
 
-Backups:
+| Command | What it does |
+|---|---|
+| `sobjects dev [project] [celld dev options]` | Local development with celld. It doesn't run the ingress. |
+| `sobjects deploy [project] [celld deploy options]` | Preflights the Wrangler config, bundles the app and uploads it to the bucket. Running nodes pick up the new version on their next poll. |
+| `sobjects up [--config PATH] [--detach]` | Starts celld plus the configured ingress and admin API from `./sobjects.toml`, in the foreground or in the background. |
+| `sobjects status` / `logs [--supervisor] [--tail N]` / `down` | Inspect or stop a node started with `--detach`. `down` waits for celld to drain and release its lease. |
+| `sobjects supervise [--config PATH]` | Runs only the ingress and admin API in the foreground. |
+| `sobjects upgrade [--engine-version V \| --rollback \| --status]` | Installs and selects a pinned celld release. |
+| `sobjects service print\|install [opts]` | Generates a systemd or launchd unit for `up`. |
+| `sobjects --help`, `--version` | Help and version. Every command takes `--help`; for `dev` and `deploy` it shows celld's own options. |
 
-- `GET /api/v1/backups?class=&limit=&after=`: superseded LTX epochs and bytes for objects that have GC candidates, from `celld cell gc --dry-run` (read-only; not a complete object inventory)
-- `GET /api/v1/objects/<Class:id>/export`: a JSON download of every key-value entry, every app table with its schema, and the pending alarm (up to 10,000 entries or rows each; `truncated` says when the cap was hit)
+## Configuration: `sobjects.toml`
 
-celld keeps superseded epochs unless `CELLD_LTX_RETENTION_SECS` is set, but
-has no tool to restore one, so point-in-time restore is not available in this
-version. There is no import for exports yet either.
+Unknown keys are rejected, so a typo fails loudly instead of being ignored. A full annotated example lives at [`sobjects.example.toml`](https://github.com/sinameraji/serverless-objects/blob/main/sobjects.example.toml).
 
-celld 0.6 has no storage API, so `sobjects deploy` bundles a small generated
-entry that re-exports the app and wraps its Durable Object classes and default
-handler. A request carrying `x-sobjects-inspect` with this host's token is
-answered by the hook; every other request reaches the app unchanged. The token
-lives in `$SOBJECTS_DATA_DIR/inspector-token` and only its SHA-256 goes into the
-bundle. The ingress strips the header from client requests. Inspection activates
-the object. Deploy from the host that runs the supervisor, or copy the token,
-or pass `--no-inspector` to deploy the app unwrapped.
+```toml
+[celld]
+bucket = "s3://my-bucket/prefix"      # required: s3://, gs:// or az://
+endpoint = "https://..."              # S3-compatible endpoint (or S3_ENDPOINT)
+region = "auto"                       # or AWS_REGION
+listen = "127.0.0.1:8080"             # keep on loopback behind the ingress
+# internal_listen = "127.0.0.1:8081"  # celld operator API, loopback only
 
-## Engine upgrades
+[ingress]
+listen = "0.0.0.0:443"
+redirect_http = "0.0.0.0:80"          # HTTP→HTTPS redirect; also serves ACME challenges
+access_log = "-"                      # "-" for stdout; default is the state directory
 
-Every installable celld version is pinned in the CLI with a SHA-256 for each
-release asset (currently 0.6.2, the default, and 0.6.1). `sobjects upgrade`
-downloads and verifies the CLI's pinned version (or `--engine-version`),
-selects it, and records the previous selection; `--rollback` switches back and
-`--status` lists the versions. The selection is stored in
-`$SOBJECTS_DATA_DIR/engines/celld.json`, and `up`, `dev`, and `deploy` use it.
-A failed download or checksum leaves the current selection in place. Running
-nodes keep their version until restarted; `upgrade` does not restart them.
+[ingress.tls]                         # static certificates...
+cert = "/etc/serverless-objects/tls/fullchain.pem"
+key = "/etc/serverless-objects/tls/privkey.pem"
 
-## Service units
+# [ingress.acme]                      # ...or ACME HTTP-01, not both
+# email = "ops@example.com"
+# agree_to_terms = true
+# directory_url = "https://acme-staging-v02.api.letsencrypt.org/directory"
 
-`sobjects service print` writes a systemd or launchd unit to stdout (launchd on
-macOS, systemd elsewhere; override with `--kind`). `sobjects service install`
-writes it to `~/.config/systemd/user/`, `/etc/systemd/system/` (`--system
---user NAME`), or `~/Library/LaunchAgents/`, refuses to overwrite without
-`--force`, and prints the commands that enable it; it does not start anything.
-The unit runs `sobjects up --config <absolute path>` in the foreground, pins
-`SOBJECTS_STATE_DIR` and `SOBJECTS_DATA_DIR`, and restarts on failure. systemd
-units read credentials from an optional `sobjects.env` beside the config.
-System units run as the named account, use `/var/lib/serverless-objects`, and
-get `CAP_NET_BIND_SERVICE` so the ingress can bind ports 80 and 443. On stop,
-`up` forwards SIGTERM to celld and waits for it to exit.
+[[ingress.routes]]
+hostname = "agents.example.com"       # exact, *.wildcard or *
+# upstream = "http://127.0.0.1:8080"  # defaults to [celld].listen
+# tls = { cert = "...", key = "..." } # per-route certificate, chosen by SNI
+
+[admin]
+listen = "127.0.0.1:8790"             # loopback-only dashboard and API
+```
+
+Credentials never go in this file. celld reads them from its standard credential chain or the environment. Relative certificate paths resolve from the config file's directory.
 
 ## Ingress
 
-An `[ingress]` table makes `up` start a TLS-terminating reverse proxy before
-celld. Routes match exact, `*.wildcard`, or `*` hostnames and default to the
-`[celld]` listener. Certificates are static PEM files (optionally one per route,
-selected by SNI) and reload on `SIGHUP`. The ingress tunnels WebSockets,
-rewrites `X-Forwarded-*` and `CF-Connecting-IP`, can redirect HTTP to HTTPS,
-answers `/.well-known/sobjects/health`, and writes JSON access logs without
-query strings. Plaintext listeners are allowed only on loopback. ACME is not
-implemented yet. When `[celld].listen` is loopback, `up` passes
-`--trust-forwarded-headers` so a Worker's `request.url` has the client's
-scheme and host; with a non-loopback listener it warns and leaves them off,
-since clients could reach celld directly and spoof those headers.
+With an `[ingress]` table, `up` starts a TLS-terminating reverse proxy in front of celld. It:
+
+- routes by exact, `*.wildcard` or `*` hostname and answers `421` for anything else;
+- tunnels WebSocket upgrades;
+- replaces client-supplied `X-Forwarded-*` and `CF-Connecting-IP` with the real peer address;
+- optionally redirects HTTP to HTTPS with `308`;
+- serves `/.well-known/sobjects/health`, which checks the upstream;
+- writes JSON access logs without query strings.
+
+Plaintext ingress is allowed only on loopback. When `[celld].listen` is loopback, `up` starts celld with `--trust-forwarded-headers`, so a Worker's `request.url` has the client's `https://` scheme and host, as on Cloudflare.
+
+**Static certificates** reload on `SIGHUP`.
+
+**ACME HTTP-01** needs:
+- an `email` and an explicit `agree_to_terms = true`, which records your agreement to the CA's subscriber terms;
+- `redirect_http` on port 80, with public DNS and inbound HTTP reaching it;
+- exact hostnames only. Wildcard routes need static certificates.
+
+The default directory is Let's Encrypt production, so test with the staging `directory_url` first. Keys and certificates are stored under the state directory with mode 0600 files in 0700 directories. Valid certificates are reused at startup and renewed 30 days before expiry. A failed renewal is retried every six hours while the current certificate is still valid. Issuance has been tested against Pebble; public Let's Encrypt issuance and renewal have not been exercised yet.
+
+## Dashboard and admin API
+
+An `[admin]` table makes the supervisor serve a dashboard at `/` and a JSON API. The dashboard shows node health and load, objects, per-object storage with a key-value browser and read-only SQL console, and eviction. The API has **no authentication**, so it refuses non-loopback addresses and non-loopback `Host` headers (DNS rebinding). Mutations require the `x-sobjects-request: 1` header.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/v1/health` | celld listener and operator API health |
+| `GET /api/v1/node` | Resident and owned objects, memory, CPU, WebSockets, deployment version, drain state |
+| `GET /api/v1/objects?class=&limit=&after=` | Objects, marked resident or not |
+| `GET /api/v1/objects/<Class:id>` | SQL tables with row counts, pending alarm, WebSocket count and tags |
+| `GET /api/v1/objects/<Class:id>/kv?prefix=&startAfter=&limit=` | Key-value entries (`Date`, `Map`, `Set`, bytes and `bigint` as tagged JSON) |
+| `POST /api/v1/objects/<Class:id>/sql` | Read-only `SELECT`/`WITH`/`EXPLAIN`/`PRAGMA`, up to 500 rows |
+| `GET /api/v1/objects/<Class:id>/export` | JSON download of every KV entry, app table and pending alarm (10,000 each) |
+| `POST /api/v1/objects/<Class:id>/evict` | Evicts a resident object |
+| `GET /api/v1/backups?class=&limit=&after=` | Superseded LTX epochs eligible for GC (not a full history) |
+| `GET /metrics` | Prometheus text: engine gauges and ingress counters |
+
+celld 0.6 has no storage API, so `sobjects deploy` wraps the app's Durable Object classes in a small inspection hook. Requests carrying `x-sobjects-inspect` with this host's token are answered by the hook, and everything else reaches the app unchanged. Only the token's SHA-256 goes into the bundle, and the ingress strips the header from client requests. Pass `--no-inspector` to deploy the app unwrapped. Point-in-time restore isn't available, because celld has no tool to restore an older epoch.
+
+## Engine upgrades
+
+Every installable celld version is pinned with a SHA-256 for each release asset; currently 0.6.2 (the default) and 0.6.1. `sobjects upgrade` downloads and verifies a version, selects it, and records the previous one. `--rollback` switches back and `--status` lists versions. A failed download or checksum leaves the current selection in place. Running nodes keep their version until restarted. Set `SOBJECTS_CELLD_BIN` to use a binary you manage yourself.
+
+## Service units
+
+`sobjects service print` writes a systemd unit (Linux) or launchd plist (macOS) to stdout; `--kind` overrides the choice. `sobjects service install` writes it to:
+- `~/.config/systemd/user/`, or `/etc/systemd/system/` with `--system --user NAME`
+- `~/Library/LaunchAgents/` on macOS
+
+It refuses to overwrite without `--force` and prints the enable commands; it doesn't start anything. The unit runs `sobjects up` in the foreground and restarts it on failure. systemd units read credentials from an optional `sobjects.env` beside the config. System units get `CAP_NET_BIND_SERVICE` so the ingress can bind ports 80 and 443.
 
 ## Wrangler config handling
 
-`dev` and `deploy` parse JSONC before invoking celld, reject unknown top-level
-keys, and remove `observability` / `upload_source_maps` with warnings. A declared
-`build.command` runs before celld; only that build key is supported. If
-`assets.directory` is missing in a project with `@cloudflare/vite-plugin` and a
-Vite config, `dev`/`deploy` run `vite build` and discover a unique `index.html`
-under the Cloudflare Build Output worker assets or conventional `dist` output.
-Missing or ambiguous outputs fail safely; other projects must set
-`assets.directory` explicitly. The full Agents SDK sample has not yet been tested
-end-to-end through this Vite path.
+`dev` and `deploy` parse `wrangler.json`/`wrangler.jsonc` before calling celld:
 
-`deploy` forwards its arguments to celld. Missing bucket, endpoint, and region
-values are filled from the project's `sobjects.toml`; explicit CLI flags and
-standard environment variables take precedence. Credentials continue to come
-from celld's normal credential chain.
+- Unknown top-level keys are rejected.
+- `observability` and `upload_source_maps` are removed, with a warning.
+- A declared `build.command` runs first.
+- If `assets.directory` is missing in a project that uses `@cloudflare/vite-plugin`, `vite build` runs and the generated `index.html` is located. Ambiguous output fails before celld starts.
 
-The CLI is a pre-alpha test candidate, not a production release. Unit and integration checks include loopback service lifecycle and a real build using `@cloudflare/vite-plugin` 1.62.3; a minimal Agents SDK app has run through `deploy` and `up`, but the official samples have not. Bucket-backed `deploy` and `up --detach` with ingress were verified against SeaweedFS and Cloudflare R2; the R2 run used a token scoped to one bucket and showed about 0.7 s single-node write latency from the test Mac. Generated plists pass `plutil -lint`, but units have not yet been loaded into launchd or systemd. The dashboard is implemented; ACME issuance passed local Pebble testing, but production issuance and renewal have not been verified. Published on npm as a 0.1.x pre-alpha. See the [project README](../../README.md) for scope and roadmap.
+`deploy` fills a missing bucket, endpoint and region from the project's `sobjects.toml`; explicit flags and environment variables win. celld bundles with esbuild: a project-local copy comes first, then one on `PATH`, then the copy installed with this package.
+
+## Environment variables
+
+| Variable | Purpose |
+|---|---|
+| `SOBJECTS_STATE_DIR` | Detached PIDs, logs and ACME state (default `$XDG_STATE_HOME/serverless-objects` or `~/.local/state/serverless-objects`) |
+| `SOBJECTS_DATA_DIR` | Engine installs and the inspector token (default `$XDG_DATA_HOME/serverless-objects` or `~/.local/share/serverless-objects`) |
+| `SOBJECTS_CELLD_BIN` | Use this celld binary instead of the pinned download |
+| `CELLD_SHUTDOWN_TOTAL_MS` | celld's graceful-shutdown bound; `down` waits slightly longer |
+
+## Security notes
+
+- Keep celld's listener, its operator listener and the admin API on loopback. Only the ingress should face the network, and it requires TLS to do so.
+- Keep object-store credentials in the environment or credential chain, never in `sobjects.toml`.
+- Use a bucket dedicated to Serverless Objects.
+
+## License
+
+Apache-2.0. Report issues at [github.com/sinameraji/serverless-objects/issues](https://github.com/sinameraji/serverless-objects/issues).
