@@ -30,7 +30,7 @@ h1 { font-size: 17px; margin: 0; letter-spacing: -0.01em; }
 h2 { font-size: 15px; margin: 0 0 10px; }
 h3 { font-size: 14px; margin: 22px 0 8px; }
 main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 16px; padding: 16px 20px; }
-.node { grid-column: 1 / -1; }
+.node, .backups { grid-column: 1 / -1; }
 section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; min-width: 0; }
 .section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
 .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin: 0; }
@@ -50,6 +50,9 @@ textarea { width: 100%; font-family: ui-monospace, "SF Mono", Menlo, monospace; 
 button { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
 button:hover { border-color: var(--accent); }
 button.danger { color: var(--bad); }
+a.button { font-size: 15px; color: inherit; text-decoration: none; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; }
+a.button:hover { border-color: var(--accent); }
+.actions { display: flex; gap: 8px; align-items: center; }
 form.inline, #filter { display: flex; gap: 8px; align-items: end; }
 label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
 .pill { font-size: 12px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line); }

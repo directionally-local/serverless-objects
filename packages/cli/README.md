@@ -51,6 +51,15 @@ Object storage inspection:
 - `GET /api/v1/objects/<Class:id>/kv?prefix=&startAfter=&limit=`: key-value entries, with `Date`, `Map`, `Set`, bytes and `bigint` encoded as tagged JSON
 - `POST /api/v1/objects/<Class:id>/sql` with `{"query": "..."}`: read-only SELECT/WITH/EXPLAIN/PRAGMA, up to 500 rows
 
+Backups:
+
+- `GET /api/v1/backups?class=&limit=&after=`: per object, the restore base epoch and the superseded LTX epochs and bytes still in the bucket (from `celld cell gc --dry-run`; read-only)
+- `GET /api/v1/objects/<Class:id>/export`: a JSON download of every key-value entry, every app table with its schema, and the pending alarm (up to 10,000 entries or rows each; `truncated` says when the cap was hit)
+
+celld keeps superseded epochs unless `CELLD_LTX_RETENTION_SECS` is set, but
+has no tool to restore one, so point-in-time restore is not available in this
+version. There is no import for exports yet either.
+
 celld 0.6 has no storage API, so `sobjects deploy` bundles a small generated
 entry that re-exports the app and wraps its Durable Object classes and default
 handler. A request carrying `x-sobjects-inspect` with this host's token is

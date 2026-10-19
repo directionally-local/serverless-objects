@@ -140,3 +140,25 @@ test("inspects through the app's public listener with the inspector token", asyn
   await assert.rejects(rejected.inspect(`Counter:${ID}`, { op: "summary" }), /redeploy it/);
   await assert.rejects(adapter().inspect(`Counter:${ID}`, { op: "summary" }), /No inspector token/);
 });
+
+test("lists per-object backup epochs through celld cell gc --dry-run", async () => {
+  let invocation;
+  const engine = adapter({
+    env: { CELLD_LTX_RETENTION_SECS: "3600" },
+    run: async (executable, args) => {
+      invocation = args;
+      return `${JSON.stringify({ base: 14, bytes: 58621, epochs: [1, 2], scope: `Counter:${ID}` })}\n`;
+    },
+  });
+  const result = await engine.listBackups({ className: "Counter", limit: 10 });
+  assert.deepEqual(invocation, ["cell", "gc", "--dry-run", "Counter", "--bucket", "s3://fleet", "--json", "--grace-secs", "0", "--limit", "11"]);
+  assert.deepEqual(result, {
+    retentionSeconds: 3600,
+    objects: [{
+      scope: `Counter:${ID}`, className: "Counter", id: ID, reserved: false,
+      restoreBaseEpoch: 14, supersededEpochs: [1, 2], supersededBytes: 58621,
+    }],
+    next: undefined,
+  });
+  await assert.rejects(engine.listBackups({ className: "--all" }), RangeError);
+});

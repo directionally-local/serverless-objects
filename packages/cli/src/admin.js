@@ -121,7 +121,15 @@ export async function startAdmin({ listen, engine, metrics, version }) {
       });
       return;
     }
-    const object = /^\/api\/v1\/objects\/([^/]+)(?:\/(kv|sql))?$/.exec(path);
+    if (request.method === "GET" && path === "/api/v1/backups") {
+      sendJson(response, 200, await engine.listBackups({
+        className: url.searchParams.get("class") ?? undefined,
+        after: url.searchParams.get("after") ?? undefined,
+        limit: url.searchParams.has("limit") ? Number(url.searchParams.get("limit")) : 100,
+      }));
+      return;
+    }
+    const object = /^\/api\/v1\/objects\/([^/]+)(?:\/(kv|sql|export))?$/.exec(path);
     if (object) {
       const scope = decodeURIComponent(object[1]);
       if (request.method === "GET" && !object[2]) {
@@ -135,6 +143,19 @@ export async function startAdmin({ listen, engine, metrics, version }) {
           startAfter: url.searchParams.get("startAfter") ?? undefined,
           limit: url.searchParams.has("limit") ? Number(url.searchParams.get("limit")) : 100,
         }));
+        return;
+      }
+      if (request.method === "GET" && object[2] === "export") {
+        const exported = await engine.inspect(scope, { op: "export" });
+        const name = `${scope.replace(/[^A-Za-z0-9_-]+/g, "-")}-${exported.exportedAt.replace(/[:.]/g, "-")}.json`;
+        const text = `${JSON.stringify({ scope, ...exported }, null, 2)}\n`;
+        response.writeHead(200, {
+          "content-type": "application/json",
+          "content-disposition": `attachment; filename="${name}"`,
+          "cache-control": "no-store",
+          "content-length": Buffer.byteLength(text),
+        });
+        response.end(text);
         return;
       }
       if (request.method === "POST" && object[2] === "sql") {

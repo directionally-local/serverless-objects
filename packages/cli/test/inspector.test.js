@@ -36,7 +36,7 @@ function fakeState({ kv = new Map(), tables = {}, alarm = null } = {}) {
           }
           const count = /count\(\*\) AS n FROM "(\w+)"/.exec(query);
           if (count) return { one: () => ({ n: tables[count[1]].length }) };
-          const rows = tables[/FROM (\w+)/.exec(query)[1]];
+          const rows = tables[/FROM "?(\w+)/.exec(query)[1]];
           return Object.assign(rows[Symbol.iterator].call(rows), { columnNames: Object.keys(rows[0] ?? {}) });
         },
       },
@@ -180,4 +180,17 @@ test("the wrapped default handler routes inspection to the object and passes oth
   assert.equal((await send(TOKEN, { className: "Missing", id: ID })).status, 404);
   assert.equal((await send(TOKEN, { className: "Counter", id: "x" })).status, 400);
   assert.equal(forwarded.length, 1);
+});
+
+test("exports every key-value entry and app table as a logical backup", async () => {
+  const state = fakeState({ kv: new Map([["n", 3], ["when", new Date(0)]]), tables: { hits: [{ n: 1 }, { n: 2 }] } });
+  const originalExec = state.storage.sql.exec;
+  state.storage.sql.exec = (query) => query.includes("SELECT name, sql")
+    ? { toArray: () => [{ name: "hits", sql: "CREATE TABLE hits (n INTEGER)" }] }
+    : originalExec(query);
+  const exported = await inspectStorage(state, { op: "export" });
+  assert.equal(exported.format, "sobjects-object-export/v1");
+  assert.deepEqual(exported.kv, [{ key: "n", value: 3 }, { key: "when", value: { $type: "Date", value: "1970-01-01T00:00:00.000Z" } }]);
+  assert.deepEqual(exported.tables, [{ name: "hits", schema: "CREATE TABLE hits (n INTEGER)", columns: ["n"], rows: [{ n: 1 }, { n: 2 }] }]);
+  assert.equal(exported.truncated, false);
 });
