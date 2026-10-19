@@ -38,7 +38,10 @@
     <section id="detail" class="detail" hidden aria-labelledby="detail-title">
       <div class="section-head">
         <h2 id="detail-title">Object</h2>
-        <button id="evict" type="button" class="danger">Evict</button>
+        <span class="actions">
+          <a id="export" class="button" href="#" download>Export JSON</a>
+          <button id="evict" type="button" class="danger">Evict</button>
+        </span>
       </div>
       <p id="detail-scope" class="mono"></p>
       <dl id="summary" class="stats"></dl>
@@ -61,6 +64,18 @@
         <button type="submit">Run</button>
       </form>
       <div id="sql-result"></div>
+    </section>
+    <section class="backups" aria-labelledby="backups-title">
+      <div class="section-head">
+        <h2 id="backups-title">Backups in the bucket</h2>
+        <button id="load-backups" type="button">Load</button>
+      </div>
+      <p id="retention" class="muted">celld keeps each object's write history as LTX epochs. Loading reads the bucket listing.</p>
+      <table>
+        <thead><tr><th>Object</th><th>Restore base epoch</th><th>Superseded epochs</th><th>Superseded size</th></tr></thead>
+        <tbody id="backup-rows"></tbody>
+      </table>
+      <button id="backups-more" type="button" hidden>Load more</button>
     </section>
   </main>
   <p id="error" class="error" role="alert" hidden></p>

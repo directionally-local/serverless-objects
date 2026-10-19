@@ -79,6 +79,34 @@ export function createCelldAdapter({
       };
     },
 
+    // celld keeps superseded LTX epochs unless CELLD_LTX_RETENTION_SECS is set.
+    // `cell gc --dry-run` reports them per object without writing anything.
+    async listBackups({ className, after, limit = 100 } = {}) {
+      if (className !== undefined && !/^[A-Za-z_$][\w$]*$/.test(className)) {
+        throw new RangeError("Invalid object class name.");
+      }
+      if (!Number.isInteger(limit) || limit < 1 || limit > 1_000) {
+        throw new RangeError("limit must be from 1 to 1000.");
+      }
+      const args = ["cell", "gc", "--dry-run"];
+      if (className) args.push(className);
+      args.push(...storageArgs, "--json", "--grace-secs", "0", "--limit", String(limit + 1));
+      if (after) args.push("--after", after);
+      const output = await run(executable, args, { env, timeoutMs: 60_000 });
+      const rows = output.split("\n").map((line) => line.trim()).filter((line) => line.startsWith("{")).map((line) => JSON.parse(line));
+      const page = rows.slice(0, limit);
+      return {
+        retentionSeconds: Number(env.CELLD_LTX_RETENTION_SECS) > 0 ? Number(env.CELLD_LTX_RETENTION_SECS) : null,
+        objects: page.map((row) => ({
+          ...parseScope(row.scope),
+          restoreBaseEpoch: row.base,
+          supersededEpochs: Array.isArray(row.epochs) ? row.epochs : [],
+          supersededBytes: row.bytes,
+        })),
+        next: rows.length > limit ? page.at(-1).scope : undefined,
+      };
+    },
+
     // Reads storage through the hooks `sobjects deploy` bundles into the app.
     // Activating the object to answer is unavoidable; celld has no offline read.
     async inspect(scope, operation) {

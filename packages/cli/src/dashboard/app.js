@@ -3,7 +3,7 @@
 // markup.
 
 const $ = (id) => document.getElementById(id);
-const state = { className: "", next: undefined, scope: undefined, kvNext: undefined };
+const state = { className: "", next: undefined, scope: undefined, kvNext: undefined, backupsNext: undefined };
 
 async function api(path, { method = "GET", body } = {}) {
   const response = await fetch(path, {
@@ -118,6 +118,7 @@ async function openObject(scope) {
   $("detail-scope").textContent = scope;
   $("sql-result").replaceChildren();
   const encoded = encodeURIComponent(scope);
+  $("export").href = `/api/v1/objects/${encoded}/export`;
   const summary = await api(`/api/v1/objects/${encoded}`);
   renderStats($("summary"), [
     ["Alarm", summary.alarm ?? "none"],
@@ -188,6 +189,32 @@ async function runSql() {
   $("sql-result").replaceChildren(note, table);
 }
 
+async function loadBackups({ append = false } = {}) {
+  const params = new URLSearchParams({ limit: "50" });
+  if (state.className) params.set("class", state.className);
+  if (append && state.backupsNext) params.set("after", state.backupsNext);
+  const page = await api(`/api/v1/backups?${params}`);
+  $("retention").textContent = page.retentionSeconds
+    ? `celld deletes superseded epochs older than ${page.retentionSeconds}s (CELLD_LTX_RETENTION_SECS). Point-in-time restore is not available in this version; use Export JSON for a logical backup.`
+    : "CELLD_LTX_RETENTION_SECS is unset, so celld keeps every superseded epoch. Point-in-time restore is not available in this version; use Export JSON for a logical backup.";
+  const rows = page.objects.map((object) => {
+    const row = element("tr", undefined, { "data-scope": object.scope });
+    const scope = element("td");
+    scope.append(element("code", object.scope));
+    row.append(
+      scope,
+      element("td", String(object.restoreBaseEpoch ?? "?")),
+      element("td", String(object.supersededEpochs.length)),
+      element("td", formatBytes(object.supersededBytes) ?? "?"),
+    );
+    return row;
+  });
+  if (append) $("backup-rows").append(...rows);
+  else $("backup-rows").replaceChildren(...rows);
+  state.backupsNext = page.next;
+  $("backups-more").hidden = !page.next;
+}
+
 async function evict() {
   const result = await api(`/api/v1/objects/${encodeURIComponent(state.scope)}/evict`, { method: "POST" });
   if (result.ok) {
@@ -217,6 +244,12 @@ $("kv-form").addEventListener("submit", guard(() => listKv()));
 $("kv-more").addEventListener("click", guard(() => listKv({ append: true })));
 $("sql-form").addEventListener("submit", guard(runSql));
 $("evict").addEventListener("click", guard(evict));
+$("load-backups").addEventListener("click", guard(() => loadBackups()));
+$("backups-more").addEventListener("click", guard(() => loadBackups({ append: true })));
+$("backup-rows").addEventListener("click", (event) => {
+  const row = event.target.closest("tr[data-scope]");
+  if (row) guard(() => openObject(row.dataset.scope))();
+});
 
 guard(() => Promise.all([refreshNode(), loadObjects()]))();
 setInterval(() => refreshNode().catch(() => {}), 5_000);

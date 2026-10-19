@@ -5,6 +5,7 @@
 
 export const INSPECT_HEADER = "x-sobjects-inspect";
 const MAX_ROWS = 500;
+const MAX_EXPORT_ROWS = 10_000;
 const MAX_VALUE_BYTES = 64 * 1024;
 const STATE = Symbol("sobjects.state");
 
@@ -117,6 +118,50 @@ export async function inspectStorage(state, { op, prefix, startAfter, limit = 10
       rows.push(Object.fromEntries(Object.entries(row).map(([key, value]) => [key, encodeValue(value)])));
     }
     return { columns: cursor.columnNames, rows, truncated: rows.length === MAX_ROWS };
+  }
+  if (op === "export") {
+    // A logical backup: every key-value entry and every app table, bounded so
+    // one request cannot exhaust the isolate.
+    const entries = [];
+    let truncated = false;
+    let cursor;
+    for (;;) {
+      const page = [...(await storage.list({ limit: 1_000, ...(cursor ? { startAfter: cursor } : {}) }))];
+      for (const [key, value] of page) entries.push({ key, value: encodeValue(value) });
+      if (page.length < 1_000) break;
+      cursor = page.at(-1)[0];
+      if (entries.length >= MAX_EXPORT_ROWS) {
+        truncated = true;
+        break;
+      }
+    }
+    const tables = [];
+    if (storage.sql) {
+      const names = storage.sql.exec(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND name NOT GLOB '_litestream_*' ORDER BY name",
+      ).toArray();
+      for (const { name, sql } of names) {
+        const rows = [];
+        const result = storage.sql.exec(`SELECT * FROM "${String(name).replace(/"/g, '""')}"`);
+        for (const row of result) {
+          if (rows.length === MAX_EXPORT_ROWS) {
+            truncated = true;
+            break;
+          }
+          rows.push(Object.fromEntries(Object.entries(row).map(([key, value]) => [key, encodeValue(value)])));
+        }
+        tables.push({ name, schema: sql, columns: result.columnNames, rows });
+      }
+    }
+    const alarm = await storage.getAlarm();
+    return {
+      format: "sobjects-object-export/v1",
+      exportedAt: new Date().toISOString(),
+      alarm: alarm === null ? null : new Date(alarm).toISOString(),
+      kv: entries,
+      tables,
+      truncated,
+    };
   }
   throw new RangeError(`Unknown inspector operation ${op}.`);
 }

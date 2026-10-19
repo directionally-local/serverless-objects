@@ -160,3 +160,24 @@ test("serves the dashboard with a strict content security policy", async () => {
   assert.equal(headers["x-content-type-options"], "nosniff");
   assert.equal((await call(port, "/dashboard/../admin.js")).status, 404);
 });
+
+test("lists backups and downloads an object export", async () => {
+  const port = await admin(fakeEngine({
+    listBackups: async (options) => ({ retentionSeconds: null, objects: [], next: undefined, options }),
+    inspect: async (_scope, operation) => {
+      assert.deepEqual(operation, { op: "export" });
+      return { format: "sobjects-object-export/v1", exportedAt: "2026-10-19T00:00:00.000Z", kv: [], tables: [], truncated: false };
+    },
+  }));
+  const backups = (await call(port, "/api/v1/backups?class=Room&limit=5")).json();
+  assert.deepEqual(backups.options, { className: "Room", limit: 5 });
+  const exported = await new Promise((resolve, reject) => {
+    request({ host: "127.0.0.1", port, path: `/api/v1/objects/Room:${ID}/export`, headers: { host: "localhost" } }, (response) => {
+      let text = "";
+      response.on("data", (chunk) => { text += chunk; });
+      response.on("end", () => resolve({ headers: response.headers, body: JSON.parse(text) }));
+    }).on("error", reject).end();
+  });
+  assert.match(exported.headers["content-disposition"], new RegExp(`attachment; filename="Room-${ID}-2026-10-19T00-00-00-000Z\\.json"`));
+  assert.equal(exported.body.scope, `Room:${ID}`);
+});
