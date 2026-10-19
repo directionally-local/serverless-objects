@@ -27,6 +27,9 @@ const FORWARDING = new Set([
   "x-forwarded-proto",
   "x-real-ip",
   "cf-connecting-ip",
+  // Only the supervisor may call the storage inspector hooks, and it talks to
+  // celld directly, so the header never comes from a client.
+  "x-sobjects-inspect",
 ]);
 
 export async function startIngress({

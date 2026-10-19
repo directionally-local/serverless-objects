@@ -7,6 +7,7 @@ dist/
 coverage/
 .celld/
 .sobjects-wrangler-*.json
+.sobjects-entry-*.mjs
 
 # Project-local object-store configuration can contain infrastructure details.
 sobjects.toml

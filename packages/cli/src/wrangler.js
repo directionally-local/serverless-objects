@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
+import { inspectorClasses, renderInspectorEntry } from "./inspector.js";
 import { parse, printParseErrorCode } from "jsonc-parser";
 
 const CELLD_WRANGLER_KEYS = new Set([
@@ -28,7 +29,7 @@ const CELLD_WRANGLER_KEYS = new Set([
 ]);
 const NORMALIZABLE_KEYS = new Set(["build", "observability", "upload_source_maps"]);
 
-export async function prepareWranglerProject(args, { cwd = process.cwd() } = {}) {
+export async function prepareWranglerProject(args, { cwd = process.cwd(), inspectorTokenHash } = {}) {
   const projectArgument = args[0] && !args[0].startsWith("-") ? args[0] : ".";
   const projectPath = resolve(cwd, projectArgument);
   let configPath;
@@ -68,12 +69,25 @@ export async function prepareWranglerProject(args, { cwd = process.cwd() } = {})
     cleanup: async () => {},
   };
 
+  const suffix = `${process.pid}-${randomUUID()}`;
+  let entryPath;
+  const classes = inspectorClasses(normalized.config);
+  if (inspectorTokenHash && typeof normalized.config.main === "string" && Object.keys(classes).length > 0) {
+    // The entry sits beside the config so relative paths keep working, and it
+    // imports the app's main module by absolute path.
+    entryPath = join(projectDirectory, `.sobjects-entry-${suffix}.mjs`);
+    await writeFile(entryPath, renderInspectorEntry({
+      main: resolve(projectDirectory, normalized.config.main),
+      classes,
+      tokenHash: inspectorTokenHash,
+    }), { mode: 0o600 });
+    normalized.config.main = `./${basename(entryPath)}`;
+    normalized.changed = true;
+  }
+
   if (!normalized.changed) return result;
 
-  const temporaryPath = join(
-    projectDirectory,
-    `.sobjects-wrangler-${process.pid}-${randomUUID()}.json`,
-  );
+  const temporaryPath = join(projectDirectory, `.sobjects-wrangler-${suffix}.json`);
   const writeNormalizedConfig = () =>
     writeFile(temporaryPath, `${JSON.stringify(normalized.config, null, 2)}\n`, {
       encoding: "utf8",
@@ -93,9 +107,13 @@ export async function prepareWranglerProject(args, { cwd = process.cwd() } = {})
       await writeNormalizedConfig();
     };
   }
-  result.cleanup = async () => unlink(temporaryPath).catch((error) => {
-    if (error.code !== "ENOENT") throw error;
-  });
+  result.cleanup = async () => {
+    for (const path of [temporaryPath, entryPath].filter(Boolean)) {
+      await unlink(path).catch((error) => {
+        if (error.code !== "ENOENT") throw error;
+      });
+    }
+  };
   return result;
 }
 

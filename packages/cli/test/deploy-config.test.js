@@ -53,6 +53,7 @@ test("uses sobjects.toml for missing celld deploy options", async () => {
   const exitCode = await run(["deploy", "--dry-run"], output.io, {
     cwd,
     env: { SOBJECTS_CELLD_BIN: "/celld", PATH: "/usr/bin" },
+    ensureToken: async () => "test-token",
     spawnProcess: (executable, args) => {
       invocation = { executable, args };
       return childWithExit();
@@ -82,6 +83,7 @@ test("preserves explicit celld flags and environment overrides", async () => {
     {
       cwd,
       env: { SOBJECTS_CELLD_BIN: "/celld", CELLD_BUCKET: "s3://env/fleet", AWS_REGION: "env-region" },
+      ensureToken: async () => "test-token",
       spawnProcess: (executable, args) => {
         invocation = { executable, args };
         return childWithExit();

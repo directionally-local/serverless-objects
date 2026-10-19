@@ -96,6 +96,28 @@ export async function startAdmin({ listen, engine, metrics, version }) {
       });
       return;
     }
+    const object = /^\/api\/v1\/objects\/([^/]+)(?:\/(kv|sql))?$/.exec(path);
+    if (object) {
+      const scope = decodeURIComponent(object[1]);
+      if (request.method === "GET" && !object[2]) {
+        sendJson(response, 200, await engine.inspect(scope, { op: "summary" }));
+        return;
+      }
+      if (request.method === "GET" && object[2] === "kv") {
+        sendJson(response, 200, await engine.inspect(scope, {
+          op: "kv",
+          prefix: url.searchParams.get("prefix") ?? undefined,
+          startAfter: url.searchParams.get("startAfter") ?? undefined,
+          limit: url.searchParams.has("limit") ? Number(url.searchParams.get("limit")) : 100,
+        }));
+        return;
+      }
+      if (request.method === "POST" && object[2] === "sql") {
+        const body = await readJson(request);
+        sendJson(response, 200, await engine.inspect(scope, { op: "sql", query: body?.query }));
+        return;
+      }
+    }
     const evict = /^\/api\/v1\/objects\/([^/]+)\/evict$/.exec(path);
     if (evict && request.method === "POST") {
       const result = await engine.evict(decodeURIComponent(evict[1]));
@@ -144,6 +166,19 @@ export async function startAdmin({ listen, engine, metrics, version }) {
       server.closeAllConnections();
     }),
   };
+}
+
+async function readJson(request, limitBytes = 64 * 1024) {
+  let text = "";
+  for await (const chunk of request) {
+    text += chunk;
+    if (text.length > limitBytes) throw new RangeError("Request body is too large.");
+  }
+  try {
+    return JSON.parse(text || "null");
+  } catch {
+    throw new RangeError("Expected a JSON body.");
+  }
 }
 
 function gauge(lines, name, help, value) {

@@ -93,7 +93,7 @@ test("proxies requests, rewrites forwarding headers, and logs without query stri
     path: "/items?token=secret",
     method: "POST",
     body: "hello",
-    headers: { "x-forwarded-for": "6.6.6.6", "cf-connecting-ip": "6.6.6.6", "x-app": "1" },
+    headers: { "x-forwarded-for": "6.6.6.6", "cf-connecting-ip": "6.6.6.6", "x-sobjects-inspect": "guess", "x-app": "1" },
   });
   assert.equal(response.status, 200);
   assert.equal(response.headers["x-upstream"], "yes");
@@ -105,6 +105,7 @@ test("proxies requests, rewrites forwarding headers, and logs without query stri
   assert.equal(echoed.headers["x-forwarded-for"], "127.0.0.1");
   assert.equal(echoed.headers["cf-connecting-ip"], "127.0.0.1");
   assert.equal(echoed.headers["x-forwarded-proto"], "http");
+  assert.equal(echoed.headers["x-sobjects-inspect"], undefined);
 
   assert.equal(log.length, 1);
   assert.equal(log[0].path, "/items");

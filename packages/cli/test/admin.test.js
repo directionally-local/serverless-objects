@@ -107,3 +107,34 @@ test("renders Prometheus metrics from engine state and ingress counters", async 
   assert.match(down, /^sobjects_engine_up 0$/m);
   assert.doesNotMatch(down, /resident_objects/);
 });
+
+test("inspects object storage through the engine", async () => {
+  const calls = [];
+  const port = await admin(fakeEngine({
+    inspect: async (scope, operation) => {
+      calls.push([scope, operation]);
+      if (operation.op === "sql" && operation.query === "DELETE FROM t") throw new RangeError("read-only");
+      return { ok: operation.op };
+    },
+  }));
+  const base = `/api/v1/objects/Room:${ID}`;
+  assert.deepEqual((await call(port, base)).json(), { ok: "summary" });
+  assert.deepEqual((await call(port, `${base}/kv?prefix=a&limit=5`)).json(), { ok: "kv" });
+  const sql = (query, headers = { "x-sobjects-request": "1" }) => new Promise((resolve, reject) => {
+    const req = request({ host: "127.0.0.1", port, path: `${base}/sql`, method: "POST", headers: { host: "localhost", ...headers } }, (response) => {
+      let text = "";
+      response.on("data", (chunk) => { text += chunk; });
+      response.on("end", () => resolve({ status: response.statusCode, json: () => JSON.parse(text) }));
+    });
+    req.on("error", reject);
+    req.end(JSON.stringify({ query }));
+  });
+  assert.deepEqual((await sql("SELECT 1")).json(), { ok: "sql" });
+  assert.equal((await sql("DELETE FROM t")).status, 400);
+  assert.equal((await sql("SELECT 1", {})).status, 403);
+  assert.deepEqual(calls.slice(0, 3), [
+    [`Room:${ID}`, { op: "summary" }],
+    [`Room:${ID}`, { op: "kv", prefix: "a", startAfter: undefined, limit: 5 }],
+    [`Room:${ID}`, { op: "sql", query: "SELECT 1" }],
+  ]);
+});

@@ -91,6 +91,7 @@ test("passes deploy arguments to the configured celld binary", async () => {
   let invocation;
   const exitCode = await run(["deploy", "--bucket", "s3://test"], output.io, {
     env: { SOBJECTS_CELLD_BIN: "/opt/celld" },
+    ensureToken: async () => "test-token",
     spawnProcess: (executable, args) => {
       invocation = { executable, args };
       return childWithExit(0);

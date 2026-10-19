@@ -9,6 +9,7 @@ export function createCelldAdapter({
   internalListen,
   executable,
   storageArgs,
+  inspectorToken,
   env = process.env,
   fetchImpl = globalThis.fetch,
   run = execFileText,
@@ -76,6 +77,29 @@ export function createCelldAdapter({
         objects: page.map((row) => parseScope(row.scope)),
         next: rows.length > limit ? page.at(-1).scope : undefined,
       };
+    },
+
+    // Reads storage through the hooks `sobjects deploy` bundles into the app.
+    // Activating the object to answer is unavoidable; celld has no offline read.
+    async inspect(scope, operation) {
+      const { className, id } = parseScope(scope);
+      if (!inspectorToken) {
+        throw new Error("No inspector token on this host; deploy the app with 'sobjects deploy' from this host first.");
+      }
+      const { status, body } = await request(publicOrigin, "/", {
+        method: "POST",
+        headers: { "x-sobjects-inspect": inspectorToken, "content-type": "application/json" },
+        body: JSON.stringify({ ...operation, className, id }),
+      });
+      if (status === 401) {
+        throw new Error("The deployed app rejected this host's inspector token; redeploy it with 'sobjects deploy' from this host.");
+      }
+      if (status !== 200) {
+        const message = typeof body === "object" && body?.error ? body.error : `HTTP ${status}`;
+        if (status === 400) throw new RangeError(message);
+        throw new Error(`Inspection failed: ${message}`);
+      }
+      return body;
     },
 
     async evict(scope) {

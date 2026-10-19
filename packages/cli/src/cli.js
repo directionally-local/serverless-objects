@@ -16,6 +16,7 @@ import {
 import { createIngressMetrics, startAdmin } from "./admin.js";
 import { createCelldAdapter } from "./celld-adapter.js";
 import { HEALTH_PATH, startIngress } from "./ingress.js";
+import { ensureInspectorToken, readInspectorToken, tokenHash } from "./inspector.js";
 import { renderLaunchdPlist, renderSystemdUnit, unitTarget, writeUnit } from "./units.js";
 import { prepareWranglerProject } from "./wrangler.js";
 import {
@@ -103,6 +104,8 @@ export async function run(
     onSignal = subscribeToSignal,
     nodeExecutable = process.execPath,
     readSelection = readEngineSelection,
+    ensureToken = ensureInspectorToken,
+    readToken = readInspectorToken,
     writeSelection = writeEngineSelection,
     isInstalled = isCelldInstalled,
     ...dependencies
@@ -134,6 +137,7 @@ export async function run(
       readSelection,
       startAdminServer,
       createEngine,
+      readToken,
     });
   }
   if (command === "supervise") {
@@ -147,6 +151,7 @@ export async function run(
       onSignal,
       installEngine,
       readSelection,
+      readToken,
     });
   }
   if (command === "upgrade") {
@@ -159,7 +164,7 @@ export async function run(
   if (command === "status") return runStatus(args, io, { env, getServiceStatus });
   if (command === "logs") return runLogs(args, io, { env, readServiceLogs });
   if (command === "dev" || command === "deploy") {
-    return runCelld(command, args, io, { spawnProcess, env, cwd, installEngine, prepareProject, loadConfig, readSelection });
+    return runCelld(command, args, io, { spawnProcess, env, cwd, installEngine, prepareProject, loadConfig, readSelection, ensureToken });
   }
 
   io.error(`Unknown option or command: ${command}`);
@@ -393,6 +398,7 @@ async function startSupervisorRuntime(config, io, dependencies) {
         internalListen: config.internalListen,
         executable: dependencies.executable,
         storageArgs: dependencies.storageArgs,
+        inspectorToken: await dependencies.readToken(defaultDataDirectory(dependencies.env)),
         env: dependencies.env,
       });
       const admin = await dependencies.startAdminServer({ listen: config.admin.listen, engine, metrics, version });
@@ -665,9 +671,24 @@ async function runCelld(command, args, io, dependencies) {
     }
   }
 
+  // Deploys carry storage inspection hooks unless --no-inspector is passed.
+  let inspectorTokenHash;
+  if (command === "deploy") {
+    if (effectiveArgs.includes("--no-inspector")) {
+      effectiveArgs = effectiveArgs.filter((argument) => argument !== "--no-inspector");
+    } else {
+      try {
+        inspectorTokenHash = tokenHash(await dependencies.ensureToken(defaultDataDirectory(dependencies.env)));
+      } catch (error) {
+        io.error(error.message);
+        return 1;
+      }
+    }
+  }
+
   let prepared;
   try {
-    prepared = await dependencies.prepareProject(effectiveArgs, { cwd: dependencies.cwd });
+    prepared = await dependencies.prepareProject(effectiveArgs, { cwd: dependencies.cwd, inspectorTokenHash });
   } catch (error) {
     io.error(error.message);
     return 2;
