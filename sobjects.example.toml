@@ -24,6 +24,17 @@ listen = "127.0.0.1:8080"
 # hostname = "agents.example.com"
 # # upstream defaults to the [celld] listener
 
+# Or use HTTP-01 ACME instead of [ingress.tls]. ACME requires public traffic on
+# port 80 to reach redirect_http; test against staging before using production.
+# [ingress.acme]
+# email = "ops@example.com"
+# agree_to_terms = true  # Explicitly agree to the CA subscriber terms.
+# directory_url = "https://acme-staging-v02.api.letsencrypt.org/directory"
+#
+# [[ingress.routes]]
+# hostname = "agents.example.com"  # HTTP-01 does not issue wildcard certificates.
+# # upstream defaults to the [celld] listener
+#
 # Optional loopback admin API and Prometheus metrics, served by the supervisor.
 # Enabling it pins celld's operator listener (default: [celld] port + 1).
 # [admin]

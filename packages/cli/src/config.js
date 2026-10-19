@@ -5,10 +5,12 @@ import { parse } from "smol-toml";
 const ROOT_KEYS = new Set(["celld", "ingress", "admin"]);
 const CELLD_KEYS = new Set(["bucket", "endpoint", "region", "listen", "internal_listen"]);
 const ADMIN_KEYS = new Set(["listen"]);
-const INGRESS_KEYS = new Set(["listen", "redirect_http", "access_log", "tls", "routes"]);
+const INGRESS_KEYS = new Set(["listen", "redirect_http", "access_log", "tls", "acme", "routes"]);
 const TLS_KEYS = new Set(["cert", "key"]);
+const ACME_KEYS = new Set(["email", "agree_to_terms", "directory_url"]);
 const ROUTE_KEYS = new Set(["hostname", "upstream", "tls"]);
 const DEFAULT_LISTEN = "127.0.0.1:8080";
+const DEFAULT_ACME_DIRECTORY = "https://acme-v02.api.letsencrypt.org/directory";
 
 export async function loadSobjectsConfig(filePath) {
   let source;
@@ -115,17 +117,27 @@ function parseIngress(ingress, celld, sourceName, baseDirectory) {
   const tls = ingress.tls === undefined
     ? undefined
     : parseTls(ingress.tls, `${table}.tls`, baseDirectory);
-  if (!tls && !isLoopback(listen)) {
+  const acme = ingress.acme === undefined
+    ? undefined
+    : parseAcme(ingress.acme, `${table}.acme`);
+  if (tls && acme) throw new Error(`${table} must configure either [ingress.tls] or [ingress.acme], not both.`);
+  if (!tls && !acme && !isLoopback(listen)) {
     throw new Error(
-      `${table}.listen ${listen} is not loopback; add [ingress.tls] cert and key before exposing the ingress.`,
+      `${table}.listen ${listen} is not loopback; add [ingress.tls] cert and key or [ingress.acme] before exposing the ingress.`,
     );
   }
 
   let redirectHttp;
   if (ingress.redirect_http !== undefined) {
-    if (!tls) throw new Error(`${table}.redirect_http requires [ingress.tls].`);
+    if (!tls && !acme) throw new Error(`${table}.redirect_http requires [ingress.tls] or [ingress.acme].`);
     redirectHttp = requireString(ingress.redirect_http, `${table}.redirect_http`);
     validateListenAddress(redirectHttp, `${table}.redirect_http`);
+  }
+  if (acme && !redirectHttp) {
+    throw new Error(`${table}.acme requires redirect_http on port 80 for HTTP-01 validation.`);
+  }
+  if (acme && portOf(redirectHttp) !== 80) {
+    throw new Error(`${table}.acme requires [ingress].redirect_http to listen on port 80 for HTTP-01 validation.`);
   }
 
   let accessLog;
@@ -165,7 +177,7 @@ function parseIngress(ingress, celld, sourceName, baseDirectory) {
       result.upstream = url.origin;
     }
     if (route.tls !== undefined) {
-      if (!tls) throw new Error(`${label}.tls requires a default [ingress.tls] certificate.`);
+      if (!tls && !acme) throw new Error(`${label}.tls requires a default [ingress.tls] or [ingress.acme] certificate.`);
       result.tls = parseTls(route.tls, `${label}.tls`, baseDirectory);
     }
     return Object.freeze(result);
@@ -173,9 +185,44 @@ function parseIngress(ingress, celld, sourceName, baseDirectory) {
 
   const result = { listen, routes: Object.freeze(routes) };
   if (tls) result.tls = tls;
+  if (acme) {
+    const domains = routes.filter((route) => !route.tls).map((route) => route.hostname);
+    if (domains.length === 0) throw new Error(`${table}.acme has no route that needs an ACME certificate.`);
+    const unsupported = domains.find((hostname) => hostname === "*" || hostname.startsWith("*."));
+    if (unsupported) throw new Error(`${table}.acme cannot issue HTTP-01 certificates for wildcard route ${unsupported}.`);
+    result.acme = Object.freeze({ ...acme, domains: Object.freeze(domains) });
+  }
   if (redirectHttp) result.redirectHttp = redirectHttp;
   if (accessLog) result.accessLog = accessLog;
   return Object.freeze(result);
+}
+
+function parseAcme(value, label) {
+  if (!isRecord(value)) throw new Error(`${label} must be a table.`);
+  rejectUnknownKeys(value, ACME_KEYS, label);
+  const email = requireString(value.email, `${label}.email`);
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new Error(`${label}.email must be a valid contact email address.`);
+  }
+  if (value.agree_to_terms !== true) {
+    throw new Error(`${label}.agree_to_terms must be true to enable automatic certificate issuance.`);
+  }
+  const directoryUrl = value.directory_url === undefined
+    ? DEFAULT_ACME_DIRECTORY
+    : requireString(value.directory_url, `${label}.directory_url`);
+  let parsed;
+  try {
+    parsed = new URL(directoryUrl);
+  } catch {
+    throw new Error(`${label}.directory_url must be a valid HTTPS URL (HTTP is allowed only for loopback test servers).`);
+  }
+  const localHttp = parsed.protocol === "http:" && (
+    parsed.hostname === "localhost" || parsed.hostname === "::1" || /^127\./.test(parsed.hostname)
+  );
+  if ((parsed.protocol !== "https:" && !localHttp) || parsed.username || parsed.password || parsed.hash) {
+    throw new Error(`${label}.directory_url must use HTTPS (HTTP is allowed only for loopback test servers) and must not include credentials or a fragment.`);
+  }
+  return Object.freeze({ email, agreeToTerms: true, directoryUrl: parsed.toString() });
 }
 
 function parseTls(value, label, baseDirectory) {

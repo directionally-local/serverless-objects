@@ -1,0 +1,14 @@
+{
+  "name": "sobjects-conformance",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "test:wrangler": "node src/run.js --target wrangler",
+    "test:celld": "node src/run.js --target celld"
+  },
+  "devDependencies": {
+    "wrangler": "4.150.0"
+  }
+}

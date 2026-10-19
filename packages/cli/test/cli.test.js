@@ -45,11 +45,12 @@ test("supports top-level and up help", async () => {
 });
 
 test("prints the package version", async () => {
+  const { version } = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   for (const flag of ["--version", "-v", "version"]) {
     const output = capture();
     const exitCode = await run([flag], output.io);
     assert.equal(exitCode, 0);
-    assert.deepEqual(output.stdout, ["0.1.0"]);
+    assert.deepEqual(output.stdout, [version]);
     assert.deepEqual(output.stderr, []);
   }
 });

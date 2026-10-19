@@ -28,6 +28,28 @@ HTTP listener directly to the internet; put the ingress in front of it.
 Detached mode only manages local PIDs and logs; for a supervised service use
 `sobjects service`.
 
+## TLS ingress and ACME HTTP-01
+
+The ingress accepts either static PEM files in `[ingress.tls]` or automatic
+certificates in `[ingress.acme]` (not both). ACME requires `email`, explicit
+`agree_to_terms = true`, `redirect_http` listening on port 80, DNS records for
+each exact route hostname, and public HTTP reachability on port 80. Wildcard
+routes cannot use HTTP-01; assign them their own static route certificate.
+
+The default ACME directory is Let's Encrypt production. Set `directory_url` to
+the Let's Encrypt staging directory while validating DNS and firewall setup.
+ACME account keys and certificates are stored under `SOBJECTS_STATE_DIR/acme`
+(or the default user state directory), with private files mode 0600 and
+containing directories mode 0700. Valid certificates are reused at startup and
+renewed 30 days before expiry; failed renewals retry every six hours while the
+current certificate remains valid. The initial issuance completes before HTTPS
+starts, so the HTTP-01 listener must be reachable during `sobjects up`.
+
+By enabling ACME and setting `agree_to_terms = true`, the operator agrees to the
+configured CA's subscriber terms. ACME directory URLs must use HTTPS; plain HTTP
+is allowed only for loopback test servers. Static certificates continue to
+support `SIGHUP` reloads.
+
 ## Admin API, dashboard, and metrics
 
 An `[admin]` table (loopback only) makes the supervisor serve a dashboard at
@@ -53,7 +75,7 @@ Object storage inspection:
 
 Backups:
 
-- `GET /api/v1/backups?class=&limit=&after=`: per object, the restore base epoch and the superseded LTX epochs and bytes still in the bucket (from `celld cell gc --dry-run`; read-only)
+- `GET /api/v1/backups?class=&limit=&after=`: superseded LTX epochs and bytes for objects that have GC candidates, from `celld cell gc --dry-run` (read-only; not a complete object inventory)
 - `GET /api/v1/objects/<Class:id>/export`: a JSON download of every key-value entry, every app table with its schema, and the pending alarm (up to 10,000 entries or rows each; `truncated` says when the cap was hit)
 
 celld keeps superseded epochs unless `CELLD_LTX_RETENTION_SECS` is set, but
@@ -125,4 +147,4 @@ values are filled from the project's `sobjects.toml`; explicit CLI flags and
 standard environment variables take precedence. Credentials continue to come
 from celld's normal credential chain.
 
-The CLI is a pre-alpha test candidate, not a production release. Unit and integration checks include loopback service lifecycle and a real build using `@cloudflare/vite-plugin` 1.62.3; the full Agents SDK app has not yet been run end-to-end through the CLI. Bucket-backed `deploy` and `up --detach` with the ingress were verified against a local S3-compatible store (SeaweedFS), including restore from an empty local cache; hosted buckets such as R2 are untested. Generated plists pass `plutil -lint`; units have not yet been loaded into launchd or systemd. ACME and dashboard are not ready. The npm package is not published. See the [project README](../../README.md) for scope and roadmap.
+The CLI is a pre-alpha test candidate, not a production release. Unit and integration checks include loopback service lifecycle and a real build using `@cloudflare/vite-plugin` 1.62.3; the full Agents SDK app has not yet been run end-to-end through the CLI. Bucket-backed `deploy` and `up --detach` with ingress were verified against SeaweedFS and Cloudflare R2; the R2 run used a token scoped to one bucket and showed about 0.7 s single-node write latency from the test Mac. Generated plists pass `plutil -lint`, but units have not yet been loaded into launchd or systemd. The dashboard is implemented; ACME issuance is not. The npm package is not published. See the [project README](../../README.md) for scope and roadmap.
