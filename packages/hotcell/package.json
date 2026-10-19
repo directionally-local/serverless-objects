@@ -1,0 +1,25 @@
+{
+  "name": "@serverless-objects/hotcell",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Cloudflare Sandbox SDK-shaped Durable Object binding backed by Hotcell",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js",
+    "./core": "./src/sandbox.js"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@hotcell/sdk": "^0.1.19"
+  }
+}
