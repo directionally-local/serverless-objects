@@ -4,7 +4,7 @@ Run the Cloudflare Workers and Durable Objects programming model on your own har
 
 Part of the [Directionally Local](https://directionallylocal.com) family of self-hostable infrastructure for coding agents, alongside [Autopilot](https://github.com/sinameraji/autopilot), [Hotcell](https://github.com/sinameraji/hotcell) and [Camouflage](https://github.com/sinameraji/camouflage).
 
-> **Status: pre-alpha; v0.1 CLI test candidate.** M0 passed its runtime gate with documented config caveats. The CLI installs pinned celld and provides lifecycle/deploy commands, TLS ingress, and a loopback dashboard/admin API with storage inspection and logical JSON export. ACME HTTP-01 has passed a local Pebble issuance test; production Let's Encrypt issuance and renewal have not been exercised. The npm package is not published. The conformance v0 app currently passes 10/10 local checks on Wrangler 4.150.0 and celld 0.6.2; WebSocket hibernation, facets, and the full Agents SDK-through-CLI path remain unverified.
+> **Status: pre-alpha; v0.1 CLI test candidate.** M0 passed its runtime gate with documented config caveats. The CLI installs pinned celld and provides lifecycle/deploy commands, TLS ingress, and a loopback dashboard/admin API with storage inspection and logical JSON export. ACME HTTP-01 has passed a local Pebble issuance test; production Let's Encrypt issuance and renewal have not been exercised. The CLI is on npm as `serverless-objects` (0.1.x, pre-alpha). The conformance suite passes 16/16 local checks, including an Agents SDK suite, on Wrangler 4.150.0 and celld 0.6.2; WebSocket hibernation and facets remain unverified.
 
 ## What it is
 
@@ -30,19 +30,19 @@ The celld-backed dashboard and backup views operate on celld's storage. A native
 
 ## Guides
 
-- [Install from source](docs/install.md)
+- [Install](docs/install.md)
 - [Port a Cloudflare Workers project](docs/porting-from-cloudflare.md)
 - [Compatibility and support status](docs/compatibility.md)
 
 ## Early v0.1 CLI
 
-The npm package is not published yet. This is a CLI test candidate, not a production release. Unit and smoke tests cover the counter, Agents scheduler/SQL, and PartyServer WebSocket/SQL directly on celld, including state persistence across a celld restart. Vite static-asset build/discovery is tested against `@cloudflare/vite-plugin` 1.62.3 with a minimal fixture; the full Agents SDK sample has not yet been run through this CLI. Bucket-backed `sobjects deploy` and `sobjects up --detach` with TLS ingress have been verified against SeaweedFS and Cloudflare R2. The R2 test used a bucket-scoped token; single-node writes took about 0.7 s per request from the test Mac. The loopback dashboard shows node load and objects, supports KV and read-only SQL inspection, and exports logical JSON. Its GC-candidate view lists only objects with superseded epochs, not every object's retained history. Point-in-time restore is unavailable because celld has no restore tool for older epochs. From a checkout, with Node.js 22 or newer:
+This is a CLI test candidate on npm, not a production release. Unit and smoke tests cover the counter, Agents scheduler/SQL, and PartyServer WebSocket/SQL directly on celld, including state persistence across a celld restart. Vite static-asset build/discovery is tested against `@cloudflare/vite-plugin` 1.62.3 with a minimal fixture; a minimal Agents SDK app (state, SQL, schedules, WebSocket protocol) has run through `sobjects deploy` and `up`, but the official samples have not. Bucket-backed `sobjects deploy` and `sobjects up --detach` with TLS ingress have been verified against SeaweedFS and Cloudflare R2. The R2 test used a bucket-scoped token; single-node writes took about 0.7 s per request from the test Mac. The loopback dashboard shows node load and objects, supports KV and read-only SQL inspection, and exports logical JSON. Its GC-candidate view lists only objects with superseded epochs, not every object's retained history. Point-in-time restore is unavailable because celld has no restore tool for older epochs. With Node.js 22 or newer:
 
 ```sh
-npm install
-cp sobjects.example.toml sobjects.toml
+npm install --global serverless-objects
+curl -fsSL -o sobjects.toml https://raw.githubusercontent.com/sinameraji/serverless-objects/main/sobjects.example.toml
 # Edit celld.bucket in sobjects.toml, then:
-npm exec --workspace=serverless-objects -- sobjects up
+sobjects up
 ```
 
 `up` verifies the config, installs pinned celld `v0.6.2` on first use, and runs a single-node celld process in the foreground. Add `--detach` to store a PID record and log under the user state directory; `sobjects status`, `sobjects logs`, and `sobjects down` manage that detached process. Storage credentials come from celld's standard credential chain or environment; keep them out of `sobjects.toml`. The default listener is loopback-only at `127.0.0.1:8080`; do not expose it publicly.

@@ -1,12 +1,21 @@
 # Install Serverless Objects
 
-> **Status:** the npm package is not published yet. These instructions install the current checkout; do not treat this pre-alpha as a production-ready service.
+> **Status:** pre-alpha. `serverless-objects` is published on npm as a 0.1.x test release; do not treat it as a production-ready service.
 
 ## Requirements
 
 - Node.js 22 or newer and npm.
 - A supported celld binary platform: macOS arm64 or Linux arm64/x64. celld does not currently provide a Windows binary.
 - An S3-compatible bucket supported by celld, with conditional writes enabled. The bucket is the durable home for Durable Object state; local service state is separate.
+
+## Install from npm
+
+```sh
+npm install --global serverless-objects
+curl -fsSL -o sobjects.toml https://raw.githubusercontent.com/sinameraji/serverless-objects/main/sobjects.example.toml
+```
+
+The examples below run `sobjects` directly.
 
 ## Install from source
 
@@ -17,12 +26,14 @@ npm ci
 cp sobjects.example.toml sobjects.toml
 ```
 
+From a checkout, run the CLI as `npm exec --workspace=serverless-objects -- sobjects` instead of `sobjects`.
+
 Edit `sobjects.toml` and replace the example `[celld].bucket` URI with a bucket you control. For an S3-compatible provider, configure `endpoint` and `region` when required. Keep credentials in the provider's standard credential chain or environment; never put them in TOML or commit them.
 
 Start a single-node service:
 
 ```sh
-npm exec --workspace=serverless-objects -- sobjects up
+sobjects up
 ```
 
 The first start downloads the pinned celld release and verifies its checksum. The default celld listener is `127.0.0.1:8080`. Keep it on loopback; do not expose celld's unauthenticated HTTP or operator listener to the network.
@@ -39,10 +50,10 @@ The ACME account key and certificate are kept in the service state directory wit
 ## Run detached and inspect
 
 ```sh
-npm exec --workspace=serverless-objects -- sobjects up --detach
-npm exec --workspace=serverless-objects -- sobjects status
-npm exec --workspace=serverless-objects -- sobjects logs
-npm exec --workspace=serverless-objects -- sobjects down
+sobjects up --detach
+sobjects status
+sobjects logs
+sobjects down
 ```
 
 Detached mode records local process and log metadata; it is not an OS service manager. To generate a systemd or launchd unit, use `sobjects service print` or `sobjects service install` and review the result before enabling it.
