@@ -31,7 +31,7 @@ Run from the repository root unless a command says otherwise. Node.js 22+ is req
 | Production build | None | No build/bundle script: package is plain ESM. `prepublishOnly` runs tests. |
 | Watch, lint, format, type-check | None configured | No watch/lint/format/type-check scripts or TypeScript config. Edit and run tests directly. |
 
-CI: `.github/workflows/ci.yml` runs `npm ci`, `npm test` and the Wrangler conformance run on Ubuntu/Node 22 for pushes to `main` and pull requests; no matrix or deployment job. `release-please.yml` runs on `main` to manage release PRs/releases. When it creates a CLI release it calls `npm-publish.yml`, which tests the tag and publishes `serverless-objects` to npm with provenance. Run `npm-publish.yml` by hand (`gh workflow run npm-publish.yml -f tag=serverless-objects-vX.Y.Z`) to publish an existing tag. It skips versions already on npm.
+CI: `.github/workflows/ci.yml` runs `npm ci`, `npm test` and the Wrangler conformance run on Ubuntu/Node 22 for pushes to `main` and pull requests; no matrix or deployment job. `release-please.yml` runs on `main` to manage release PRs/releases. When it creates a CLI release, its `publish-npm` job tests the tag and publishes `serverless-objects` to npm through trusted publishing (OIDC, no token) with provenance. Publish an existing tag with `gh workflow run release-please.yml -f tag=serverless-objects-vX.Y.Z`. Versions already on npm are skipped. Keep publishing in this one file: npm's trusted-publisher setting names it.
 
 ## 3. Layout
 
