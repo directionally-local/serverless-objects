@@ -13,12 +13,12 @@ export function wrapDefault(handler, { tokenHash, classes }) {
   const inspect = (request, env) => routeToObject(request, env, { tokenHash, classes });
   if (typeof handler === "function") {
     // A WorkerEntrypoint class.
-    return class extends handler {
+    return keepName(class extends handler {
       fetch(request) {
         if (request.headers.has(INSPECT_HEADER)) return inspect(request, this.env);
         return super.fetch(request);
       }
-    };
+    }, handler);
   }
   return {
     ...handler,
@@ -31,7 +31,7 @@ export function wrapDefault(handler, { tokenHash, classes }) {
 }
 
 export function wrapObjectClass(Base, { tokenHash }) {
-  return class extends Base {
+  return keepName(class extends Base {
     constructor(state, env) {
       super(state, env);
       this[STATE] = state;
@@ -49,7 +49,14 @@ export function wrapObjectClass(Base, { tokenHash }) {
       if (typeof super.fetch !== "function") throw new TypeError("This Durable Object class has no fetch handler.");
       return super.fetch(request);
     }
-  };
+  }, Base);
+}
+
+// Apps read constructor.name (the Agents SDK derives the agent name from it),
+// so the wrapper must not show up as an anonymous class.
+function keepName(Wrapped, Base) {
+  Object.defineProperty(Wrapped, "name", { value: Base.name, configurable: true });
+  return Wrapped;
 }
 
 async function routeToObject(request, env, { tokenHash, classes }) {

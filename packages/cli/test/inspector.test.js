@@ -154,6 +154,7 @@ test("wrapped objects answer inspection only with the right token and otherwise 
   assert.equal((await inspect("wrong")).status, 401);
   assert.equal(await (await object.fetch(new Request("https://x/"))).text(), "app");
   assert.ok(object instanceof Counter);
+  assert.equal(object.constructor.name, "Counter");
 });
 
 test("the wrapped default handler routes inspection to the object and passes other requests through", async () => {
@@ -166,6 +167,8 @@ test("the wrapped default handler routes inspection to the object and passes oth
   };
   const app = { fetch: () => new Response("app"), scheduled: () => "cron" };
   const handler = wrapDefault(app, { tokenHash: HASH, classes: { Counter: "COUNTER" } });
+  class Entrypoint { fetch() { return new Response("entry"); } }
+  assert.equal(wrapDefault(Entrypoint, { tokenHash: HASH, classes: {} }).name, "Entrypoint");
   assert.equal(handler.scheduled(), "cron");
   assert.equal(await (await handler.fetch(new Request("https://x/"), env, {})).text(), "app");
 

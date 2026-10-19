@@ -18,7 +18,7 @@ This table distinguishes behavior exercised by the project from functionality de
 | WebSocket hibernation/eviction | Not tested in conformance v0 | No claim of hibernation parity from this run. celld documents same-node hibernation behavior; sockets may close on cell move. |
 | Facets | Not tested in conformance v0 | Not covered by the current app or results. |
 | Durable Object migrations | Limited upstream support | celld 0.6.2 accepts `tag` and `new_sqlite_classes`; rename/delete/transfer migrations are rejected. |
-| Agents SDK / PartyServer | Partial direct-runtime evidence | M0 tested selected Agents scheduler/SQL and WebSocket/SQL samples, plus PartyServer chat directly on celld. The complete samples have not been verified through the `sobjects` CLI. See [M0 findings](conformance/m0-celld.md). |
+| Agents SDK / PartyServer | Partial | A minimal `agents` 0.28.1 app was deployed through `sobjects deploy` and served by `sobjects up` behind TLS ingress (celld 0.6.2, SeaweedFS): routing, `setState`, `this.sql`, `schedule()` (including one pending across a node restart), and the WebSocket identity/state protocol matched `wrangler dev`. Callable RPC, chat agents, MCP, Workflows and the official samples have not been run through the CLI. PartyServer chat was tested only directly on celld in M0. See [M0 findings](conformance/m0-celld.md). |
 | Cloudflare-hosted production behavior | Not tested | Local Wrangler and celld results do not certify production Cloudflare behavior. |
 
 ## Bindings and topology
