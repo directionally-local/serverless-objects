@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createWriteStream, readFileSync, statSync } from "node:fs";
 import { access, mkdir } from "node:fs/promises";
 import { delimiter, dirname, join, resolve } from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { loadSobjectsConfig } from "./config.js";
 import {
@@ -28,6 +29,7 @@ import {
 } from "./service.js";
 
 const CLI_SCRIPT = fileURLToPath(new URL("../bin/sobjects.mjs", import.meta.url));
+const BUNDLED_ESBUILD_BIN = bundledEsbuildDirectory();
 
 const { version } = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
@@ -936,13 +938,23 @@ function projectDirectory(args, cwd) {
   return projectPath;
 }
 
+// celld deploy bundles with esbuild from PATH. The bundled copy comes last so
+// a project-local or system esbuild still wins.
 function projectEnvironment(args, env, cwd) {
   const localBin = join(projectDirectory(args, cwd), "node_modules", ".bin");
   const pathValue = env.PATH ?? env.Path ?? "";
   return {
     ...env,
-    PATH: [localBin, pathValue].filter(Boolean).join(delimiter),
+    PATH: [localBin, pathValue, BUNDLED_ESBUILD_BIN].filter(Boolean).join(delimiter),
   };
+}
+
+function bundledEsbuildDirectory() {
+  try {
+    return dirname(createRequire(import.meta.url).resolve("esbuild/bin/esbuild"));
+  } catch {
+    return undefined;
+  }
 }
 
 function reportSpawnError(error, executable, io) {
