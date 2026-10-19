@@ -1,127 +1,153 @@
 # Serverless Objects
 
-Run the Cloudflare Workers and Durable Objects programming model on your own hardware, built for agents.
+[![npm](https://img.shields.io/npm/v/serverless-objects)](https://www.npmjs.com/package/serverless-objects)
+[![CI](https://github.com/sinameraji/serverless-objects/actions/workflows/ci.yml/badge.svg)](https://github.com/sinameraji/serverless-objects/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
+Run Cloudflare Workers and Durable Objects apps on your own hardware, built for agents.
+
+Serverless Objects is the operating layer around a Workers-compatible engine. You deploy an ordinary Wrangler project, and `sobjects` runs it on a host you control with TLS ingress, a local dashboard, engine upgrades and service units. Durable Object state lives in your own S3-compatible bucket. Today the engine is [celld](https://github.com/denoland/celld), Deno's Apache-2.0 runtime for Wrangler bundles.
+
+> **Status: pre-alpha (0.1.x).** Good for evaluation and testing, not for production. It runs on a single host on macOS arm64 or Linux arm64/x64. Read [what is and isn't supported](docs/compatibility.md) before you port an app.
 
 Part of the [Directionally Local](https://directionallylocal.com) family of self-hostable infrastructure for coding agents, alongside [Autopilot](https://github.com/sinameraji/autopilot), [Hotcell](https://github.com/sinameraji/hotcell) and [Camouflage](https://github.com/sinameraji/camouflage).
 
-> **Status: pre-alpha; v0.1 CLI test candidate.** M0 passed its runtime gate with documented config caveats. The CLI installs pinned celld and provides lifecycle/deploy commands, TLS ingress, and a loopback dashboard/admin API with storage inspection and logical JSON export. ACME HTTP-01 has passed a local Pebble issuance test; production Let's Encrypt issuance and renewal have not been exercised. The CLI is on npm as `serverless-objects` (0.1.x, pre-alpha). The conformance suite passes 16/16 local checks, including an Agents SDK suite, on Wrangler 4.150.0 and celld 0.6.2; WebSocket hibernation and facets remain unverified.
+## Quick start
 
-## What it is
-
-Serverless Objects is the operating layer around a Workers-compatible engine. It turns an engine that runs wrangler bundles into something you can actually run for a team:
-
-- **One-line install and upgrades.** `npm i -g serverless-objects`, then `sobjects up`. The supervisor downloads a pinned engine, writes its config, and manages the service.
-- **Ingress.** TLS, hostnames, WebSocket upgrade, access logs.
-- **Dashboard and admin API.** The current loopback dashboard lists objects, provides KV and read-only SQL inspection, shows alarms and sockets, and lists superseded LTX epochs eligible for garbage collection. Logical JSON export is available; point-in-time restore is not.
-- **Bindings for agents (in progress).** [`@serverless-objects/hotcell`](packages/hotcell): a `Sandbox` Durable Object with the Cloudflare Sandbox SDK 0.x call shape, backed by Hotcell, that reattaches to its sandbox after eviction. With the `egress` option each sandbox gets a gateway token, never a real provider key; spend-cap enforcement is not yet tested.
-- **Autopilot as objects (planned).** Each Autopilot run will be a durable object with its own state, scheduled wakeup, and resumable event stream rendered by Camouflage.
-- **A conformance suite.** The v0 app currently runs 10 local checks on Wrangler and celld. Coverage and gaps are published in [the results table](docs/conformance/results.md); this is not full Workers conformance.
-
-## Engines
-
-Serverless Objects does not implement the Workers runtime itself. It drives an engine through a small, versioned contract (the wrangler bundle, the wrangler config, and a runtime protocol for health, deploy, inspect, alarms and metrics).
-
-| Engine | Status | Notes |
-|---|---|---|
-| [celld](https://github.com/denoland/celld) | first supported engine | Apache-2.0 runtime from Deno that runs unmodified wrangler bundles with Durable Objects, KV, D1, R2, Queues and Workflows. Exact Workers API surface. |
-| native | planned | A Node-native engine exposing the Durable Objects API with full Node APIs inside objects, no isolate, no memory cap. Code that uses Node APIs is marked non-portable by `sobjects build --strict`. |
-
-The celld-backed dashboard and backup views operate on celld's storage. A native engine and a shared storage layout are planned.
-
-## Guides
-
-- [Install](docs/install.md)
-- [Port a Cloudflare Workers project](docs/porting-from-cloudflare.md)
-- [Compatibility and support status](docs/compatibility.md)
-
-## Early v0.1 CLI
-
-This is a CLI test candidate on npm, not a production release. Unit and smoke tests cover the counter, Agents scheduler/SQL, and PartyServer WebSocket/SQL directly on celld, including state persistence across a celld restart. Vite static-asset build/discovery is tested against `@cloudflare/vite-plugin` 1.62.3 with a minimal fixture; a minimal Agents SDK app (state, SQL, schedules, WebSocket protocol) has run through `sobjects deploy` and `up`, but the official samples have not. Bucket-backed `sobjects deploy` and `sobjects up --detach` with TLS ingress have been verified against SeaweedFS and Cloudflare R2. The R2 test used a bucket-scoped token; single-node writes took about 0.7 s per request from the test Mac. The loopback dashboard shows node load and objects, supports KV and read-only SQL inspection, and exports logical JSON. Its GC-candidate view lists only objects with superseded epochs, not every object's retained history. Point-in-time restore is unavailable because celld has no restore tool for older epochs. With Node.js 22 or newer:
+Requires Node.js 22 or newer.
 
 ```sh
 npm install --global serverless-objects
-curl -fsSL -o sobjects.toml https://raw.githubusercontent.com/sinameraji/serverless-objects/main/sobjects.example.toml
-# Edit celld.bucket in sobjects.toml, then:
-sobjects up
 ```
 
-`up` verifies the config, installs pinned celld `v0.6.2` on first use, and runs a single-node celld process in the foreground. Add `--detach` to store a PID record and log under the user state directory; `sobjects status`, `sobjects logs`, and `sobjects down` manage that detached process. Storage credentials come from celld's standard credential chain or environment; keep them out of `sobjects.toml`. The default listener is loopback-only at `127.0.0.1:8080`; do not expose it publicly.
+A Durable Object counter, written exactly as it would be for Cloudflare:
 
-### Ingress
+```jsonc
+// wrangler.jsonc
+{
+  "name": "hello",
+  "main": "src/index.js",
+  "compatibility_date": "2026-02-24",
+  "durable_objects": { "bindings": [{ "name": "COUNTER", "class_name": "Counter" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Counter"] }]
+}
+```
 
-Add an `[ingress]` table to `sobjects.toml` (see [`sobjects.example.toml`](sobjects.example.toml)) and `sobjects up` starts a TLS-terminating proxy in front of celld, in the foreground or with `--detach`. `sobjects ingress` runs it on its own. It:
+```js
+// src/index.js
+import { DurableObject } from "cloudflare:workers";
 
-- terminates TLS with static PEM certificates, with an optional certificate per route chosen by SNI; `SIGHUP` reloads static certificates from disk;
-- alternatively, obtains and renews certificates with opt-in ACME HTTP-01 on the `redirect_http` listener;
-- routes by exact, `*.wildcard`, or `*` hostname and answers `421` for anything else;
-- tunnels WebSocket upgrades;
-- replaces client-supplied `X-Forwarded-*` and `CF-Connecting-IP` headers with the real peer address;
-- optionally redirects plain HTTP to HTTPS with `308`, except for active ACME challenges;
-- serves `/.well-known/sobjects/health`, which checks the upstream;
-- writes JSON access logs without query strings to `access.log` in the state directory, a configured path, or stdout (`"-"`).
+export class Counter extends DurableObject {
+  async increment() {
+    const count = ((await this.ctx.storage.get("count")) ?? 0) + 1;
+    await this.ctx.storage.put("count", count);
+    return count;
+  }
+}
 
-For ACME, configure `[ingress.acme]` instead of `[ingress.tls]`, set `email` and
-`agree_to_terms = true`, and listen on port 80 with `redirect_http`. Public DNS
-and inbound HTTP on port 80 must reach this listener. HTTP-01 issues for exact
-hostnames only; wildcard routes need static certificates. The default ACME
-server is Let's Encrypt production, so test first with its staging
-`directory_url`. Account keys and certificates live under the service state
-directory with restrictive permissions. The CLI reuses valid certificates,
-renews 30 days before expiry, and retries failed renewals every six hours while
-the current certificate remains valid. Initial issuance must succeed before the
-HTTPS listener starts. ACME directory URLs must use HTTPS except for loopback
-test servers. Setting `agree_to_terms = true` records the operator's explicit
-agreement to the CA subscriber terms.
+export default {
+  async fetch(request, env) {
+    const name = new URL(request.url).pathname.slice(1) || "default";
+    const count = await env.COUNTER.getByName(name).increment();
+    return new Response(`${name}: ${count}\n`);
+  },
+};
+```
 
-Without `[ingress.tls]` or `[ingress.acme]`, the ingress may only listen on
-loopback. When celld listens on loopback, `up` starts it with
-`--trust-forwarded-headers`, so `request.url` carries the client's `https://`
-scheme and host as on Cloudflare. `sobjects dev` does not run the ingress, and
-`celld dev` keeps its own `http://` URL.
+Run it locally. No bucket is needed, and the first run downloads and verifies the pinned celld release:
 
-`sobjects dev [project]` runs local development. `sobjects deploy [project]` forwards flags to `celld deploy`; bucket, endpoint, and region can come from explicit flags, environment variables, or the project's `sobjects.toml`. The CLI rejects unknown top-level Wrangler keys, warns while removing celld-incompatible `observability`/`upload_source_maps`, and runs a declared `build.command`. If `assets.directory` is missing and the project declares `@cloudflare/vite-plugin` plus a Vite config, it runs `vite build` and requires a unique generated `index.html` under `.cloudflare/output/v0/workers/*/assets` or `dist` (including one-level subdirectories); otherwise set `assets.directory` explicitly. Ambiguous outputs fail before celld starts. `sobjects service install` generates a systemd or launchd unit that runs `up` under the OS service manager.
+```sh
+sobjects dev . --port 8787
+curl http://127.0.0.1:8787/alice   # alice: 1
+```
+
+To run it as a node, add a `sobjects.toml` next to the project that points at a bucket you control. The bucket must support conditional writes; Cloudflare R2 and SeaweedFS have been tested.
+
+```toml
+[celld]
+bucket = "s3://my-bucket/serverless-objects"
+# endpoint = "https://<account>.r2.cloudflarestorage.com"   # for S3-compatible stores
+# region = "auto"
+```
+
+Keep credentials out of the file. celld reads the standard environment and credential chain (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, ...).
+
+```sh
+sobjects deploy .            # bundle the app and upload it to the bucket
+sobjects up --detach         # start the node on 127.0.0.1:8080
+curl http://127.0.0.1:8080/alice
+sobjects status
+sobjects down
+```
+
+State survives `down` and `up` because it lives in the bucket. The [install guide](docs/install.md) adds TLS ingress, the dashboard and an OS service.
+
+## What you get
+
+- **The `sobjects` CLI.** `dev`, `deploy`, `up`/`down`/`status`/`logs`, `upgrade` with checksum-pinned engine versions and rollback, and `service` to generate systemd or launchd units. The [CLI reference](packages/cli/README.md) covers every command and setting.
+- **Wrangler config preflight.** Unknown keys are rejected with a readable error, keys celld can't use are removed with a warning, and `build.command` and Vite asset builds run before deploy.
+- **TLS ingress.** Static certificates or ACME HTTP-01, hostname routing, WebSocket tunnelling, HTTP→HTTPS redirect, a health endpoint and JSON access logs. Client `X-Forwarded-*` and `CF-Connecting-IP` headers are replaced with the real peer address.
+- **A loopback dashboard and admin API.** Node load, the objects in each namespace, a key-value browser and read-only SQL console per object, eviction, logical JSON export, and Prometheus `/metrics`.
+- **A Hotcell `Sandbox` binding** ([`@serverless-objects/hotcell`](packages/hotcell), not yet on npm). It has the Cloudflare Sandbox SDK 0.x call shape and reattaches to its sandbox after the object is evicted. With egress enabled, sandboxes get gateway tokens, never real provider keys.
+- **A conformance suite** ([`packages/conformance`](packages/conformance)) that runs the same apps under `wrangler dev` and celld, so engine differences show up as failing checks.
+
+## Compatibility
+
+Cloudflare's APIs are the contract. The current [conformance results](docs/conformance/results.md) are 16/16 on both Wrangler 4.150.0 and celld 0.6.2. They cover Durable Object IDs, KV and SQL storage, transactions, input gates, RPC, alarms (including across a restart), WebSockets, and an Agents SDK suite: state, SQL, schedules, addressing and `@callable()` RPC.
+
+Not covered yet: WebSocket hibernation, facets, PartyServer, Agents SDK chat, MCP and Workflows, and Cloudflare-hosted production behavior. Point-in-time restore isn't available on celld 0.6. The [compatibility table](docs/compatibility.md) has the details, including Containers and `@cloudflare/sandbox` 1.0 on celld. The [porting guide](docs/porting-from-cloudflare.md) covers moving an existing project.
+
+## Repository layout
+
+| Path | What |
+|---|---|
+| [`packages/cli`](packages/cli) | The `serverless-objects` npm package (`sobjects` binary). Its README is the CLI reference. |
+| [`packages/hotcell`](packages/hotcell) | `@serverless-objects/hotcell`, the Sandbox binding backed by Hotcell. |
+| [`packages/conformance`](packages/conformance) | Conformance apps and the Wrangler and celld runners. |
+| [`docs/`](docs) | Install, porting and compatibility guides, and recorded conformance results. |
+
+## Engines
+
+Serverless Objects doesn't implement the Workers runtime itself. It drives an engine through a small contract: the Wrangler bundle, the Wrangler config, and a runtime protocol for health, deploy, inspection, alarms and metrics.
+
+| Engine | Status | Notes |
+|---|---|---|
+| [celld](https://github.com/denoland/celld) | Supported (0.6.2, pinned) | Runs Wrangler bundles with Durable Objects, KV, D1, R2, Queues, Workflows and Containers. |
+| native | Planned | A Node-native engine with the Durable Objects API and full Node APIs inside objects. `sobjects build --strict` will flag code that isn't portable back to Cloudflare. |
 
 ## Why
 
-Agents need durable state, scheduled wakeups, long-lived connections and sandboxes. The Durable Objects model is a good fit and the Cloudflare Agents SDK is built on it. Some teams cannot run that on Cloudflare's network: regulated industries, air-gapped environments, customer VPCs, or simply cost at scale.
+Agents need durable state, scheduled wakeups, long-lived connections and sandboxes. The Durable Objects model fits that well, and the Cloudflare Agents SDK is built on it. Some teams can't run on Cloudflare's network: regulated industries, air-gapped environments, customer VPCs, or anyone for whom cost at scale matters.
 
-The rule for everything in this family is that **Cloudflare's APIs are the contract and our implementations are the product**. A Workers app that runs here runs on Cloudflare, and the reverse. You can replace one piece at a time in either direction.
+The rule across this family is that **Cloudflare's APIs are the contract and our implementations are the product**. A Workers app that runs here runs on Cloudflare, and the reverse, so you can replace one piece at a time in either direction.
 
 ## Roadmap
 
-Order is firm. Dates are targets, not promises.
+Dates are targets, not promises.
 
 | Milestone | Target | Scope |
 |---|---|---|
-| **M0 · Compatibility spike** | Oct 2026 | Run Cloudflare Agents SDK and PartyServer samples unmodified on celld. Verify a Hotcell sandbox can be created from an object and reattached after eviction. Publish the findings as the first conformance results. |
-| **v0.1 · Operating layer** | 31 Oct 2026 | `sobjects` CLI and supervisor, ingress with TLS, dashboard with storage inspector and backup browser, conformance suite v0 with Cloudflare and celld runners, porting guide. Single host. |
-| **v0.2 · Agent layer** | 7 Nov 2026 | Hotcell `Sandbox` binding with per-object egress tokens. Autopilot runs as objects with a registry, alarms and event streams. Showcase: start a run, kill the node, restart, watch it resume from its event log in Camouflage. |
-| **v0.3 · Native engine, single node** | 21 Nov 2026 | Node-native engine with the Durable Objects API: IDs, stubs with fetch and RPC, serialized execution with input and output gates, SQLite storage with KV and SQL, durable alarms, WebSockets with the hibernation API. `sobjects build --strict`. Conformance parity target with celld on the Durable Objects suite. Two-week soak under fault injection runs alongside v0.4; the beta label follows the soak. |
-| **v0.4 · Multi-node and Teams** | 30 Nov 2026 | Placement and object migration through the bucket, ingress routing by owner, true WebSocket hibernation, rolling deploys, point-in-time recovery. Multiple apps and tenants per cluster, SSO, audit logs, air-gapped install, Helm. |
+| **M0 · Compatibility spike** | Done, Oct 2026 | Agents SDK and PartyServer samples on celld; Hotcell sandbox reattachment from an object. [Findings](docs/conformance/m0-celld.md). |
+| **v0.1 · Operating layer** | Released 19 Oct 2026 | `sobjects` CLI and supervisor, TLS ingress with ACME, dashboard and storage inspector, conformance suite with Wrangler and celld runners, install and porting guides. Single host. |
+| **v0.2 · Agent layer** | 7 Nov 2026 | Hotcell `Sandbox` binding (first version merged). Autopilot runs as objects with a registry, alarms and event streams. Showcase: start a run, kill the node, restart, and watch it resume from its event log in Camouflage. |
+| **v0.3 · Native engine, single node** | 21 Nov 2026 | Node-native engine with the Durable Objects API, SQLite storage, durable alarms and WebSocket hibernation. `sobjects build --strict`. Conformance parity with celld on the Durable Objects suite, then a two-week fault-injection soak before beta. |
+| **v0.4 · Multi-node and Teams** | 30 Nov 2026 | Placement and migration through the bucket, owner-aware ingress, rolling deploys, point-in-time recovery. Multiple apps and tenants, SSO, audit logs, air-gapped install, Helm. |
 
-### Not planned
-
-A V8-embedded runtime of our own. Workers AI, Vectorize or Hyperdrive replacements. Python objects.
-
-## Conformance
-
-The current [conformance v0 results](docs/conformance/results.md) record one local run each against Wrangler 4.150.0 and celld 0.6.2: 16/16 checks passed on both. Coverage includes IDs, KV and SQL storage, transactions, gates, RPC, alarms, basic WebSocket behavior, and the Agents SDK (`agents` 0.28.1) state, SQL, schedules, addressing, and `@callable()` client protocol. WebSocket hibernation, facets, broader compatibility flags, Cloudflare-hosted behavior, PartyServer, and Agents SDK chat/MCP/Workflows are not covered yet.
-
-The [M0 celld spike results](docs/conformance/m0-celld.md) passed the runtime gate with caveats; direct Wrangler config support remains open. A follow-up run reattached a Hotcell sandbox and ran `exec` after celld idle-evicted the object.
+Not planned: a V8 runtime of our own; replacements for Workers AI, Vectorize or Hyperdrive; Python objects.
 
 ## How it fits with the rest of the family
 
 | Piece | Role | Cloudflare equivalent |
 |---|---|---|
 | Serverless Objects | Workers and Durable Objects, self-hosted | Workers, Durable Objects |
-| Hotcell | Sandboxes with key-swapping gateway and spend caps | Sandbox SDK, Containers |
+| Hotcell | Sandboxes with a key-swapping gateway and spend caps | Sandbox SDK, Containers |
 | Autopilot | Coding agent and headless SDK | Agents SDK |
-| Camouflage | Event-native terminal renderer with replayable event log | none |
+| Camouflage | Event-native terminal renderer with a replayable event log | none |
 | Local coding model | Served through an OpenAI-compatible endpoint | Workers AI |
 
 ## Contributing
 
-Issues and discussion are welcome now. Pull requests make sense once v0.1 lands. Contributions are accepted under the Apache-2.0 license with a Developer Certificate of Origin sign-off (`git commit -s`). There is no CLA.
+Issues and pull requests are welcome. Run `npm ci && npm test` before opening a PR, and use [Conventional Commits](https://www.conventionalcommits.org/) (`feat(cli): ...`, `fix(cli): ...`, `docs: ...`). Release notes and versions are generated from them. Contributions are accepted under Apache-2.0 with a Developer Certificate of Origin sign-off (`git commit -s`). There is no CLA. [AGENTS.md](AGENTS.md) describes the layout and conventions for coding agents and humans alike.
 
 ## License
 
