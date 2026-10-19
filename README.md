@@ -13,7 +13,7 @@ Serverless Objects is the operating layer around a Workers-compatible engine. It
 - **One-line install and upgrades.** `npm i -g serverless-objects`, then `sobjects up`. The supervisor downloads a pinned engine, writes its config, and manages the service.
 - **Ingress.** TLS, hostnames, WebSocket upgrade, access logs.
 - **Dashboard and admin API.** The current loopback dashboard lists objects, provides KV and read-only SQL inspection, shows alarms and sockets, and lists superseded LTX epochs eligible for garbage collection. Logical JSON export is available; point-in-time restore is not.
-- **Bindings for agents (in progress).** [`@serverless-objects/hotcell`](packages/hotcell): a `Sandbox` Durable Object with the Cloudflare Sandbox SDK 0.x call shape, backed by Hotcell, that reattaches to its sandbox after eviction. Per-object egress tokens and spend caps pass through to Hotcell but are not yet tested.
+- **Bindings for agents (in progress).** [`@serverless-objects/hotcell`](packages/hotcell): a `Sandbox` Durable Object with the Cloudflare Sandbox SDK 0.x call shape, backed by Hotcell, that reattaches to its sandbox after eviction. With the `egress` option each sandbox gets a gateway token, never a real provider key; spend-cap enforcement is not yet tested.
 - **Autopilot as objects (planned).** Each Autopilot run will be a durable object with its own state, scheduled wakeup, and resumable event stream rendered by Camouflage.
 - **A conformance suite.** The v0 app currently runs 10 local checks on Wrangler and celld. Coverage and gaps are published in [the results table](docs/conformance/results.md); this is not full Workers conformance.
 
