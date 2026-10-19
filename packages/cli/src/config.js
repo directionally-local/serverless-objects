@@ -2,8 +2,9 @@ import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { parse } from "smol-toml";
 
-const ROOT_KEYS = new Set(["celld", "ingress"]);
-const CELLD_KEYS = new Set(["bucket", "endpoint", "region", "listen"]);
+const ROOT_KEYS = new Set(["celld", "ingress", "admin"]);
+const CELLD_KEYS = new Set(["bucket", "endpoint", "region", "listen", "internal_listen"]);
+const ADMIN_KEYS = new Set(["listen"]);
 const INGRESS_KEYS = new Set(["listen", "redirect_http", "access_log", "tls", "routes"]);
 const TLS_KEYS = new Set(["cert", "key"]);
 const ROUTE_KEYS = new Set(["hostname", "upstream", "tls"]);
@@ -65,6 +66,34 @@ export function parseSobjectsConfig(source, sourceName = "sobjects.toml", { base
   }
   if (celld.region !== undefined) {
     config.region = requireString(celld.region, `${sourceName} [celld].region`);
+  }
+  if (celld.internal_listen !== undefined) {
+    config.internalListen = requireString(celld.internal_listen, `${sourceName} [celld].internal_listen`);
+    validateListenAddress(config.internalListen, `${sourceName} [celld].internal_listen`);
+  }
+  if (parsed.admin !== undefined) {
+    const table = `${sourceName} [admin]`;
+    if (!isRecord(parsed.admin)) throw new Error(`${table} must be a table.`);
+    rejectUnknownKeys(parsed.admin, ADMIN_KEYS, table);
+    const listen = requireString(parsed.admin.listen, `${table}.listen`);
+    validateListenAddress(listen, `${table}.listen`);
+    if (!isLoopback(listen)) {
+      throw new Error(`${table}.listen must be a loopback address; the admin API has no authentication.`);
+    }
+    config.admin = Object.freeze({ listen });
+    // The admin API reads celld's operator listener, so it needs a known port.
+    config.internalListen ??= `127.0.0.1:${portOf(config.listen) + 1}`;
+  }
+  if (config.internalListen) {
+    if (!isLoopback(config.internalListen)) {
+      throw new Error(
+        `${sourceName} [celld].internal_listen must be loopback; celld's operator API there is unauthenticated.`,
+      );
+    }
+    const taken = [config.listen, config.admin?.listen].filter(Boolean);
+    if (taken.some((address) => portOf(address) === portOf(config.internalListen) && sameHost(address, config.internalListen))) {
+      throw new Error(`${sourceName} [celld].internal_listen must not reuse another listener's address.`);
+    }
   }
   if (parsed.ingress !== undefined) {
     config.ingress = parseIngress(parsed.ingress, config, sourceName, baseDirectory);

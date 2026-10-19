@@ -4,7 +4,7 @@ Run the Cloudflare Workers and Durable Objects programming model on your own har
 
 Part of the [Directionally Local](https://directionallylocal.com) family of self-hostable infrastructure for coding agents, alongside [Autopilot](https://github.com/sinameraji/autopilot), [Hotcell](https://github.com/sinameraji/hotcell) and [Camouflage](https://github.com/sinameraji/camouflage).
 
-> **Status: pre-alpha; v0.1 CLI test candidate.** M0 passed its runtime gate with documented config caveats. The CLI installs pinned celld and provides `up`/`down`/`status`/`logs` plus `dev`/`deploy`, a TLS ingress with static certificates, systemd/launchd unit generation, and checksum-pinned engine upgrades with rollback; ACME, dashboard, hosted-bucket validation, and npm publication are not ready. Vite static-asset build/discovery is implemented and tested with the Cloudflare Vite plugin, but the full Agents SDK example has not yet been run through this CLI.
+> **Status: pre-alpha; v0.1 CLI test candidate.** M0 passed its runtime gate with documented config caveats. The CLI installs pinned celld and provides `up`/`down`/`status`/`logs` plus `dev`/`deploy`, a TLS ingress with static certificates, systemd/launchd unit generation, checksum-pinned engine upgrades with rollback, and a loopback admin API with Prometheus metrics; ACME, dashboard, hosted-bucket validation, and npm publication are not ready. Vite static-asset build/discovery is implemented and tested with the Cloudflare Vite plugin, but the full Agents SDK example has not yet been run through this CLI.
 
 ## What it is
 
@@ -30,7 +30,7 @@ Both engines share the same per-object SQLite and bucket layout, so the dashboar
 
 ## Early v0.1 CLI
 
-The npm package is not published yet. This is a CLI test candidate, not a production release. Unit and smoke tests cover the counter, Agents scheduler/SQL, and PartyServer WebSocket/SQL, including state persistence across a celld restart. Vite static-asset build/discovery is tested against `@cloudflare/vite-plugin` 1.62.3 with a minimal fixture; the full Agents SDK sample has not yet been run through this CLI. Bucket-backed `sobjects deploy` and `sobjects up --detach` with the TLS ingress have been verified against a local S3-compatible store (SeaweedFS): HTTPS `request.url`, Durable Object state across restarts and from an empty local cache, WebSocket echo, and clean `down`. R2 and other hosted buckets have not been tested yet, and the dashboard is not implemented. From a checkout, with Node.js 22 or newer:
+The npm package is not published yet. This is a CLI test candidate, not a production release. Unit and smoke tests cover the counter, Agents scheduler/SQL, and PartyServer WebSocket/SQL, including state persistence across a celld restart. Vite static-asset build/discovery is tested against `@cloudflare/vite-plugin` 1.62.3 with a minimal fixture; the full Agents SDK sample has not yet been run through this CLI. Bucket-backed `sobjects deploy` and `sobjects up --detach` with the TLS ingress have been verified against a local S3-compatible store (SeaweedFS): HTTPS `request.url`, Durable Object state across restarts and from an empty local cache, WebSocket echo, and clean `down`. R2 and other hosted buckets have not been tested yet, and the dashboard and per-object storage inspector are not implemented. From a checkout, with Node.js 22 or newer:
 
 ```sh
 npm install

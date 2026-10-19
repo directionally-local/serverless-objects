@@ -5,8 +5,8 @@ The `sobjects` CLI package for Serverless Objects.
 ## Commands in this pre-alpha
 
 - `sobjects up [--config PATH] [--detach]` validates `sobjects.toml`, installs pinned celld `v0.6.2` if needed, and starts a single-node process (foreground by default).
-- `sobjects status`, `sobjects logs [--ingress] [--tail N]`, and `sobjects down` manage the processes started by `up --detach`.
-- `sobjects ingress [--config PATH]` runs only the TLS ingress in the foreground.
+- `sobjects status`, `sobjects logs [--supervisor] [--tail N]`, and `sobjects down` manage the processes started by `up --detach`.
+- `sobjects supervise [--config PATH]` runs only the ingress and admin API in the foreground.
 - `sobjects service print|install` generates a systemd or launchd unit for `up`.
 - `sobjects upgrade [--engine-version V | --rollback | --status]` installs and selects a pinned celld release.
 - `sobjects dev [project] [celld dev options]` runs local development with celld.
@@ -27,6 +27,23 @@ in this file. The default listener is `127.0.0.1:8080`. Do not expose celld's
 HTTP listener directly to the internet; put the ingress in front of it.
 Detached mode only manages local PIDs and logs; for a supervised service use
 `sobjects service`.
+
+## Admin API and metrics
+
+An `[admin]` table (loopback only) makes the supervisor serve:
+
+- `GET /api/v1/health`: celld listener and operator API health
+- `GET /api/v1/node`: resident and owned objects, memory, CPU, WebSockets, deployment version, drain state
+- `GET /api/v1/objects?class=&limit=&after=`: objects from `celld cell list`, marked resident or not
+- `POST /api/v1/objects/<Class:id>/evict`: evict a resident object; requires the `x-sobjects-request: 1` header
+- `GET /metrics`: Prometheus text with engine gauges and ingress request counters
+
+It has no authentication, so it refuses non-loopback addresses and requests
+whose `Host` header is not a loopback name (DNS rebinding). Mutations need the
+custom header, which browsers cannot send cross-origin without a preflight this
+server never approves. Enabling it pins celld's unauthenticated operator
+listener (`[celld].internal_listen`, default: the celld port + 1) on loopback.
+Per-object storage inspection is not available yet: celld 0.6 has no API for it.
 
 ## Engine upgrades
 

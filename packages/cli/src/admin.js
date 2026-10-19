@@ -1,0 +1,170 @@
+import { createServer } from "node:http";
+import { splitHostPort } from "./ingress.js";
+
+export const ADMIN_REQUEST_HEADER = "x-sobjects-request";
+
+// Counters fed by the ingress access log. celld records no metrics of its
+// own, so /metrics combines these with a sample of celld's /state.
+export function createIngressMetrics() {
+  const requests = new Map();
+  let bytes = 0;
+  let upgrades = 0;
+  return {
+    observe(entry) {
+      const key = `${entry.route ?? ""}\u0000${statusClass(entry.status)}`;
+      requests.set(key, (requests.get(key) ?? 0) + 1);
+      bytes += entry.bytes ?? 0;
+      if (entry.upgrade && entry.status === 101) upgrades += 1;
+    },
+    render() {
+      const lines = [
+        "# HELP sobjects_ingress_requests_total Requests handled by the ingress.",
+        "# TYPE sobjects_ingress_requests_total counter",
+      ];
+      for (const [key, count] of [...requests].sort()) {
+        const [route, code] = key.split("\u0000");
+        lines.push(`sobjects_ingress_requests_total{route="${labelValue(route)}",code="${code}"} ${count}`);
+      }
+      lines.push(
+        "# HELP sobjects_ingress_response_bytes_total Upstream response bytes sent to clients.",
+        "# TYPE sobjects_ingress_response_bytes_total counter",
+        `sobjects_ingress_response_bytes_total ${bytes}`,
+        "# HELP sobjects_ingress_websocket_upgrades_total Completed WebSocket tunnels.",
+        "# TYPE sobjects_ingress_websocket_upgrades_total counter",
+        `sobjects_ingress_websocket_upgrades_total ${upgrades}`,
+      );
+      return lines;
+    },
+  };
+}
+
+export async function startAdmin({ listen, engine, metrics, version }) {
+  const { host: listenHost } = splitHostPort(listen);
+  const allowedHosts = new Set(["localhost", "127.0.0.1", "[::1]", listenHost.includes(":") ? `[${listenHost}]` : listenHost]);
+
+  const server = createServer(async (request, response) => {
+    // Reject DNS-rebinding requests: browsers send the attacker's hostname.
+    const host = String(request.headers.host ?? "").replace(/:\d+$/, "").toLowerCase();
+    if (!allowedHosts.has(host)) {
+      sendJson(response, 421, { error: "Unexpected Host header for the admin API." });
+      return;
+    }
+    // A custom header forces a CORS preflight, which this server never
+    // approves, so other origins in a browser cannot trigger mutations.
+    if (request.method !== "GET" && request.method !== "HEAD" && request.headers[ADMIN_REQUEST_HEADER] !== "1") {
+      sendJson(response, 403, { error: `Mutating admin requests require the ${ADMIN_REQUEST_HEADER}: 1 header.` });
+      return;
+    }
+    try {
+      await route(request, response);
+    } catch (error) {
+      const status = error instanceof RangeError ? 400 : 502;
+      sendJson(response, status, { error: error.message });
+    }
+  });
+
+  async function route(request, response) {
+    const url = new URL(request.url, "http://admin.invalid");
+    const path = url.pathname;
+
+    if (request.method === "GET" && path === "/api/v1/health") {
+      const engineHealth = await engine.health();
+      sendJson(response, engineHealth.ok ? 200 : 503, { ok: engineHealth.ok, version, engine: engineHealth });
+      return;
+    }
+    if (request.method === "GET" && path === "/api/v1/node") {
+      sendJson(response, 200, await engine.state());
+      return;
+    }
+    if (request.method === "GET" && path === "/api/v1/objects") {
+      const limit = url.searchParams.has("limit") ? Number(url.searchParams.get("limit")) : 100;
+      const [listing, state] = await Promise.all([
+        engine.listObjects({
+          className: url.searchParams.get("class") ?? undefined,
+          after: url.searchParams.get("after") ?? undefined,
+          limit,
+        }),
+        engine.state().catch(() => undefined),
+      ]);
+      const residents = new Set(state?.residents ?? []);
+      sendJson(response, 200, {
+        objects: listing.objects.map((object) => ({
+          ...object,
+          resident: state ? residents.has(object.scope) : undefined,
+        })),
+        next: listing.next,
+      });
+      return;
+    }
+    const evict = /^\/api\/v1\/objects\/([^/]+)\/evict$/.exec(path);
+    if (evict && request.method === "POST") {
+      const result = await engine.evict(decodeURIComponent(evict[1]));
+      sendJson(response, result.status, result);
+      return;
+    }
+    if (request.method === "GET" && path === "/metrics") {
+      const lines = [];
+      let state;
+      try {
+        state = await engine.state();
+      } catch {
+        state = undefined;
+      }
+      gauge(lines, "sobjects_engine_up", "Whether the engine operator API answered.", state ? 1 : 0);
+      if (state) {
+        gauge(lines, "sobjects_engine_resident_objects", "Objects resident in memory.", state.residentCells);
+        gauge(lines, "sobjects_engine_owned_objects", "Objects owned by this node.", state.ownedCells);
+        gauge(lines, "sobjects_engine_websockets", "WebSockets held by the engine.", state.websockets);
+        gauge(lines, "sobjects_engine_rss_bytes", "Engine resident set size.", state.rssBytes);
+        gauge(lines, "sobjects_engine_cpu_percent", "Engine CPU use.", state.cpuPercent);
+        gauge(lines, "sobjects_engine_draining", "Whether the engine is draining.", state.draining ? 1 : 0);
+        gauge(lines, "sobjects_engine_pressured", "Whether the engine reports memory pressure.", state.pressured ? 1 : 0);
+      }
+      if (metrics) lines.push(...metrics.render());
+      response.writeHead(200, { "content-type": "text/plain; version=0.0.4; charset=utf-8", "cache-control": "no-store" });
+      response.end(`${lines.join("\n")}\n`);
+      return;
+    }
+    sendJson(response, 404, { error: "Not found." });
+  }
+
+  const { port } = splitHostPort(listen);
+  await new Promise((resolve, reject) => {
+    const onError = (error) => reject(new Error(`Admin API could not listen on ${listen}: ${error.message}`));
+    server.once("error", onError);
+    server.listen(port, listenHost, () => {
+      server.off("error", onError);
+      resolve();
+    });
+  });
+  return {
+    address: server.address(),
+    close: () => new Promise((resolve) => {
+      server.close(() => resolve());
+      server.closeAllConnections();
+    }),
+  };
+}
+
+function gauge(lines, name, help, value) {
+  if (value === undefined) return;
+  lines.push(`# HELP ${name} ${help}`, `# TYPE ${name} gauge`, `${name} ${value}`);
+}
+
+function statusClass(status) {
+  return typeof status === "number" ? `${Math.floor(status / 100)}xx` : "unknown";
+}
+
+function labelValue(value) {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n");
+}
+
+function sendJson(response, status, body) {
+  const text = `${JSON.stringify(body)}\n`;
+  response.writeHead(status, {
+    "content-type": "application/json",
+    "cache-control": "no-store",
+    "content-length": Buffer.byteLength(text),
+  });
+  response.end(text);
+}

@@ -186,3 +186,34 @@ test("rejects invalid ingress settings", () => {
     /must differ from \[celld\].listen/,
   );
 });
+
+test("parses [admin] and derives celld's operator listener", () => {
+  const config = parseSobjectsConfig(`${CELLD}[admin]\nlisten = "127.0.0.1:8790"\n`);
+  assert.deepEqual(config.admin, { listen: "127.0.0.1:8790" });
+  assert.equal(config.internalListen, "127.0.0.1:8081");
+
+  const explicit = parseSobjectsConfig(
+    '[celld]\nbucket = "s3://example/fleet"\ninternal_listen = "127.0.0.1:9100"\n[admin]\nlisten = "127.0.0.1:8790"\n',
+  );
+  assert.equal(explicit.internalListen, "127.0.0.1:9100");
+  assert.equal(parseSobjectsConfig(CELLD).internalListen, undefined);
+});
+
+test("keeps the admin API and operator listener on loopback", () => {
+  assert.throws(
+    () => parseSobjectsConfig(`${CELLD}[admin]\nlisten = "0.0.0.0:8790"\n`),
+    /\[admin\].listen must be a loopback address/,
+  );
+  assert.throws(
+    () => parseSobjectsConfig('[celld]\nbucket = "s3://example/fleet"\ninternal_listen = "10.0.0.2:8081"\n'),
+    /internal_listen must be loopback/,
+  );
+  assert.throws(
+    () => parseSobjectsConfig('[celld]\nbucket = "s3://example/fleet"\ninternal_listen = "127.0.0.1:8080"\n'),
+    /must not reuse another listener/,
+  );
+  assert.throws(
+    () => parseSobjectsConfig(`${CELLD}[admin]\nlisten = "127.0.0.1:8790"\ntoken = "x"\n`),
+    /Unknown config key 'token'/,
+  );
+});
