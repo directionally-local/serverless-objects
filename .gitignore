@@ -15,3 +15,6 @@ sobjects.toml
 
 # Local coding-agent state.
 .kimiflare/
+
+# Conformance runner scratch copies.
+packages/conformance/.runs/
