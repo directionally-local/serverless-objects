@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.1.0...serverless-objects-v0.1.1) (2026-10-19)
+
+
+### Documentation
+
+* install the CLI from npm ([ba731a5](https://github.com/sinameraji/serverless-objects/commit/ba731a5e4a027f2ff2d34c8409db7e9cef46d322))
+
 ## 0.1.0 (2026-10-19)
 
 
