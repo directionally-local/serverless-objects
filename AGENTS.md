@@ -31,7 +31,7 @@ Run from the repository root unless a command says otherwise. Node.js 22+ is req
 | Production build | None | No build/bundle script: package is plain ESM. `prepublishOnly` runs tests. |
 | Watch, lint, format, type-check | None configured | No watch/lint/format/type-check scripts or TypeScript config. Edit and run tests directly. |
 
-CI: `.github/workflows/ci.yml` runs `npm ci`, `npm test` and the Wrangler conformance run on Ubuntu/Node 22 for pushes to `main` and pull requests; no matrix or deployment job. `release-please.yml` runs on `main` to manage release PRs/releases; it is not a deploy workflow.
+CI: `.github/workflows/ci.yml` runs `npm ci`, `npm test` and the Wrangler conformance run on Ubuntu/Node 22 for pushes to `main` and pull requests; no matrix or deployment job. `release-please.yml` runs on `main` to manage release PRs/releases. When it creates a CLI release it calls `npm-publish.yml`, which tests the tag and publishes `serverless-objects` to npm with provenance. Run `npm-publish.yml` by hand (`gh workflow run npm-publish.yml -f tag=serverless-objects-vX.Y.Z`) to publish an existing tag. It skips versions already on npm.
 
 ## 3. Layout
 
@@ -47,9 +47,9 @@ CI: `.github/workflows/ci.yml` runs `npm ci`, `npm test` and the Wrangler confor
 | `sobjects.example.toml` | Safe starter configuration; copy to the ignored, machine-specific `sobjects.toml`. |
 | `docs/conformance/` | Recorded Workers/celld compatibility findings (`m0-celld.md`) and conformance results (`results.md`); consult before changing runtime assumptions. |
 | `docs/install.md`, `docs/porting-from-cloudflare.md`, `docs/compatibility.md` | User guides and the supported/unsupported table; keep them in step with conformance results. |
-| `release-please-config.json`, `.release-please-manifest.json` | Release Please setup for `packages/cli`; the first release is pinned with `release-as`. |
+| `release-please-config.json`, `.release-please-manifest.json` | Release Please setup for `packages/cli`; `bump-minor-pre-major` keeps breaking changes below 1.0. |
 | `private/` | Private strategy/planning material, explicitly ignored; do not add or commit it. |
-| `.github/workflows/` | CI test and Release Please automation. |
+| `.github/workflows/` | CI tests, Release Please, and npm publishing. |
 
 ## 4. Conventions
 
