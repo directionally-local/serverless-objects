@@ -9,6 +9,7 @@
     "test:celld": "node src/run.js --target celld"
   },
   "devDependencies": {
+    "agents": "0.28.1",
     "wrangler": "4.150.0"
   }
 }

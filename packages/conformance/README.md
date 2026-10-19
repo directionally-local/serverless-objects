@@ -1,9 +1,13 @@
 # Conformance suite (v0)
 
 `app/` is a small Workers application whose Durable Objects run checks and
-return `{ pass, detail }` at `/case/<name>`. `/cases` lists the cases. The
-runner launches a disposable local copy so runtime state is not written into
-this checkout.
+return `{ pass, detail }` at `/case/<name>`. `/cases` lists the cases.
+`agents-app/` does the same for the Agents SDK (pinned `agents` 0.28.1, with
+`nodejs_compat`); the runner also drives its WebSocket client protocol. Select
+one with `--suite core|agents|all` (default `all`). The
+runner launches a disposable copy under the git-ignored `.runs/` directory,
+so the Agents app resolves the workspace's `node_modules`, and removes it
+afterwards.
 
 Run the reference runner or celld runner from the repository root:
 
