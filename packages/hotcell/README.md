@@ -72,4 +72,8 @@ Unit tests cover the mapping with a fake daemon. One run on macOS arm64
 (celld 0.6.2 through `sobjects deploy`/`up`, Hotcell 0.1.19 with the container
 driver) exercised files, `exec`, processes and logs, `exposePort` with a
 preview fetch, reattachment after celld idle-evicted the object, and `destroy`.
-The `egress` option and API-key authentication have not been exercised yet.
+With `{ hotcell: { egress: { spendCapUsd: 1, ttlMs: 600000 } } }`, the sandbox
+received `OPENROUTER_API_KEY` and `OPENROUTER_BASE_URL` pointing at Hotcell's
+gateway, and the key did not have a provider key's shape. A sandbox created
+without `egress` had neither variable. Spend-cap enforcement and API-key
+authentication to the daemon have not been exercised.
