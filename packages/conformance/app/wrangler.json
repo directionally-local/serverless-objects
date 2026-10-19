@@ -1,0 +1,14 @@
+{
+  "name": "sobjects-conformance",
+  "main": "src/index.js",
+  "compatibility_date": "2026-02-24",
+  "durable_objects": {
+    "bindings": [
+      { "name": "STORAGE", "class_name": "Storage" },
+      { "name": "ALARMS", "class_name": "Alarms" },
+      { "name": "GATE", "class_name": "Gate" },
+      { "name": "SOCKETS", "class_name": "Sockets" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Storage", "Alarms", "Gate", "Sockets"] }]
+}

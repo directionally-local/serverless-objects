@@ -3,6 +3,7 @@ import { createServer as createHttpServer, request as httpRequest } from "node:h
 import { createServer as createHttpsServer } from "node:https";
 import { connect } from "node:net";
 import { createSecureContext } from "node:tls";
+import { createAcmeCertificateManager } from "./acme.js";
 
 export const HEALTH_PATH = "/.well-known/sobjects/health";
 
@@ -36,51 +37,88 @@ export async function startIngress({
   listen,
   routes,
   tls,
+  acme,
   redirectHttp,
+  stateDirectory,
   accessLog = () => {},
   readFile = readFileSync,
+  createAcmeManager = createAcmeCertificateManager,
+  log = () => {},
 }) {
   const router = createRouter(routes);
-  const secure = Boolean(tls);
+  const secure = Boolean(tls || acme);
+  if (acme && !redirectHttp) throw new Error("ACME HTTP-01 requires an HTTP redirect listener.");
   // Upgraded sockets are invisible to server.closeAllConnections().
   const tunnels = new Set();
+  const challenges = acme ? new Map() : undefined;
   const handlers = createHandlers({ router, secure, accessLog, tunnels });
 
   let server;
+  let redirect;
+  let manager;
+  let activeTls = tls;
+  let contexts;
   let reloadCertificates = () => {};
-  if (secure) {
-    let contexts = loadContexts({ tls, routes, readFile });
-    server = createHttpsServer({
-      ...contexts.defaultOptions,
-      SNICallback: (servername, callback) => {
-        callback(null, contexts.forServername(servername));
-      },
-    }, handlers.request);
-    reloadCertificates = () => {
-      const next = loadContexts({ tls, routes, readFile });
-      contexts = next;
-      server.setSecureContext(next.defaultOptions);
-    };
-  } else {
-    server = createHttpServer(handlers.request);
-  }
-  server.on("upgrade", handlers.upgrade);
-  server.on("clientError", (error, socket) => {
-    if (socket.writable) socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
-    else socket.destroy(error);
-  });
+  const servers = [];
 
-  const servers = [server];
-  await listenOn(server, listen);
-  if (redirectHttp) {
-    const redirect = createHttpServer(createRedirectHandler({ router, httpsPort: () => server.address().port, accessLog }));
-    servers.push(redirect);
-    try {
+  try {
+    if (redirectHttp) {
+      redirect = createHttpServer(createRedirectHandler({
+        router,
+        httpsPort: () => server?.address()?.port,
+        accessLog,
+        challenges,
+      }));
       await listenOn(redirect, redirectHttp);
-    } catch (error) {
-      await closeServer(server);
-      throw error;
     }
+
+    if (acme) {
+      manager = createAcmeManager({
+        config: acme,
+        domains: acme.domains,
+        stateDirectory,
+        challenges,
+        onCertificate: (certificate) => {
+          activeTls = certificate;
+          if (server) {
+            contexts = loadContexts({ tls: activeTls, routes, readFile });
+            server.setSecureContext(contexts.defaultOptions);
+          }
+        },
+        log,
+      });
+      activeTls = await manager.start();
+    }
+
+    if (secure) {
+      contexts = loadContexts({ tls: activeTls, routes, readFile });
+      server = createHttpsServer({
+        ...contexts.defaultOptions,
+        SNICallback: (servername, callback) => {
+          callback(null, contexts.forServername(servername));
+        },
+      }, handlers.request);
+      reloadCertificates = () => {
+        const next = loadContexts({ tls: activeTls, routes, readFile });
+        contexts = next;
+        server.setSecureContext(next.defaultOptions);
+      };
+    } else {
+      server = createHttpServer(handlers.request);
+    }
+    server.on("upgrade", handlers.upgrade);
+    server.on("clientError", (error, socket) => {
+      if (socket.writable) socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+      else socket.destroy(error);
+    });
+    await listenOn(server, listen);
+    servers.push(server);
+    if (redirect) servers.push(redirect);
+  } catch (error) {
+    manager?.close();
+    for (const socket of tunnels) socket.destroy();
+    await Promise.all([server, redirect].filter(Boolean).map(closeServer));
+    throw error;
   }
 
   return {
@@ -88,9 +126,10 @@ export async function startIngress({
     servers,
     address: server.address(),
     reloadCertificates,
-    close: () => {
+    close: async () => {
+      manager?.close();
       for (const socket of tunnels) socket.destroy();
-      return Promise.all(servers.map(closeServer)).then(() => {});
+      await Promise.all(servers.map(closeServer));
     },
   };
 }
@@ -274,18 +313,64 @@ function createHandlers({ router, secure, accessLog, tunnels }) {
   return { request, upgrade };
 }
 
-function createRedirectHandler({ router, httpsPort, accessLog }) {
+const ACME_CHALLENGE_PREFIX = "/.well-known/acme-challenge";
+
+function createRedirectHandler({ router, httpsPort, accessLog, challenges }) {
   return (clientRequest, clientResponse) => {
     const started = process.hrtime.bigint();
     const route = router.match(clientRequest.headers.host);
     const entry = { ...baseLogEntry(clientRequest, route), redirect: true };
+    let pathname;
+    try {
+      pathname = new URL(clientRequest.url ?? "/", "http://localhost").pathname;
+    } catch {
+      const bytes = sendText(clientResponse, 400, "Invalid request path.\n");
+      accessLog({ ...entry, status: 400, bytes, duration_ms: elapsedMs(started) });
+      return;
+    }
+
+    if (challenges && pathname.startsWith(`${ACME_CHALLENGE_PREFIX}/`)) {
+      const token = pathname.slice(ACME_CHALLENGE_PREFIX.length + 1);
+      const hostname = normalizeHost(clientRequest.headers.host);
+      const challenge = challenges.get(token);
+      const body = challenge && challenge.hostname === hostname && /^[A-Za-z0-9_-]+$/.test(token)
+        ? challenge.keyAuthorization
+        : undefined;
+      entry.path = `${ACME_CHALLENGE_PREFIX}/:token`;
+      if (body && ["GET", "HEAD"].includes(clientRequest.method)) {
+        const bytes = Buffer.byteLength(body);
+        clientResponse.writeHead(200, {
+          "content-type": "text/plain",
+          "cache-control": "no-store",
+          "content-length": bytes,
+        });
+        clientResponse.end(clientRequest.method === "HEAD" ? undefined : body);
+        accessLog({ ...entry, status: 200, bytes: clientRequest.method === "HEAD" ? 0 : bytes, duration_ms: elapsedMs(started) });
+      } else {
+        const bytes = sendText(clientResponse, 404, "Challenge not found.\n");
+        accessLog({ ...entry, status: 404, bytes, duration_ms: elapsedMs(started) });
+      }
+      return;
+    }
+
+    if (pathname === ACME_CHALLENGE_PREFIX || pathname.startsWith(`${ACME_CHALLENGE_PREFIX}/`)) {
+      const bytes = sendText(clientResponse, 404, "Challenge not found.\n");
+      accessLog({ ...entry, status: 404, bytes, duration_ms: elapsedMs(started) });
+      return;
+    }
     if (!route) {
       const bytes = sendText(clientResponse, 421, "No route for this hostname.\n");
       accessLog({ ...entry, status: 421, bytes, duration_ms: elapsedMs(started) });
       return;
     }
+    const portValue = httpsPort();
+    if (!portValue) {
+      const bytes = sendText(clientResponse, 503, "Ingress is starting.\n");
+      accessLog({ ...entry, status: 503, bytes, duration_ms: elapsedMs(started) });
+      return;
+    }
     const host = normalizeHost(clientRequest.headers.host);
-    const port = httpsPort() === 443 ? "" : `:${httpsPort()}`;
+    const port = portValue === 443 ? "" : `:${portValue}`;
     clientResponse.writeHead(308, { location: `https://${host}${port}${clientRequest.url}`, "content-length": 0 });
     clientResponse.end();
     accessLog({ ...entry, status: 308, bytes: 0, duration_ms: elapsedMs(started) });
@@ -355,6 +440,7 @@ function canConnect({ host, port }, timeoutMs = 1_000) {
 
 function loadContexts({ tls, routes, readFile }) {
   const read = (path, label) => {
+    if (Buffer.isBuffer(path)) return path;
     try {
       return readFile(path);
     } catch (error) {

@@ -139,6 +139,65 @@ tls = { cert = "preview.pem", key = "preview-key.pem" }
   });
 });
 
+test("parses HTTP-01 ACME ingress and derives exact certificate names", () => {
+  const config = parseSobjectsConfig(`${CELLD}[ingress]
+listen = "0.0.0.0:443"
+redirect_http = "0.0.0.0:80"
+
+[ingress.acme]
+email = "ops@example.com"
+agree_to_terms = true
+
+[[ingress.routes]]
+hostname = "agents.example.com"
+
+[[ingress.routes]]
+hostname = "static.example.com"
+tls = { cert = "static.pem", key = "static-key.pem" }
+`, "sobjects.toml", { baseDirectory: "/srv/app" });
+  assert.deepEqual(config.ingress.acme, {
+    email: "ops@example.com",
+    agreeToTerms: true,
+    directoryUrl: "https://acme-v02.api.letsencrypt.org/directory",
+    domains: ["agents.example.com"],
+  });
+  assert.equal(config.ingress.redirectHttp, "0.0.0.0:80");
+  assert.equal(config.ingress.routes[1].tls.cert, "/srv/app/static.pem");
+});
+
+test("validates ACME consent, HTTP-01 listener, directory transport, and hostname limits", () => {
+  const makeConfig = (ingress) => `${CELLD}${ingress}`;
+  const prefix = '[ingress]\nlisten = "0.0.0.0:443"\nredirect_http = "0.0.0.0:80"\n';
+  const noRedirect = '[ingress]\nlisten = "0.0.0.0:443"\n';
+  const acme = '[ingress.acme]\nemail = "ops@example.com"\nagree_to_terms = true\n';
+  const route = '[[ingress.routes]]\nhostname = "agents.example.com"\n';
+  assert.throws(
+    () => parseSobjectsConfig(makeConfig(`${prefix}[ingress.acme]\nemail = "ops@example.com"\n${route}`)),
+    /agree_to_terms must be true/,
+  );
+  assert.throws(
+    () => parseSobjectsConfig(makeConfig(`${noRedirect}${acme}${route}`)),
+    /requires redirect_http on port 80/,
+  );
+  assert.throws(
+    () => parseSobjectsConfig(makeConfig(`${prefix.replace('0.0.0.0:80', '0.0.0.0:8080')}${acme}${route}`)),
+    /redirect_http to listen on port 80/,
+  );
+  assert.throws(
+    () => parseSobjectsConfig(makeConfig(`${prefix}${acme.replace('agree_to_terms = true', 'agree_to_terms = false')}${route}`)),
+    /agree_to_terms must be true/,
+  );
+  const insecureDirectory = '[ingress.acme]\nemail = "ops@example.com"\nagree_to_terms = true\ndirectory_url = "http://acme.example.test/directory"\n';
+  assert.throws(
+    () => parseSobjectsConfig(makeConfig(`${prefix}${insecureDirectory}${route}`)),
+    /directory_url must use HTTPS/,
+  );
+  assert.throws(
+    () => parseSobjectsConfig(makeConfig(`${prefix}${acme}${route.replace('agents.example.com', '*.example.com')}`)),
+    /cannot issue HTTP-01 certificates for wildcard/,
+  );
+});
+
 test("allows plaintext ingress only on loopback", () => {
   const plain = parseSobjectsConfig(
     `${CELLD}[ingress]\nlisten = "127.0.0.1:8443"\n[[ingress.routes]]\nhostname = "*"\n`,

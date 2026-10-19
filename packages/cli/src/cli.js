@@ -382,14 +382,17 @@ async function startSupervisorRuntime(config, io, dependencies) {
         listen: config.ingress.listen,
         redirectHttp: config.ingress.redirectHttp,
         tls: config.ingress.tls,
+        acme: config.ingress.acme,
+        stateDirectory: dependencies.stateDirectory,
         routes: config.ingress.routes,
         accessLog: (entry) => {
           metrics.observe(entry);
           accessLog.write(entry);
         },
+        log: (message) => io.log(message),
       });
       closers.push(ingress.close);
-      const scheme = config.ingress.tls ? "https" : "http";
+      const scheme = config.ingress.tls || config.ingress.acme ? "https" : "http";
       io.log(`Ingress listening on ${scheme}://${config.ingress.listen} for ${config.ingress.routes.map((route) => route.hostname).join(", ")}.`);
     }
     if (config.admin) {

@@ -67,12 +67,12 @@
     </section>
     <section class="backups" aria-labelledby="backups-title">
       <div class="section-head">
-        <h2 id="backups-title">Backups in the bucket</h2>
+        <h2 id="backups-title">Superseded epochs eligible for GC</h2>
         <button id="load-backups" type="button">Load</button>
       </div>
-      <p id="retention" class="muted">celld keeps each object's write history as LTX epochs. Loading reads the bucket listing.</p>
+      <p id="retention" class="muted">This read-only view lists only objects with superseded LTX epochs eligible for garbage collection; it is not a complete object or backup inventory.</p>
       <table>
-        <thead><tr><th>Object</th><th>Restore base epoch</th><th>Superseded epochs</th><th>Superseded size</th></tr></thead>
+        <thead><tr><th>Object</th><th>Current base epoch</th><th>Superseded epochs</th><th>Superseded size</th></tr></thead>
         <tbody id="backup-rows"></tbody>
       </table>
       <button id="backups-more" type="button" hidden>Load more</button>

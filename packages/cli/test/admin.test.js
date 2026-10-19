@@ -144,9 +144,12 @@ test("serves the dashboard with a strict content security policy", async () => {
   const page = await call(port, "/");
   assert.equal(page.status, 200);
   assert.match(page.text, /<script type="module" src="\/dashboard\/app\.js"><\/script>/);
+  assert.match(page.text, /Superseded epochs eligible for GC/);
+  assert.match(page.text, /not a complete object or backup inventory/);
   const script = await call(port, "/dashboard/app.js");
   assert.equal(script.status, 200);
   assert.match(script.text, /x-sobjects-request/);
+  assert.match(script.text, /Only objects with superseded epochs are listed/);
   assert.doesNotMatch(script.text, /innerHTML/);
   assert.equal((await call(port, "/dashboard/app.css")).status, 200);
   const headers = await new Promise((resolve, reject) => {

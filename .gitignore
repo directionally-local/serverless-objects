@@ -5,6 +5,7 @@ private/
 node_modules/
 dist/
 coverage/
+.wrangler/
 .celld/
 .sobjects-wrangler-*.json
 .sobjects-entry-*.mjs

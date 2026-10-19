@@ -194,9 +194,10 @@ async function loadBackups({ append = false } = {}) {
   if (state.className) params.set("class", state.className);
   if (append && state.backupsNext) params.set("after", state.backupsNext);
   const page = await api(`/api/v1/backups?${params}`);
-  $("retention").textContent = page.retentionSeconds
+  const retentionMessage = page.retentionSeconds
     ? `celld deletes superseded epochs older than ${page.retentionSeconds}s (CELLD_LTX_RETENTION_SECS). Point-in-time restore is not available in this version; use Export JSON for a logical backup.`
     : "CELLD_LTX_RETENTION_SECS is unset, so celld keeps every superseded epoch. Point-in-time restore is not available in this version; use Export JSON for a logical backup.";
+  $("retention").textContent = `Only objects with superseded epochs are listed; this is not a complete object inventory. ${retentionMessage}`;
   const rows = page.objects.map((object) => {
     const row = element("tr", undefined, { "data-scope": object.scope });
     const scope = element("td");

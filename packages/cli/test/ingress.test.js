@@ -208,6 +208,47 @@ test("redirects plaintext requests for known hosts to HTTPS", async () => {
   assert.equal((await get(redirect.port, { host: "evil.test" })).status, 421);
 });
 
+test("serves active HTTP-01 challenges on the redirect listener and keeps normal redirects", async () => {
+  const upstream = await startUpstream();
+  const log = [];
+  const instance = await startIngress({
+    listen: "127.0.0.1:0",
+    redirectHttp: "127.0.0.1:0",
+    acme: { domains: ["default.example.test"] },
+    routes: [{ hostname: "default.example.test", upstream }],
+    accessLog: (entry) => log.push(entry),
+    createAcmeManager: ({ challenges, onCertificate }) => ({
+      async start() {
+        challenges.set("token-123", {
+          hostname: "default.example.test",
+          keyAuthorization: "token-123.account-thumbprint",
+        });
+        const certificate = {
+          cert: readFileSync(fixture("default-cert.pem")),
+          key: readFileSync(fixture("default-key.pem")),
+        };
+        onCertificate(certificate);
+        return certificate;
+      },
+      close() {},
+    }),
+  });
+  cleanups.push(() => instance.close());
+  const redirectPort = instance.servers[1].address().port;
+  const challengePath = "/.well-known/acme-challenge/token-123";
+
+  const challenge = await get(redirectPort, { host: "default.example.test", path: challengePath });
+  assert.equal(challenge.status, 200);
+  assert.equal(challenge.text, "token-123.account-thumbprint");
+  assert.equal((await get(redirectPort, { host: "other.example.test", path: challengePath })).status, 404);
+  assert.equal((await get(redirectPort, { host: "default.example.test", path: "/.well-known/acme-challenge/missing" })).status, 404);
+
+  const redirect = await get(redirectPort, { host: "default.example.test", path: "/app?secret=ignored" });
+  assert.equal(redirect.status, 308);
+  assert.equal(redirect.headers.location, `https://default.example.test:${instance.address.port}/app?secret=ignored`);
+  assert.equal(log[0].path, "/.well-known/acme-challenge/:token");
+});
+
 test("reloads certificates from disk", async () => {
   const upstream = await startUpstream();
   let certificate = "default";
