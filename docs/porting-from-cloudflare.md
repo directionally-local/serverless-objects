@@ -55,6 +55,6 @@ Before switching traffic, check for:
 - Assumptions about production networking, service bindings, outbound connections, Cache, or global coordination.
 - Durable Object migration operations beyond adding SQLite classes.
 - WebSocket hibernation, facets, cross-isolate RPC, or behavior across a cell move. These need separate verification; the current conformance run covers only basic WebSocket behavior.
-- Whether the app has been run through the actual `sobjects` CLI. The M0 Agents SDK and PartyServer samples ran directly on celld with temporary config normalization; the full product-level Agents SDK-through-CLI path remains unverified.
+- Whether the app has been run through the actual `sobjects` CLI. A minimal Agents SDK app (state, SQL, schedules, WebSocket protocol) has run through `sobjects deploy` and `sobjects up`; the official samples, callable RPC, chat agents, MCP and Workflows have not.
 
 Do not infer production Cloudflare behavior from local Wrangler results, or infer full celld compatibility from one passing sample. Record any mismatch as a conformance case and keep unsupported behavior visible.
