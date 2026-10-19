@@ -107,7 +107,7 @@ A V8-embedded runtime of our own. Workers AI, Vectorize or Hyperdrive replacemen
 
 The current [conformance v0 results](docs/conformance/results.md) record one local run each against Wrangler 4.150.0 and celld 0.6.2: 10/10 checks passed on both. Coverage includes IDs, KV and SQL storage, transactions, gates, RPC, alarms, and basic WebSocket behavior. WebSocket hibernation, facets, broader compatibility flags, Cloudflare-hosted behavior, and full Agents SDK/PartyServer integration through the CLI are not covered yet.
 
-The [M0 celld spike results](docs/conformance/m0-celld.md) passed the runtime gate with caveats; direct Wrangler config support and the Hotcell idle-eviction/`exec` reattachment check remain open.
+The [M0 celld spike results](docs/conformance/m0-celld.md) passed the runtime gate with caveats; direct Wrangler config support remains open. A follow-up run reattached a Hotcell sandbox and ran `exec` after celld idle-evicted the object.
 
 ## How it fits with the rest of the family
 
