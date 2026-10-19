@@ -12,3 +12,6 @@ coverage/
 
 # Project-local object-store configuration can contain infrastructure details.
 sobjects.toml
+
+# Local coding-agent state.
+.kimiflare/
