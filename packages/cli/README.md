@@ -15,8 +15,9 @@ The `sobjects` CLI package for Serverless Objects.
 
 `dev` and `deploy` use the pinned celld install. Set `SOBJECTS_CELLD_BIN` to
 use an existing binary or `SOBJECTS_DATA_DIR` to choose the engine install
-location. `dev` adds the project's `node_modules/.bin` to the child `PATH`, so
-a project-local esbuild can be used.
+location. `dev` and `deploy` add the project's `node_modules/.bin` to the
+child `PATH`, so a project-local esbuild is used first; otherwise celld finds
+esbuild on `PATH` or falls back to the copy installed with this package.
 
 ## `sobjects up` configuration
 

@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { request } from "node:http";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { delimiter, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { run } from "../src/cli.js";
 
@@ -80,7 +81,11 @@ test("passes dev arguments and project-local binaries to celld", async () => {
       stdio: "inherit",
       env: {
         ...env,
-        PATH: [join(resolve(cwd, "./example"), "node_modules", ".bin"), env.PATH].join(delimiter),
+        PATH: [
+          join(resolve(cwd, "./example"), "node_modules", ".bin"),
+          env.PATH,
+          dirname(createRequire(import.meta.url).resolve("esbuild/bin/esbuild")),
+        ].join(delimiter),
       },
     },
   });
