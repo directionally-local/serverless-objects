@@ -1,7 +1,21 @@
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { splitHostPort } from "./ingress.js";
 
 export const ADMIN_REQUEST_HEADER = "x-sobjects-request";
+
+const DASHBOARD_FILES = {
+  "/": ["index.html", "text/html; charset=utf-8"],
+  "/dashboard/app.js": ["app.js", "text/javascript; charset=utf-8"],
+  "/dashboard/app.css": ["app.css", "text/css; charset=utf-8"],
+};
+const DASHBOARD_HEADERS = {
+  "content-security-policy":
+    "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "no-referrer",
+  "cache-control": "no-cache",
+};
 
 // Counters fed by the ingress access log. celld records no metrics of its
 // own, so /metrics combines these with a sample of celld's /state.
@@ -39,6 +53,10 @@ export function createIngressMetrics() {
 }
 
 export async function startAdmin({ listen, engine, metrics, version }) {
+  const dashboard = Object.fromEntries(Object.entries(DASHBOARD_FILES).map(([path, [file, type]]) => [
+    path,
+    { type, body: readFileSync(new URL(`./dashboard/${file}`, import.meta.url)) },
+  ]));
   const { host: listenHost } = splitHostPort(listen);
   const allowedHosts = new Set(["localhost", "127.0.0.1", "[::1]", listenHost.includes(":") ? `[${listenHost}]` : listenHost]);
 
@@ -66,6 +84,13 @@ export async function startAdmin({ listen, engine, metrics, version }) {
   async function route(request, response) {
     const url = new URL(request.url, "http://admin.invalid");
     const path = url.pathname;
+
+    if (request.method === "GET" && dashboard[path]) {
+      const file = dashboard[path];
+      response.writeHead(200, { ...DASHBOARD_HEADERS, "content-type": file.type, "content-length": file.body.length });
+      response.end(file.body);
+      return;
+    }
 
     if (request.method === "GET" && path === "/api/v1/health") {
       const engineHealth = await engine.health();

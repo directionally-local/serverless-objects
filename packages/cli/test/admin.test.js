@@ -138,3 +138,25 @@ test("inspects object storage through the engine", async () => {
     [`Room:${ID}`, { op: "sql", query: "SELECT 1" }],
   ]);
 });
+
+test("serves the dashboard with a strict content security policy", async () => {
+  const port = await admin();
+  const page = await call(port, "/");
+  assert.equal(page.status, 200);
+  assert.match(page.text, /<script type="module" src="\/dashboard\/app\.js"><\/script>/);
+  const script = await call(port, "/dashboard/app.js");
+  assert.equal(script.status, 200);
+  assert.match(script.text, /x-sobjects-request/);
+  assert.doesNotMatch(script.text, /innerHTML/);
+  assert.equal((await call(port, "/dashboard/app.css")).status, 200);
+  const headers = await new Promise((resolve, reject) => {
+    request({ host: "127.0.0.1", port, path: "/", headers: { host: "localhost" } }, (response) => {
+      response.resume();
+      resolve(response.headers);
+    }).on("error", reject).end();
+  });
+  assert.match(headers["content-security-policy"], /script-src 'self'/);
+  assert.match(headers["content-security-policy"], /frame-ancestors 'none'/);
+  assert.equal(headers["x-content-type-options"], "nosniff");
+  assert.equal((await call(port, "/dashboard/../admin.js")).status, 404);
+});
