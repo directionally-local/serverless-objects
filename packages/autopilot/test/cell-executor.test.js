@@ -23,11 +23,21 @@ function fakeCell() {
       return this.files.get(path);
     },
     async listProcesses() { return this.processes; },
-    async startProcess(command) { this.processes.push({ procId: "p1", command, status: "running" }); },
-    async exec(command) {
+    installExit: "0",
+    async startProcess(command) {
       if (command.includes("npm install")) {
+        // The install runs in the background; it has finished by the next check.
         this.installs += 1;
-        this.files.set("/opt/autopilot/node_modules/autopilot-ai/package.json", JSON.stringify({ version: "1.25.1" }));
+        if (this.installExit === "0") this.files.set("/opt/autopilot/node_modules/autopilot-ai/package.json", JSON.stringify({ version: "1.25.1" }));
+        this.files.set("/workspace/.aster/install.log", "npm ERR! network");
+        this.files.set("/workspace/.aster/install.exit", `${this.installExit}\n`);
+        return;
+      }
+      this.processes.push({ procId: "p1", command, status: "running" });
+    },
+    async exec(command) {
+      if (command.startsWith("rm -f ")) {
+        this.files.delete(command.slice("rm -f ".length));
         return { exitCode: 0, stdout: "", stderr: "" };
       }
       const requestId = command.trim().split(" ").pop();
@@ -280,4 +290,42 @@ test("the session log is redacted, and streamed text is redacted whole", async (
   // The run log hashes the original output.
   const result = state.host.listEvents().find((event) => event.type === "tool_result");
   assert.equal(result.metadata.outputBytes, `GITHUB_TOKEN=${secret}`.length);
+});
+
+test("a failed background install is retried, then fails the run", async () => {
+  const state = await setup();
+  state.cell.installExit = "1";
+  await state.executor.start();
+  await drive(state, (current) => current.step === "done", 80);
+  assert.equal(state.host.get().status, "failed");
+  assert.equal(state.host.get().stopReason, "cell_install_failed");
+  assert.match(state.executor.state().lastError, /npm install exited 1: npm ERR! network/);
+  assert.equal(state.cell.installs, 6);
+});
+
+test("only one step runs at a time, and a step overtaken by cancel stops", async () => {
+  const state = await setup();
+  await state.executor.start();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const slowConnect = new CellExecutor({
+    db: state.db,
+    run: state.host,
+    now: state.time.now,
+    randomId: state.randomId,
+    connect: async () => { await gate; return state.cell; },
+  });
+  const first = slowConnect.step();
+  await slowConnect.step();
+  assert.equal(state.executor.state().step, "provision");
+  assert.ok(state.executor.state().leaseUntil > state.time.now());
+  assert.equal(slowConnect.nextAt(), state.executor.state().leaseUntil);
+
+  await state.executor.cancel();
+  release();
+  await first;
+  assert.equal(state.executor.state().step, "done");
+  assert.equal(state.executor.state().cellId, null);
+  assert.equal(state.host.get().status, "cancelled");
+  assert.equal(state.host.listSessionEvents().some((event) => event.payload?.label?.includes("created")), false);
 });
