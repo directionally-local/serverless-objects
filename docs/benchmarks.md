@@ -23,11 +23,11 @@ To benchmark Cloudflare itself, deploy the app with `npx wrangler deploy --confi
 Writes are **not equally durable** across targets, and that dominates the write rows:
 
 - **Cloudflare** holds a response until its writes are confirmed by storage replicated across machines (the output gate). A write that returned is durable.
-- **celld** writes take about 8 ms longer than its reads, which is consistent with it waiting for a commit before responding (not yet confirmed in celld's source).
+- **celld** holds a write's response until the node has proven the write durable (its source: `crates/logic/durability.rs`, v0.6.2). In the default `fleet` mode that proof comes from a follower node; a node with no healthy follower needs bucket proof, which is what a single node gets.
 - **The native engine** commits to a local SQLite file in WAL mode with `synchronous = NORMAL`. A committed write survives the process crashing, but not the machine losing power or the disk, and there is no output gate. With `--backup-bucket`, it reaches the bucket within the backup interval. Its write numbers are local-SQLite numbers, not replicated-storage numbers.
 - **Wrangler** (`wrangler dev --local`) runs workerd with local SQLite. It is a development server, not a production runtime.
 
-So the native engine is the right choice when the app is trusted and a few seconds of writes on one machine are an acceptable loss; choose Cloudflare (or celld, once its write durability is confirmed) when every acknowledged write must survive the machine.
+So the native engine is the right choice when the app is trusted and a few seconds of writes on one machine are an acceptable loss; choose Cloudflare or celld when every acknowledged write must survive the machine.
 
 ## Results, 20 Oct 2026
 
@@ -63,6 +63,17 @@ The Worker makes 500 sequential calls to one object (100 for SQL) and reports th
 ### Findings
 
 - A Cloudflare Durable Object call costs about 11 ms to read and 19 ms to write from the Worker that calls it, in this setup. That is the network hop to the object plus, for writes, confirmation from replicated storage. On one machine, the native engine and celld have no hop at all, which is where most of their advantage comes from. It is the trade-off of running on one node, not a faster implementation of the same guarantees.
-- celld's writes (~9 ms) wait for something: its reads are as fast as native's. Its write cost is in the same range as Cloudflare's, so it may be giving similar durability; that needs confirming in celld's source before anyone relies on it.
-- With 32 objects writing at once, `celld dev` collapsed to 178 req/s with multi-second tails. This needs investigating on `celld serve` with a real bucket before drawing conclusions about production nodes.
+- celld's writes (~9 ms) wait for a durability proof, while its reads are as fast as native's. That is the same guarantee Cloudflare's output gate gives, at about half Cloudflare's in-Worker write cost on one machine.
+- celld's write throughput falls as more objects write at once. The table below shows 32 requests in flight, spread over N objects, on `celld dev` and on `celld serve` (through `sobjects up`) with a local SeaweedFS bucket:
+
+  | Objects | celld dev req/s (p99 ms) | celld serve + SeaweedFS req/s (p99 ms) |
+  |---:|---:|---:|
+  | 1 | 807 (166) | 1,828 (37) |
+  | 2 | 862 (91) | 1,360 (53) |
+  | 4 | 625 (213) | 405 (136) |
+  | 8 | 337 (827) | 250 (182) |
+  | 16 | 187 (2,183) | 256 (382) |
+  | 32 | 175 (1,826) | 236 (1,160) |
+
+  The bucket is not the limit: the same SeaweedFS took about 4,300 4 KiB PUTs/s at 32 in parallel (p50 6 ms). One busy object amortizes a proof over many writes; many objects each wait for their own proof round on a node with no follower. celld's source describes bundled, paced uploads for the `fleet` mode once a healthy follower exists, so a multi-node cluster is expected to behave differently. That is unmeasured here.
 - The native engine is the fastest target by one to two orders of magnitude, and its writes are the least durable: local WAL commits, then the bucket within the backup interval.
