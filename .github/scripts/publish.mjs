@@ -1,8 +1,8 @@
 // Publishes the packages a Release Please run released, or the package named
 // by a manually dispatched release tag. Run from the repository root at the
-// release commit. A version already on npm is skipped. A package that does not
-// exist on npm yet is skipped with instructions: npm trusted publishing only
-// works for existing packages, so its first version is published by hand.
+// release commit. A version already on npm is skipped. Auth is npm trusted
+// publishing (OIDC), which also covers a package's first version once its
+// trusted publisher is configured on npmjs.com.
 //
 //   RELEASE_OUTPUTS='<release-please outputs JSON>' node .github/scripts/publish.mjs
 //   DISPATCH_TAG=hotcell-v0.1.0 node .github/scripts/publish.mjs
@@ -50,10 +50,6 @@ for (const pkg of targets()) {
   }
   if (onNpm(`${pkg.name}@${pkg.version}`)) {
     console.log(`${pkg.name}@${pkg.version} is already published`);
-    continue;
-  }
-  if (!onNpm(pkg.name)) {
-    console.log(`::notice::${pkg.name} is not on npm yet. Publish ${pkg.tag} by hand once, then add a trusted publisher for release-please.yml: git checkout ${pkg.tag} && npm ci && npm publish --workspace=${pkg.path}`);
     continue;
   }
   console.log(`Publishing ${pkg.name}@${pkg.version} from ${pkg.path}`);
