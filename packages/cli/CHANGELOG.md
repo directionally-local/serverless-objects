@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.5.0...serverless-objects-v0.6.0) (2026-10-20)
+
+
+### Features
+
+* **cli:** run the native engine on worker threads ([06c5f79](https://github.com/sinameraji/serverless-objects/commit/06c5f79a06e7e63135679427b9ebcf7a20e83c50))
+
 ## [0.5.0](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.4.0...serverless-objects-v0.5.0) (2026-10-20)
 
 
