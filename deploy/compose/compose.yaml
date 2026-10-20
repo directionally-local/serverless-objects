@@ -9,8 +9,8 @@ services:
       context: .
       args:
         # x-release-please-start-version
-        SOBJECTS_VERSION: "0.6.2"
-    image: serverless-objects:0.6.2
+        SOBJECTS_VERSION: "0.7.0"
+    image: serverless-objects:0.7.0
     # x-release-please-end
     restart: unless-stopped
     env_file: .env
