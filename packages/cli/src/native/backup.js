@@ -11,6 +11,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { threadId } from "node:worker_threads";
 
 export class BucketBackup {
   #client;
@@ -41,11 +42,13 @@ export class BucketBackup {
 
   // Downloads every backed-up object that has no local file and records its
   // pending alarm, so it fires as if the object had always been here.
-  async restore(objectsDirectory, alarmIndex) {
+  // owns(id) limits it to one thread's objects (--threads).
+  async restore(objectsDirectory, alarmIndex, owns = () => true) {
     for (const { key, etag } of await this.#client.list(`${this.#root}/`)) {
       const match = /^([^/]+)\/([0-9a-f]{64})\.sqlite$/.exec(key.slice(this.#root.length + 1));
       if (!match) continue;
       const [, className, id] = match;
+      if (!owns(id)) continue;
       this.#etags.set(key, etag);
       const path = join(objectsDirectory, className, `${id}.sqlite`);
       if (existsSync(path)) continue;
@@ -84,7 +87,7 @@ export class BucketBackup {
     if (this.#changes.get(database) === changes) return;
     const key = this.key(className, id);
     if (this.#fenced.has(key)) return;
-    const path = join(this.#tempDirectory, `${process.pid}-${(this.#sequence += 1)}.sqlite`);
+    const path = join(this.#tempDirectory, `${process.pid}-${threadId}-${(this.#sequence += 1)}.sqlite`);
     try {
       database.snapshotTo(path);
     } catch (error) {
