@@ -21,6 +21,8 @@ const CONFIG = {
   port: number("SOAK_PORT", 8787),
   threads: number("SOAK_THREADS", 2),
   backupIntervalSeconds: number("SOAK_BACKUP_INTERVAL", 10),
+  // durable: every acknowledged write is in the bucket first (a disk wipe may lose nothing).
+  backupMode: env.SOAK_BACKUP_MODE ?? "durable",
   writesPerSecond: number("SOAK_RATE", 20),
   ledgers: number("SOAK_LEDGERS", 50),
   ledgerRotate: number("SOAK_LEDGER_ROTATE", 5_000),
@@ -35,7 +37,7 @@ const CONFIG = {
   diskFullSeconds: number("SOAK_DISK_FULL_SECONDS", 180),
 };
 const ENGINE = `http://127.0.0.1:${CONFIG.port}`;
-const S3 = { port: 8333, accessKey: "soak", secretKey: "soak-local-only", bucket: "soak" };
+const S3 = { port: 9000, accessKey: "soak", secretKey: "soak-local-only-secret", bucket: "soak" };
 const FAULTS = [["kill9", 3], ["sigterm", 2], ["crash-thread", 2], ["bucket-outage", 1], ["disk-full", 1], ["wipe-restore", 1]];
 
 for (const directory of [CONFIG.data, CONFIG.state, CONFIG.s3Dir]) mkdirSync(directory, { recursive: true });
@@ -84,36 +86,32 @@ function logStream(name) {
   return createWriteStream(path, { flags: "a" });
 }
 
-async function startWeed() {
-  writeFileSync("/tmp/soak-s3.json", JSON.stringify({ identities: [{ name: "soak", credentials: [{ accessKey: S3.accessKey, secretKey: S3.secretKey }], actions: ["Admin", "Read", "Write", "List", "Tagging"] }] }));
-  const out = logStream("seaweedfs.log");
-  weed = spawn("weed", ["server", `-dir=${CONFIG.s3Dir}`, "-ip=127.0.0.1", "-ip.bind=127.0.0.1", "-s3", `-s3.port=${S3.port}`, "-s3.config=/tmp/soak-s3.json", "-master.volumeSizeLimitMB=64"], { stdio: ["ignore", "pipe", "pipe"] });
+// MinIO as the bucket: fast conditional writes, no volume limits to outgrow.
+async function startBucket() {
+  const out = logStream("minio.log");
+  weed = spawn("minio", ["server", CONFIG.s3Dir, "--address", `127.0.0.1:${S3.port}`, "--console-address", "127.0.0.1:9001"], {
+    env: { ...env, MINIO_ROOT_USER: S3.accessKey, MINIO_ROOT_PASSWORD: S3.secretKey, MINIO_BROWSER: "off" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   weed.stdout.pipe(out);
   weed.stderr.pipe(out);
-  weed.on("exit", (code) => !stopping && log(`seaweedfs exited ${code}`));
+  weed.on("exit", (code) => !stopping && log(`minio exited ${code}`));
+  const mc = (...args) => new Promise((resolveRun) => {
+    const child = spawn("mc", args, { env: { ...env, MC_CONFIG_DIR: "/tmp/mc" }, stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    child.stdout.on("data", (chunk) => (output += chunk));
+    child.stderr.on("data", (chunk) => (output += chunk));
+    child.on("exit", (code) => resolveRun({ code, output }));
+  });
   for (let attempt = 0; attempt < 120; attempt += 1) {
-    const created = await new Promise((resolveShell) => {
-      const shell = spawn("weed", ["shell", "-master=127.0.0.1:9333"], { stdio: ["pipe", "pipe", "pipe"] });
-      let output = "";
-      shell.stdout.on("data", (chunk) => (output += chunk));
-      shell.stdin.end(`s3.bucket.create -name ${S3.bucket}\n`);
-      shell.on("exit", (code) => resolveShell(/already exists/i.test(output) || (code === 0 && !/error|failed|refused/i.test(output))));
-    });
-    if (created) {
-      // The S3 gateway starts after the master; any HTTP answer means it's up.
-      for (let wait = 0; wait < 120; wait += 1) {
-        try {
-          await fetch(`http://127.0.0.1:${S3.port}/`, { signal: AbortSignal.timeout(2_000) });
-          return log("seaweedfs ready");
-        } catch {
-          await sleep(1_000);
-        }
-      }
-      throw new Error("the SeaweedFS S3 gateway did not start");
+    const alias = await mc("alias", "set", "local", `http://127.0.0.1:${S3.port}`, S3.accessKey, S3.secretKey);
+    if (alias.code === 0) {
+      const made = await mc("mb", "--ignore-existing", `local/${S3.bucket}`);
+      if (made.code === 0) return log("minio ready");
     }
     await sleep(1_000);
   }
-  throw new Error("SeaweedFS did not start");
+  throw new Error("MinIO did not start");
 }
 
 async function startEngine() {
@@ -126,6 +124,7 @@ async function startEngine() {
     "--thread-stall-seconds", "20",
     "--backup-bucket", `s3://${S3.bucket}/run`,
     "--backup-interval-seconds", String(CONFIG.backupIntervalSeconds),
+    "--backup-mode", CONFIG.backupMode,
   ], {
     env: { ...env, AWS_ACCESS_KEY_ID: S3.accessKey, AWS_SECRET_ACCESS_KEY: S3.secretKey, AWS_REGION: "us-east-1", S3_ENDPOINT: `http://127.0.0.1:${S3.port}` },
     stdio: ["ignore", "pipe", "pipe"],
@@ -349,7 +348,8 @@ async function injectFault(name) {
       if (name === "wipe-restore") {
         // Writes acknowledged since the last backup upload may be lost.
         // Counted after the kill, so no write is acknowledged afterwards.
-        const windowMs = CONFIG.backupIntervalSeconds * 1000 + 30_000;
+        // Durable mode loses nothing acknowledged; interval mode up to an interval plus an upload.
+        const windowMs = CONFIG.backupMode === "durable" ? 0 : CONFIG.backupIntervalSeconds * 1000 + 30_000;
         record.atRisk = [...journals.values()].reduce((sum, journal) => sum + journal.wiped(Date.now(), windowMs), 0);
         rmSync(join(CONFIG.data, "native"), { recursive: true, force: true });
       }
@@ -449,7 +449,7 @@ function sampleHour() {
     p99: at(0.99),
     engineRssMb: engineStats.rssMb,
     engineFds: engineStats.fds,
-    weedRssMb: processStats(weed?.pid).rssMb,
+    bucketRssMb: processStats(weed?.pid).rssMb,
     dataMb: Math.round(directoryBytes(join(CONFIG.data, "native")) / 1e6),
     dataDiskFreeMb: Math.round((disk.bavail * disk.bsize) / 1e6),
   });
@@ -513,7 +513,7 @@ function writeDaily() {
 
 async function main() {
   log(`soak starting (runner start ${report.runnerStarts}): ${JSON.stringify(CONFIG)}`);
-  await startWeed();
+  await startBucket();
   await startEngine();
   startSockets();
   const endAt = report.startedAt + CONFIG.days * 86_400_000;
