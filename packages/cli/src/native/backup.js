@@ -23,6 +23,7 @@ export class BucketBackup {
   #changes = new WeakMap();
   #uploads = new Map();
   #fenced = new Set();
+  #attempted = new Map();
   #timer;
   #sequence = 0;
   uploaded = 0;
@@ -121,14 +122,32 @@ export class BucketBackup {
   async #upload(key, body, retryLater) {
     if (this.#fenced.has(key)) return;
     const etag = this.#etags.get(key);
+    // Remembered until an upload is confirmed: a failed one may still have landed.
+    const attempts = this.#attempted.get(key) ?? [];
+    this.#attempted.set(key, [...attempts.slice(-2), body]);
     try {
       const next = await this.#client.put(key, body, etag ? { ifMatch: etag } : { ifNoneMatch: "*" });
       if (next === null) {
-        this.#fenced.add(key);
-        this.#log(`backup of ${key} stopped: another node changed it in the bucket. Only one node may run these objects.`);
+        // An earlier upload that failed (a 500 or a timeout) may have landed
+        // anyway: if the bucket holds a copy this node uploaded, carry on from it.
+        const current = await this.#client.get(key);
+        const ours = current && this.#attempted.get(key)?.some((attempt) => Buffer.compare(attempt, current.body) === 0);
+        if (!ours) {
+          this.#fenced.add(key);
+          this.#log(`backup of ${key} stopped: another node changed it in the bucket. Only one node may run these objects.`);
+          return;
+        }
+        this.#etags.set(key, current.etag);
+        if (Buffer.compare(current.body, body) !== 0) {
+          retryLater();
+          return;
+        }
+        this.uploaded += 1;
+        this.#attempted.delete(key);
         return;
       }
       this.#etags.set(key, next);
+      this.#attempted.delete(key);
       this.uploaded += 1;
     } catch (error) {
       retryLater();
