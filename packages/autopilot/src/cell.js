@@ -51,6 +51,18 @@ export class AutopilotCellRun extends RunObject {
     return state;
   }
 
+  // Resume a run paused for input. A cell run continues in the same cell
+  // session with a follow-up prompt (options.message); other runs resume as usual.
+  async resume(budgets, options = {}) {
+    if (!this.#executor.state()) return super.resume(budgets);
+    const check = this.#executor.resumable();
+    if (!check.ok) throw new Error(`Cannot resume: ${check.reason}`);
+    const run = await super.resume(budgets);
+    this.#executor.continueTurn(options);
+    await this.syncAlarm();
+    return run;
+  }
+
   async cancel() {
     const state = await this.#executor.cancel();
     await this.syncAlarm();

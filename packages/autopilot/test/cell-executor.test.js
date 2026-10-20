@@ -329,3 +329,48 @@ test("only one step runs at a time, and a step overtaken by cancel stops", async
   assert.equal(state.host.get().status, "cancelled");
   assert.equal(state.host.listSessionEvents().some((event) => event.payload?.label?.includes("created")), false);
 });
+
+test("a budget-paused cell run resumes in the same session with a follow-up prompt", async () => {
+  const state = await setup({ run: { maxToolIterations: 1 } });
+  await state.executor.start();
+  const first = await drive(state, (current) => current.step === "poll");
+  state.cell.emit({ type: "tool.start", toolCallId: "t1", toolName: "bash", args: "a" });
+  state.cell.emit({ type: "tool.result", toolCallId: "t1", toolName: "bash", result: "", isError: false });
+  state.cell.emit({ type: "tool.start", toolCallId: "t2", toolName: "bash", args: "b" });
+  await tick(state);
+  assert.equal(state.host.get().status, "needs_input");
+  assert.deepEqual(state.executor.resumable(), { ok: false, reason: "the cell is still stopping the previous turn; retry shortly" });
+
+  state.cell.emit({ type: "session.end", reason: "aborted" });
+  state.cell.bridge.activeRunId = null;
+  await drive(state, (current) => current.step === "done");
+  assert.deepEqual(state.executor.resumable(), { ok: true });
+  assert.throws(() => state.executor.continueTurn(), /resume the run before/);
+
+  await state.host.resume({ maxToolIterations: 5 });
+  state.executor.continueTurn({ message: "Budget raised; carry on." });
+  const second = await drive(state, (current) => current.step === "poll");
+  assert.notEqual(second.turnId, first.turnId);
+  assert.equal(second.sessionId, first.sessionId);
+  assert.deepEqual(state.cell.prompts.map((prompt) => prompt.message), ["Fix the flaky test", "Budget raised; carry on."]);
+
+  // A late event from the aborted turn is ignored; the new turn completes the run.
+  state.cell.emit({ type: "tool.start", toolCallId: "late", toolName: "bash", args: "x" }, first.turnId);
+  state.cell.emit({ type: "tool.start", toolCallId: "t3", toolName: "bash", args: "c" });
+  state.cell.emit({ type: "tool.result", toolCallId: "t3", toolName: "bash", result: "ok", isError: false });
+  state.cell.emit({ type: "session.end", reason: "complete" });
+  await drive(state, (current) => current.step === "done");
+  assert.equal(state.host.get().status, "completed");
+  assert.deepEqual(state.host.listEvents().filter((event) => event.type === "tool_intent").map((event) => event.toolCallId), ["t1", "t3"]);
+  assert.equal(state.host.listSessionEvents().filter((event) => event.event_type === "UserMessageCreated").at(-1).payload.text, "Budget raised; carry on.");
+});
+
+test("resume refuses runs that are not paused", async () => {
+  const state = await setup();
+  assert.equal(state.executor.resumable().ok, false);
+  await state.executor.start();
+  await drive(state, (current) => current.step === "poll");
+  state.cell.emit({ type: "session.end", reason: "complete" });
+  await drive(state, (current) => current.step === "done");
+  assert.match(state.executor.resumable().reason, /not waiting for input \(status: completed\)/);
+});
