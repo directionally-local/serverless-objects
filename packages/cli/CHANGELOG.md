@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.3.0...serverless-objects-v0.4.0) (2026-10-20)
+
+
+### Features
+
+* **cli:** load npm packages from node_modules in the native engine ([cd02995](https://github.com/sinameraji/serverless-objects/commit/cd02995de0d787b408b160ba82ff252a9c80ef4b))
+* **cli:** run Autopilot in-process inside a native-engine object ([7d42a57](https://github.com/sinameraji/serverless-objects/commit/7d42a57f16ef5b08cb837d2969f6121b4e44c8e3))
+
 ## [0.3.0](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.2.0...serverless-objects-v0.3.0) (2026-10-20)
 
 
