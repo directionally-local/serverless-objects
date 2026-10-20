@@ -77,8 +77,10 @@ Limits:
 ### Several nodes
 
 ```sh
-# on each node, with a unique, stable name
-sobjects dev ./my-worker --engine native --backup-bucket s3://my-bucket/app --backup-mode durable --node-name node-a
+# on each node, with a unique, stable name and the same secret
+export SOBJECTS_CLUSTER_SECRET=...   # 32+ characters, identical on every node
+sobjects dev ./my-worker --engine native --backup-bucket s3://my-bucket/app --backup-mode durable \
+  --node-name node-a --peer-listen 10.0.0.5:9790
 ```
 
 With `--node-name`, nodes in durable mode share one bucket prefix and each object runs on one node at a time ([design](design/multi-node.md)):
@@ -87,11 +89,14 @@ With `--node-name`, nodes in durable mode share one bucket prefix and each objec
 - **Owners:** a node claims an object the first time it serves it, by writing `owners/<class>/<id>.json` with a conditional PUT. The record names the node and an epoch, which grows with every change of owner.
 - **Takeover:** when an object's owner released it (a clean shutdown) or its lease ran out, another node claims it. It records where the old owner's history ends (the cut), rebuilds the object from the bucket up to that point, and continues from there. Transactions and snapshots carry their epoch, so anything a stale owner uploads after the cut is ignored by every later restore.
 - **Alarms:** owners mirror pending alarms to `alarms/<class>/<id>.json`. Every node checks for due alarms whose owner is gone, and claims those objects so the alarm runs.
-- **Restarts:** a node restarted under the same name reclaims its objects at once. Two running nodes must never share a name.
+- **Restarts:** a node restarted under the same name reclaims its objects at once. A second process started with a name that's in use waits until the first is gone.
+- **Forwarding:** with `--peer-listen`, any node accepts any request. When the Worker calls an object another node runs, the stub forwards the call to that node's peer listener, whose address is advertised in its lease (`--peer-advertise` overrides it). RPC arguments, results and errors travel with V8 serialization, fetch bodies stream, and WebSockets are relayed node to node. A node routes to an owner it found for half a lease period. If the other node no longer runs the object, the call is routed once more; a call that may have reached a node is never sent twice.
+- **Peer security:** peer requests are signed with `SOBJECTS_CLUSTER_SECRET`. The HMAC-SHA256 covers the kind of request, a timestamp (30-second window), a single-use nonce, the target object, the method, and the call's arguments or the fetch's URL and headers. Replies are signed over the request's nonce, so a node that doesn't hold the secret can't answer in another's place, even if it rewrote the address in the bucket. Nothing is encrypted, and fetch bodies and relayed WebSocket messages aren't signed. Bind the peer listener to a private network (VPC, WireGuard, Tailscale), never the public internet, and never publish it through the ingress.
 
 Not yet:
 
-- **No forwarding:** a call for an object that another live node runs fails, naming that node. Forwarding calls between nodes is the next step, so for now clients or a router must send each object's traffic to its node.
+- **Needs `--peer-listen` to forward:** without it, a call for an object another live node runs fails, naming that node.
+- **No TLS between nodes.**
 - **No threads:** `--node-name` can't be combined with `--threads`.
 - **No cross-node compaction:** compaction only deletes segments that every object they touch has snapshotted on this node. Segments of objects that moved away are kept.
 

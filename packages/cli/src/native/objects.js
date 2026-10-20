@@ -9,7 +9,9 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { OwnedElsewhere } from "./cluster.js";
 import { IdIssuer } from "./ids.js";
+import { NotOwner } from "./peers.js";
 import { decodeRequest, decodeResponse, encodeRequest, encodeResponse, shardOf } from "./ports.js";
 import { DurableObjectStorage, ObjectDatabase } from "./storage.js";
 import { READY_STATE, WebSocketRequestResponsePair, WorkersWebSocket } from "./websocket.js";
@@ -61,9 +63,11 @@ export class DurableObjectNamespace {
     return this;
   }
 
-  // The object's host: here, or a relay to the thread that owns it (--threads).
+  // The object's host: here, or a relay to the thread that owns it
+  // (--threads), or, with several nodes, a router to whichever node runs it.
   host(id) {
     if (this.#engine.fenced) throw new Error(`This node stopped serving: ${this.#engine.fenced}.`);
+    if (this.#engine.cluster) return new RoutedHost(this.#engine, this, id);
     const key = id.toString();
     const shard = this.#engine.shard;
     if (shard && shardOf(key, shard.count) !== shard.index) return new RemoteHost(this.#engine, this.className, id);
@@ -113,6 +117,78 @@ class RemoteHost {
     const response = await this.#owner().request("fetch", { className: this.#className, id: this.id.toString(), name: this.id.name, request: value }, transfer);
     return decodeResponse(response);
   }
+}
+
+// With several nodes: runs a call here if this node can claim the object, and
+// otherwise on the node that runs it (through its peer listener). A request
+// that may have reached a node is never sent again; one the other node
+// refused (it no longer runs the object) is routed once more.
+class RoutedHost {
+  #engine;
+  #namespace;
+
+  constructor(engine, namespace, id) {
+    this.#engine = engine;
+    this.#namespace = namespace;
+    this.id = id;
+  }
+
+  call(method, args) {
+    return this.#route((host) => host.call(method, args), (route, target) => this.#engine.peerClient.call(route.addr, target, method, args), true);
+  }
+
+  fetch(request) {
+    return this.#route((host) => host.fetch(request), (route, target) => this.#engine.peerClient.fetch(route.addr, target, request), !request.body);
+  }
+
+  async #route(local, remote, retryable) {
+    const engine = this.#engine;
+    const className = this.#namespace.className;
+    const id = this.id.toString();
+    const key = `${className}/${id}`;
+    const target = { className, id, name: this.id.name };
+    for (let attempt = 0; ; attempt += 1) {
+      let route = engine.routes.get(key);
+      if (route && route.until < Date.now()) {
+        engine.routes.delete(key);
+        route = undefined;
+      }
+      if (!route) {
+        const host = this.#namespace.localHost(id, this.id.name);
+        try {
+          await host.whenReady();
+        } catch (error) {
+          if (!(error instanceof OwnedElsewhere) || !error.addr || !engine.peerClient) throw error;
+          route = { node: error.node, addr: error.addr, until: Date.now() + Math.floor(engine.cluster.ttlMs / 2) };
+          engine.routes.set(key, route);
+        }
+        if (!route) return local(host);
+      }
+      try {
+        return await remote(route, target);
+      } catch (error) {
+        engine.routes.delete(key);
+        if (error instanceof NotOwner && retryable && attempt === 0) continue;
+        throw error;
+      }
+    }
+  }
+}
+
+// Runs a call or fetch that another node forwarded: only here, and only if
+// this node runs (or can claim) the object.
+export async function servePeer(engine, { className, id, name }, run) {
+  const namespace = engine.namespaces.find((candidate) => candidate.className === className);
+  if (!namespace) throw new Error(`No Durable Object class ${className} in this Worker.`);
+  const host = namespace.localHost(id, name);
+  try {
+    await host.whenReady();
+  } catch (error) {
+    // Only this refusal, before anything ran, lets the caller try another node.
+    if (error instanceof OwnedElsewhere) throw Object.assign(new NotOwner(error.message), { beforeRun: true });
+    throw error;
+  }
+  return run(host);
 }
 
 // Answers another thread's call or fetch for an object this thread owns.

@@ -9,8 +9,9 @@ import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { BucketBackup } from "./backup.js";
 import { Cluster } from "./cluster.js";
+import { PeerClient, PeerServer } from "./peers.js";
 import { DurableLog } from "./durable.js";
-import { AlarmIndex, DurableObjectNamespace } from "./objects.js";
+import { AlarmIndex, DurableObjectNamespace, servePeer } from "./objects.js";
 import { shardOf } from "./ports.js";
 import { readProjectConfig } from "./project.js";
 import { WebSocketPair, WebSocketRequestResponsePair, WorkersWebSocket, connect } from "./websocket.js";
@@ -86,6 +87,7 @@ export class NativeEngine {
         },
       });
       this.owned = new Map();
+      this.routes = new Map();
       this.clusterOptions = cluster;
     }
   }
@@ -95,8 +97,25 @@ export class NativeEngine {
     installWorkersGlobals();
     mkdirSync(this.objectsDirectory, { recursive: true });
     this.alarmIndex = new AlarmIndex(join(this.persistDirectory, "alarms.sqlite"));
-    // With several nodes, objects are restored as they are claimed.
-    if (this.cluster) await this.cluster.start();
+    // With several nodes, objects are restored as they are claimed. Forwarded
+    // calls arrive on the peer listener, whose address goes in the lease.
+    if (this.cluster) {
+      const peer = this.clusterOptions.peer;
+      if (peer) {
+        this.peerClient = new PeerClient({ secret: peer.secret });
+        this.peerServer = new PeerServer({
+          secret: peer.secret,
+          log: this.log,
+          serve: {
+            call: (target, method, args) => servePeer(this, target, (host) => host.call(method, args)),
+            fetch: (target, request) => servePeer(this, target, (host) => host.fetch(request)),
+          },
+        });
+        const address = await this.peerServer.listen(peer.listen);
+        this.cluster.addr = peer.advertise ?? `http://${address.family === "IPv6" ? `[${address.address}]` : address.address}:${address.port}`;
+      }
+      await this.cluster.start();
+    }
     else if (this.backup || this.durable) await this.#restore();
     const module = await this.#load();
     Object.assign(this.env, this.config.vars ?? {});
@@ -120,7 +139,7 @@ export class NativeEngine {
       const namespace = this.namespaces.find((candidate) => candidate.className === className);
       if (!namespace) continue;
       // A claimed object schedules its own alarm once it opens.
-      if (this.cluster) namespace.host(namespace.idFromString(id));
+      if (this.cluster) namespace.localHost(id);
       else namespace.host(namespace.idFromString(id)).scheduleAlarm(at);
     }
     if (this.cluster) {
@@ -134,6 +153,7 @@ export class NativeEngine {
 
   async #wake() {
     if (this.fenced) return;
+    for (const [key, route] of this.routes) if (route.until < Date.now()) this.routes.delete(key);
     try {
       for (const { className, id } of await this.cluster.dueAlarms()) {
         const key = `${className}/${id}`;
@@ -141,7 +161,7 @@ export class NativeEngine {
         const namespace = this.namespaces.find((candidate) => candidate.className === className);
         if (!namespace) continue;
         // A live node runs it: look again after a lease period.
-        await namespace.host(namespace.idFromString(id)).whenReady().catch(() => this.#wakeSkip.set(key, Date.now() + this.cluster.ttlMs));
+        await namespace.localHost(id).whenReady().catch(() => this.#wakeSkip.set(key, Date.now() + this.cluster.ttlMs));
       }
     } catch (error) {
       this.log(`alarm waker failed: ${error.message}`);
@@ -210,6 +230,7 @@ export class NativeEngine {
 
   async close() {
     clearInterval(this.waker);
+    await this.peerServer?.close();
     await new Promise((resolveClose) => (this.server ? this.server.close(() => resolveClose()) : resolveClose()));
     for (const namespace of this.namespaces) for (const host of namespace.hosts()) host.close();
     await this.backup?.close();

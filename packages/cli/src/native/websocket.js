@@ -231,6 +231,11 @@ export function connect(socket, head, request, response) {
   if (head?.length) parser.push(head);
   socket.on("data", (chunk) => parser.push(chunk));
   socket.on("error", () => {});
+  // A client that only half-closes (FIN) is done: close our side too.
+  socket.on("end", () => {
+    if (end.readyState < READY_STATE.CLOSED) end.fail(new Error("connection closed"));
+    socket.end();
+  });
   socket.on("close", () => {
     clearTimeout(closeTimer);
     if (end.readyState < READY_STATE.CLOSED) end.fail(new Error("connection lost"));
