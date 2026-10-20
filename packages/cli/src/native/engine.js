@@ -14,7 +14,7 @@ import { DurableLog } from "./durable.js";
 import { AlarmIndex, DurableObjectNamespace, servePeer } from "./objects.js";
 import { shardOf } from "./ports.js";
 import { readProjectConfig } from "./project.js";
-import { WebSocketPair, WebSocketRequestResponsePair, WorkersWebSocket, connect } from "./websocket.js";
+import { WebSocketPair, WebSocketRequestResponsePair, WorkersWebSocket, connect, socketGone } from "./websocket.js";
 
 // cloudflare:* modules resolve to these shims, for the app and for packages.
 const SHIMS = {
@@ -259,7 +259,14 @@ export class NativeEngine {
     try {
       const request = toRequest(req, false);
       const response = await this.fetch(request);
-      if (response?.status === 101 && response.webSocket) return connect(socket, head, request, response);
+      if (response?.status === 101 && response.webSocket) {
+        // The client left while the object was accepting: the object sees a lost connection.
+        if (socketGone(socket)) {
+          socket.destroy();
+          return void response.webSocket.fail?.(new Error("connection lost"));
+        }
+        return connect(socket, head, request, response);
+      }
       const body = response ? Buffer.from(await response.arrayBuffer()) : Buffer.from("Worker returned no response\n");
       const status = response?.status ?? 500;
       socket.end(`HTTP/1.1 ${status} ${response?.statusText || "Error"}\r\ncontent-length: ${body.length}\r\nconnection: close\r\n\r\n${body}`);
