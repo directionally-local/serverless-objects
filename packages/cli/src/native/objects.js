@@ -95,6 +95,7 @@ export class ObjectHost {
   #autoResponse = null;
   #running = 0;
   #pinned = new Set();
+  #lifetimes = new Set();
   #idleTimer;
   #closed = false;
 
@@ -248,6 +249,17 @@ export class ObjectHost {
     this.#maybeIdle();
   }
 
+  // ctx.waitUntil(): the object stays in memory until the promise settles.
+  keepAlive(promise) {
+    const lifetime = Promise.resolve(promise).then(() => {}, (error) => this.#engine.log(`waitUntil promise rejected: ${error?.stack ?? error}`));
+    this.#lifetimes.add(lifetime);
+    clearTimeout(this.#idleTimer);
+    lifetime.then(() => {
+      this.#lifetimes.delete(lifetime);
+      this.#maybeIdle();
+    });
+  }
+
   // Drops the instance after the idle period. Hibernatable sockets and a
   // pending alarm stay with the host; a fully idle host also closes its
   // database and leaves memory.
@@ -255,13 +267,13 @@ export class ObjectHost {
     clearTimeout(this.#idleTimer);
     const idleMs = this.#engine.idleEvictMs;
     if (!idleMs || this.#closed || !this.#instance) return;
-    if (this.#running > 0 || this.#queue.length > 0 || this.#gates.size > 0 || this.#pinned.size > 0) return;
+    if (this.#running > 0 || this.#queue.length > 0 || this.#gates.size > 0 || this.#pinned.size > 0 || this.#lifetimes.size > 0) return;
     this.#idleTimer = setTimeout(() => this.#evict(), idleMs);
     this.#idleTimer.unref?.();
   }
 
   #evict() {
-    if (this.#running > 0 || this.#queue.length > 0 || this.#gates.size > 0 || this.#pinned.size > 0) return;
+    if (this.#running > 0 || this.#queue.length > 0 || this.#gates.size > 0 || this.#pinned.size > 0 || this.#lifetimes.size > 0) return;
     this.#instance = undefined;
     this.#state = undefined;
     this.#engine.evictions += 1;
@@ -341,7 +353,7 @@ export class DurableObjectState {
   }
 
   waitUntil(promise) {
-    Promise.resolve(promise).catch(() => {});
+    this.#host.keepAlive(promise);
   }
 
   acceptWebSocket(socket, tags) {
