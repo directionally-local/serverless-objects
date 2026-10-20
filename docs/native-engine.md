@@ -49,6 +49,10 @@ What this gives you, and what it doesn't:
 - One node per prefix. Uploads are conditional on the version this node last saw, so a node that finds a copy another node wrote stops backing that object up and logs it, instead of overwriting it.
 - Restores happen only for objects missing locally. There is no point-in-time restore; enable bucket versioning if you need history.
 
+## Performance
+
+See [benchmarks](benchmarks.md) for latency and throughput next to celld and Wrangler, and what the write numbers do and don't mean for durability.
+
 ## Conformance
 
 The conformance runner has a `native` target: `npm run test:native --workspace=sobjects-conformance`.

@@ -77,7 +77,7 @@ function usage() {
   ].join("\n");
 }
 
-function startTarget(target, projectDir, options) {
+export function startTarget(target, projectDir, options) {
   let command;
   let args;
   if (target === "wrangler") {
@@ -109,7 +109,7 @@ function startTarget(target, projectDir, options) {
   return child;
 }
 
-async function stopTarget(child) {
+export async function stopTarget(child) {
   if (child.exitCode !== null || child.signalCode !== null) return;
   const closed = once(child, "close");
   child.kill("SIGTERM");
@@ -123,7 +123,7 @@ async function stopTarget(child) {
   }
 }
 
-async function waitForServer(child, baseUrl, timeoutMs) {
+export async function waitForServer(child, baseUrl, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   let lastError;
   while (Date.now() < deadline) {
