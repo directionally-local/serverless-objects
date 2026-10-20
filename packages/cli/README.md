@@ -164,6 +164,7 @@ It refuses to overwrite without `--force` and prints the enable commands; it doe
 | `SOBJECTS_STATE_DIR` | Detached PIDs, logs and ACME state (default `$XDG_STATE_HOME/serverless-objects` or `~/.local/state/serverless-objects`) |
 | `SOBJECTS_DATA_DIR` | Engine installs and the inspector token (default `$XDG_DATA_HOME/serverless-objects` or `~/.local/share/serverless-objects`) |
 | `SOBJECTS_CELLD_BIN` | Use this celld binary instead of the pinned download |
+| `SOBJECTS_CONFIG` | Default `sobjects.toml` for `up` and `supervise`, and for `deploy` when the project has none |
 | `CELLD_SHUTDOWN_TOTAL_MS` | celld's graceful-shutdown bound; `down` waits slightly longer |
 
 ## Security notes
