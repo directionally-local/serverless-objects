@@ -172,6 +172,14 @@ function encodeRfc3986(value) {
   return encodeURIComponent(value).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
 }
 
+// Named and numeric character references: SeaweedFS, for one, writes ETag
+// quotes as &#34;.
+const XML_ENTITIES = { lt: "<", gt: ">", quot: '"', apos: "'", amp: "&" };
+
 function unescapeXml(value) {
-  return value.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", '"').replaceAll("&apos;", "'").replaceAll("&amp;", "&");
+  return value.replace(/&(#x[0-9a-f]+|#[0-9]+|[a-z]+);/gi, (match, entity) => {
+    if (entity[0] !== "#") return XML_ENTITIES[entity] ?? match;
+    const code = entity[1] === "x" || entity[1] === "X" ? Number.parseInt(entity.slice(2), 16) : Number(entity.slice(1));
+    return Number.isInteger(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : match;
+  });
 }

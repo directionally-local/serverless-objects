@@ -208,6 +208,13 @@ test("the S3 client signs requests, sends conditions and parses listings", async
   assert.equal(await client.put("p/x y.sqlite", "abc", { ifNoneMatch: "*" }), null);
   assert.equal(await client.put("p/x y.sqlite", "abc", { ifMatch: '"e0"' }), '"e1"');
   assert.deepEqual(await client.list("p/"), [{ key: "p/a&b.sqlite", etag: '"e1"', size: 3 }]);
+  // Numeric character references (SeaweedFS quotes ETags as &#34;).
+  const numeric = S3Client.fromEnvironment({
+    bucketUri: "s3://my-bucket/p",
+    env: { AWS_ACCESS_KEY_ID: "AKID", AWS_SECRET_ACCESS_KEY: "secret", S3_ENDPOINT: "https://s3.example" },
+    fetchImpl: async () => new Response("<ListBucketResult><Contents><Key>p/&#x41;&#66;.sqlite</Key><ETag>&#34;e2&#34;</ETag><Size>1</Size></Contents></ListBucketResult>"),
+  }).client;
+  assert.deepEqual(await numeric.list("p/"), [{ key: "p/AB.sqlite", etag: '"e2"', size: 1 }]);
   assert.equal(requests[0].url, "https://acct.r2.cloudflarestorage.com/my-bucket/p/x%20y.sqlite");
   assert.match(requests[0].headers.authorization, /^AWS4-HMAC-SHA256 Credential=AKID\/20261020\/auto\/s3\/aws4_request, SignedHeaders=content-type;host;if-none-match;x-amz-content-sha256;x-amz-date, Signature=[0-9a-f]{64}$/);
   assert.equal(requests[2].url, "https://acct.r2.cloudflarestorage.com/my-bucket?list-type=2&prefix=p%2F");
