@@ -109,7 +109,9 @@ test("objects are backed up on change and restored onto an empty disk, alarms in
   const keys = [...bucket.objects.keys()];
   assert.equal(keys.length, 2);
   assert.ok(keys.every((key) => /^nodes\/a\/native\/backup-app\/Counter\/[0-9a-f]{64}\.sqlite$/.test(key)));
-  // Unchanged objects are not uploaded again.
+  // Unchanged objects are not uploaded again. A timer may have uploaded "a"
+  // between its two writes, so capture everything before counting.
+  await first.backup.flush([...first.namespaces[0].hosts()]);
   const uploaded = first.backup.uploaded;
   await new Promise((resolve) => setTimeout(resolve, 150));
   assert.equal(first.backup.uploaded, uploaded);
