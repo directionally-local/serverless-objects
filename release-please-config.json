@@ -26,7 +26,6 @@
       "release-type": "node",
       "package-name": "@serverless-objects/hotcell",
       "component": "hotcell",
-      "release-as": "0.1.0",
       "bump-minor-pre-major": true,
       "extra-files": [
         {
@@ -40,7 +39,6 @@
       "release-type": "node",
       "package-name": "@serverless-objects/autopilot",
       "component": "autopilot",
-      "release-as": "0.1.0",
       "bump-minor-pre-major": true,
       "extra-files": [
         {
