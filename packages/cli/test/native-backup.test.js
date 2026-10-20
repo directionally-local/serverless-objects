@@ -148,6 +148,49 @@ test("a node stops backing up an object another node has changed in the bucket",
   }
 });
 
+test("an unreachable bucket doesn't stop a node with local state; a fresh node waits for it", async () => {
+  const directory = await project();
+  const bucket = new MemoryBucket();
+  const persistDirectory = await temporaryDirectory();
+  const make = (client, logs) => loadProjectConfig(directory).then((config) => new NativeEngine({ config, persistDirectory, idleEvictMs: 0, backup: { client, prefix: "nodes/a", intervalMs: 60_000 }, log: (line) => logs.push(line) }));
+  const first = await make(bucket, []);
+  await first.start();
+  await first.env.COUNTER.getByName("a").add(4);
+  await first.close();
+
+  // The bucket is down: the node starts from its local files.
+  const down = { list: async () => { throw new Error("S3 GET bucket failed: ECONNREFUSED"); }, get: bucket.get.bind(bucket), put: bucket.put.bind(bucket) };
+  const logs = [];
+  const second = await make(down, logs);
+  await second.start();
+  assert.equal((await second.env.COUNTER.getByName("a").read()).value, 4);
+  assert.ok(logs.some((line) => line.includes("starting from local state")));
+  await second.close();
+
+  // A node with an empty disk waits until the bucket answers, then restores.
+  let failures = 2;
+  const flaky = { list: async (prefix) => { if (failures-- > 0) throw new Error("ECONNREFUSED"); return bucket.list(prefix); }, get: bucket.get.bind(bucket), put: bucket.put.bind(bucket) };
+  const freshLogs = [];
+  const fresh = new NativeEngine({ config: await loadProjectConfig(directory), persistDirectory: await temporaryDirectory(), idleEvictMs: 0, backup: { client: flaky, prefix: "nodes/a", intervalMs: 60_000 }, log: (line) => freshLogs.push(line) });
+  await fresh.start();
+  try {
+    assert.ok(freshLogs.some((line) => line.includes("waiting for the bucket")));
+    assert.equal(fresh.backup.restored, 1);
+    assert.equal((await fresh.env.COUNTER.getByName("a").read()).value, 4);
+  } finally {
+    await fresh.close();
+  }
+});
+
+test("network failures name their cause", async () => {
+  const { client } = S3Client.fromEnvironment({
+    bucketUri: "s3://my-bucket",
+    env: { AWS_ACCESS_KEY_ID: "AKID", AWS_SECRET_ACCESS_KEY: "secret", S3_ENDPOINT: "http://127.0.0.1:1" },
+    fetchImpl: async () => { throw new TypeError("fetch failed", { cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }) }); },
+  });
+  await assert.rejects(client.list(""), /S3 GET 127\.0\.0\.1:1 failed: ECONNREFUSED/);
+});
+
 test("the S3 client signs requests, sends conditions and parses listings", async () => {
   const requests = [];
   const fetchImpl = async (url, init) => {

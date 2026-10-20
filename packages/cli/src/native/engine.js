@@ -3,7 +3,7 @@
 // for trusted code; there is no isolate between the app and the engine.
 import { createServer } from "node:http";
 import nodeModule from "node:module";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
@@ -59,9 +59,9 @@ export class NativeEngine {
   async start() {
     installModuleHooks();
     installWorkersGlobals();
-    mkdirSync(this.persistDirectory, { recursive: true });
+    mkdirSync(this.objectsDirectory, { recursive: true });
     this.alarmIndex = new AlarmIndex(join(this.persistDirectory, "alarms.sqlite"));
-    await this.backup?.restore(this.objectsDirectory, this.alarmIndex, (id) => this.owns(id));
+    if (this.backup) await this.#restore();
     const module = await this.#load();
     Object.assign(this.env, this.config.vars ?? {});
     for (const binding of this.config.durable_objects?.bindings ?? []) {
@@ -82,6 +82,26 @@ export class NativeEngine {
       if (!this.owns(id)) continue;
       const namespace = this.namespaces.find((candidate) => candidate.className === className);
       if (namespace) namespace.host(namespace.idFromString(id)).scheduleAlarm(at);
+    }
+  }
+
+  // Objects missing locally come back from the bucket. If the bucket can't
+  // be reached, a node that has local state starts from it (restoring only
+  // matters for a disk that lost objects); a node with none waits for the
+  // bucket, because starting empty would fork the objects' data.
+  async #restore() {
+    const hasLocalState = readdirSync(this.objectsDirectory, { withFileTypes: true }).some((entry) => entry.isDirectory());
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await this.backup.restore(this.objectsDirectory, this.alarmIndex, (id) => this.owns(id));
+      } catch (error) {
+        if (hasLocalState) {
+          this.log(`The backup bucket is unreachable (${error.message}); starting from local state without restoring.`);
+          return;
+        }
+        if (attempt === 0) this.log(`The backup bucket is unreachable (${error.message}) and there is no local state; waiting for the bucket before starting.`);
+        await new Promise((resolveWait) => setTimeout(resolveWait, Math.min(30_000, 1_000 * 2 ** attempt)));
+      }
     }
   }
 

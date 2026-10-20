@@ -143,7 +143,13 @@ export class S3Client {
     const requestHeaders = { ...allHeaders };
     delete requestHeaders.host;
     requestHeaders.authorization = `AWS4-HMAC-SHA256 Credential=${this.#credentials.accessKeyId}/${scope}, SignedHeaders=${names.join(";")}, Signature=${signature}`;
-    return this.#fetch(url, { method, headers: requestHeaders, body, signal: AbortSignal.timeout(60_000) });
+    try {
+      return await this.#fetch(url, { method, headers: requestHeaders, body, signal: AbortSignal.timeout(60_000) });
+    } catch (error) {
+      // fetch() reports network failures as "fetch failed"; the cause names them.
+      const reason = error?.cause?.code ?? error?.cause?.message ?? error?.name ?? "error";
+      throw new S3Error(`S3 ${method} ${url.host} failed: ${reason}`, 0, reason);
+    }
   }
 }
 

@@ -48,6 +48,7 @@ What this gives you, and what it doesn't:
 - The local file is the source of truth while the node runs. If the machine's disk is lost, writes made after the last upload are lost too: the recovery point is up to the backup interval plus the upload time. On Cloudflare, a write is durable once its output gate opens; here it isn't, until the next upload.
 - Each upload sends the whole file, so very large objects cost more per change.
 - One node per prefix. Uploads are conditional on the version this node last saw, so a node that finds a copy another node wrote stops backing that object up and logs it, instead of overwriting it.
+- If the bucket can't be reached at start, a node that has local state starts from it and logs a warning; a node with an empty disk waits for the bucket, because starting empty would fork its objects' data.
 - Restores happen only for objects missing locally. There is no point-in-time restore; enable bucket versioning if you need history.
 
 ## Worker threads
