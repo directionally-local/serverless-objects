@@ -20,7 +20,7 @@ import { request as httpsRequest } from "node:https";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { deserialize, serialize } from "node:v8";
-import { READY_STATE } from "./websocket.js";
+import { READY_STATE, socketGone } from "./websocket.js";
 
 const CLOCK_WINDOW_MS = 30_000;
 // Cloudflare's limit for one RPC call's arguments.
@@ -32,6 +32,8 @@ const H = {
   time: "x-sobjects-peer-time",
   nonce: "x-sobjects-peer-nonce",
   signature: "x-sobjects-peer-signature",
+  // Over the headers alone, so a forged request is refused before its body is read.
+  preauth: "x-sobjects-peer-preauth",
   reply: "x-sobjects-peer-reply",
   // Marks a response as the peer's own failure, not the object's response.
   error: "x-sobjects-peer-error",
@@ -57,13 +59,19 @@ function sameSignature(expected, actual) {
   return typeof actual === "string" && /^[0-9a-f]{64}$/.test(actual) && timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(actual, "hex"));
 }
 
+function preauthFields(kind, { time, nonce, path, target, method }) {
+  return [`sobjects-peer-pre-${kind}`, time, nonce, path, target, method];
+}
+
 // Fields a request signature covers.
 function requestFields(kind, { time, nonce, path, target, method, digest }) {
   return [`sobjects-peer-${kind}`, time, nonce, path, target, method, digest];
 }
 
-function replyFields(nonce, status, bodyDigest = "") {
-  return ["sobjects-peer-reply", nonce, String(status), bodyDigest];
+// kind says what the reply is ("response", "peer-error", "exception",
+// "socket"), so an object's own response can't pass for a peer error.
+function replyFields(nonce, status, kind, bodyDigest = "") {
+  return ["sobjects-peer-reply", nonce, String(status), kind, bodyDigest];
 }
 
 export class PeerServer {
@@ -72,6 +80,8 @@ export class PeerServer {
   #log;
   #nonces = new Map();
   #sockets = new Set();
+  // Requests signed before this process started may have been served by an earlier one.
+  #startedAt = Date.now();
 
   // serve.call(target, method, args) and serve.fetch(target, request) run the
   // object here; they throw NotOwner (with beforeRun) if it isn't this node's.
@@ -82,7 +92,7 @@ export class PeerServer {
   }
 
   listen({ host, port }) {
-    this.server = createServer((req, res) => void this.#request(req, res));
+    this.server = createServer({ headersTimeout: 10_000, requestTimeout: 300_000 }, (req, res) => void this.#request(req, res));
     this.server.on("upgrade", (req, socket, head) => void this.#upgrade(req, socket, head));
     return new Promise((resolveListen, reject) => {
       this.server.once("error", reject);
@@ -103,16 +113,29 @@ export class PeerServer {
     });
   }
 
-  // The request's target if its signature is good and its nonce unused.
-  #authorize(req, kind, path, digest) {
+  // Whether a request's headers are signed (checked before reading its body).
+  #preauthorized(req, kind, path) {
     const time = req.headers[H.time];
     const nonce = req.headers[H.nonce];
     const target = req.headers[H.target] ?? "";
-    if (!time || !nonce || !/^[0-9a-f]{32}$/.test(nonce) || Math.abs(Date.now() - Number(time)) > CLOCK_WINDOW_MS) return null;
+    if (!time || !nonce || !/^[0-9a-f]{32}$/.test(nonce) || Math.abs(Date.now() - Number(time)) > CLOCK_WINDOW_MS || Number(time) < this.#startedAt - 1_000) return false;
+    return sameSignature(signature(this.#secret, preauthFields(kind, { time, nonce, path, target, method: req.method })), req.headers[H.preauth]);
+  }
+
+  // The request's target if its signature is good and its nonce unused.
+  #authorize(req, kind, path, digest) {
+    if (!this.#preauthorized(req, kind, path)) return null;
+    const time = req.headers[H.time];
+    const nonce = req.headers[H.nonce];
+    const target = req.headers[H.target] ?? "";
     const expected = signature(this.#secret, requestFields(kind, { time, nonce, path, target, method: req.method, digest }));
     if (!sameSignature(expected, req.headers[H.signature])) return null;
     const now = Date.now();
-    for (const [seen, expires] of this.#nonces) if (expires < now) this.#nonces.delete(seen);
+    // Expiries are in insertion order: stop at the first live one.
+    for (const [seen, expires] of this.#nonces) {
+      if (expires >= now) break;
+      this.#nonces.delete(seen);
+    }
     if (this.#nonces.has(nonce)) return null;
     this.#nonces.set(nonce, now + 2 * CLOCK_WINDOW_MS);
     try {
@@ -122,18 +145,19 @@ export class PeerServer {
     }
   }
 
-  #reply(nonce, status, bodyDigest) {
-    return signature(this.#secret, replyFields(nonce, status, bodyDigest));
+  #reply(nonce, status, kind, bodyDigest) {
+    return signature(this.#secret, replyFields(nonce, status, kind, bodyDigest));
   }
 
   async #request(req, res) {
     const path = new URL(req.url, "http://peer").pathname;
     const peerError = (status, message, nonce) => {
       if (res.headersSent) return res.destroy();
-      res.writeHead(status, { "content-type": "text/plain", [H.error]: "1", ...(nonce ? { [H.reply]: this.#reply(nonce, status) } : {}) }).end(message);
+      res.writeHead(status, { "content-type": "text/plain", [H.error]: "1", ...(nonce ? { [H.reply]: this.#reply(nonce, status, "peer-error") } : {}) }).end(message);
     };
     try {
       if (path === "/peer/call") {
+        if (!this.#preauthorized(req, "call", path)) return peerError(401, "unauthorized");
         const body = await readBody(req, MAX_CALL_BYTES);
         const auth = this.#authorize(req, "call", path, sha256(body));
         if (!auth) return peerError(401, "unauthorized");
@@ -146,7 +170,7 @@ export class PeerServer {
           reply = { ok: false, error: cloneable(error) };
         }
         const bytes = serialize(reply);
-        res.writeHead(200, { "content-type": "application/octet-stream", [H.reply]: this.#reply(auth.nonce, 200, sha256(bytes)) }).end(bytes);
+        res.writeHead(200, { "content-type": "application/octet-stream", [H.reply]: this.#reply(auth.nonce, 200, "response", sha256(bytes)) }).end(bytes);
       } else if (path === "/peer/fetch") {
         const meta = req.headers[H.request] ?? "";
         const auth = this.#authorize(req, "fetch", path, sha256(meta));
@@ -158,10 +182,10 @@ export class PeerServer {
           if (error instanceof NotOwner && error.beforeRun) return peerError(409, error.message, auth.nonce);
           // The object's fetch threw: the caller throws the same error.
           const bytes = serialize(cloneable(error));
-          return res.writeHead(500, { "content-type": "application/octet-stream", [H.exception]: "1", [H.reply]: this.#reply(auth.nonce, 500, sha256(bytes)) }).end(bytes);
+          return res.writeHead(500, { "content-type": "application/octet-stream", [H.exception]: "1", [H.reply]: this.#reply(auth.nonce, 500, "exception", sha256(bytes)) }).end(bytes);
         }
         if (response.status === 101) throw new TypeError("A 101 response needs a WebSocket upgrade request.");
-        res.writeHead(response.status, response.statusText, { ...nodeHeaders(response.headers), [H.reply]: this.#reply(auth.nonce, response.status) });
+        res.writeHead(response.status, response.statusText, { ...nodeHeaders(response.headers), [H.reply]: this.#reply(auth.nonce, response.status, "response") });
         if (response.body) await pipeline(Readable.fromWeb(response.body), res).catch(() => res.destroy());
         else res.end();
       } else {
@@ -177,8 +201,11 @@ export class PeerServer {
   // is relayed over this upgraded connection.
   async #upgrade(req, socket, head) {
     socket.on("error", () => {});
+    // Tracked from the start, so close() also ends sockets still being set up.
+    this.#sockets.add(socket);
+    socket.on("close", () => this.#sockets.delete(socket));
     const refuse = (status, text, nonce) => {
-      const reply = nonce ? `${H.reply}: ${this.#reply(nonce, status)}\r\n` : "";
+      const reply = nonce ? `${H.reply}: ${this.#reply(nonce, status, "peer-error")}\r\n` : "";
       socket.end(`HTTP/1.1 ${status} ${text}\r\n${H.error}: 1\r\n${reply}connection: close\r\ncontent-length: 0\r\n\r\n`);
     };
     const path = new URL(req.url, "http://peer").pathname;
@@ -196,13 +223,16 @@ export class PeerServer {
       // The object refused the WebSocket: the caller gets its response.
       const body = response.body ? Buffer.from(await response.arrayBuffer()) : Buffer.alloc(0);
       const headers = Object.entries(nodeHeaders(response.headers)).flatMap(([name, value]) => (Array.isArray(value) ? value : [value]).map((item) => `${name}: ${item}\r\n`)).join("");
-      socket.write(`HTTP/1.1 ${response.status} ${response.statusText || "Error"}\r\n${headers}${H.reply}: ${this.#reply(auth.nonce, response.status)}\r\nconnection: close\r\ncontent-length: ${body.length}\r\n\r\n`);
+      socket.write(`HTTP/1.1 ${response.status} ${response.statusText || "Error"}\r\n${headers}${H.reply}: ${this.#reply(auth.nonce, response.status, "response")}\r\nconnection: close\r\ncontent-length: ${body.length}\r\n\r\n`);
       return socket.end(body);
     }
+    // The caller left while the object was accepting: the object sees a lost connection.
+    if (socketGone(socket)) {
+      socket.destroy();
+      return void response.webSocket.fail(new Error("connection lost"));
+    }
     const protocol = response.headers.get("sec-websocket-protocol");
-    socket.write(`HTTP/1.1 101 Switching Protocols\r\nupgrade: sobjects-socket\r\nconnection: Upgrade\r\n${H.reply}: ${this.#reply(auth.nonce, 101)}\r\n${protocol ? `sec-websocket-protocol: ${protocol}\r\n` : ""}\r\n`);
-    this.#sockets.add(socket);
-    socket.on("close", () => this.#sockets.delete(socket));
+    socket.write(`HTTP/1.1 101 Switching Protocols\r\nupgrade: sobjects-socket\r\nconnection: Upgrade\r\n${H.reply}: ${this.#reply(auth.nonce, 101, "socket")}\r\n${protocol ? `sec-websocket-protocol: ${protocol}\r\n` : ""}\r\n`);
     relayEndOverSocket(response.webSocket, socket, head);
   }
 }
@@ -218,15 +248,22 @@ export class PeerClient {
     const time = String(Date.now());
     const nonce = randomBytes(16).toString("hex");
     const targetJson = JSON.stringify(target);
+    const fields = { time, nonce, path, target: targetJson, method, digest };
     return {
       nonce,
-      headers: { [H.target]: targetJson, [H.time]: time, [H.nonce]: nonce, [H.signature]: signature(this.#secret, requestFields(kind, { time, nonce, path, target: targetJson, method, digest })) },
+      headers: {
+        [H.target]: targetJson,
+        [H.time]: time,
+        [H.nonce]: nonce,
+        [H.preauth]: signature(this.#secret, preauthFields(kind, fields)),
+        [H.signature]: signature(this.#secret, requestFields(kind, fields)),
+      },
     };
   }
 
   // A reply must carry the node's signature over our nonce (and, for calls, the body).
-  #checkReply(headers, nonce, status, bodyDigest = "") {
-    if (!sameSignature(signature(this.#secret, replyFields(nonce, status, bodyDigest)), headers[H.reply])) {
+  #checkReply(headers, nonce, status, kind, bodyDigest = "") {
+    if (!sameSignature(signature(this.#secret, replyFields(nonce, status, kind, bodyDigest)), headers[H.reply])) {
       throw new Error("The other node's reply isn't signed with this cluster's secret.");
     }
   }
@@ -235,13 +272,13 @@ export class PeerClient {
     const body = serialize({ method, args });
     const { nonce, headers } = this.#sign("call", "/peer/call", target, "POST", sha256(body));
     const response = await send(new URL("/peer/call", addr), { method: "POST", headers: { ...headers, "content-type": "application/octet-stream" }, body });
-    const bytes = await readBody(response, Infinity);
+    const bytes = await readBody(response, MAX_CALL_BYTES);
     if (response.statusCode === 409) {
-      this.#checkReply(response.headers, nonce, 409);
+      this.#checkReply(response.headers, nonce, 409, "peer-error");
       throw new NotOwner(bytes.toString("utf8"));
     }
-    if (response.statusCode !== 200) throw new Error(`The node at ${addr} refused the call (${response.statusCode}): ${bytes.toString("utf8")}`);
-    this.#checkReply(response.headers, nonce, 200, sha256(bytes));
+    if (response.statusCode !== 200) throw new Error(`The node at ${addr} refused the call (${response.statusCode}): ${bytes.toString("utf8").slice(0, 500)}`);
+    this.#checkReply(response.headers, nonce, 200, "response", sha256(bytes));
     const reply = deserialize(bytes);
     if (!reply.ok) throw reply.error;
     return reply.value;
@@ -256,17 +293,17 @@ export class PeerClient {
     if (response.headers[H.error]) {
       const text = (await readBody(response, 64 * 1024)).toString("utf8");
       if (status === 409) {
-        this.#checkReply(response.headers, nonce, 409);
+        this.#checkReply(response.headers, nonce, 409, "peer-error");
         throw new NotOwner(text);
       }
-      throw new Error(`The node at ${addr} refused the request (${status}): ${text}`);
+      throw new Error(`The node at ${addr} refused the request (${status}): ${text.slice(0, 500)}`);
     }
     if (response.headers[H.exception]) {
-      const bytes = await readBody(response, Infinity);
-      this.#checkReply(response.headers, nonce, status, sha256(bytes));
+      const bytes = await readBody(response, MAX_CALL_BYTES);
+      this.#checkReply(response.headers, nonce, status, "exception", sha256(bytes));
       throw deserialize(bytes);
     }
-    this.#checkReply(response.headers, nonce, status);
+    this.#checkReply(response.headers, nonce, status, "response");
     // Responses with these statuses cannot have a body.
     const body = [204, 205, 304].includes(status) || request.method === "HEAD" ? null : Readable.toWeb(response);
     if (!body) response.resume();
@@ -282,16 +319,17 @@ export class PeerClient {
     const { socket, response, head } = await upgrade(new URL("/peer/fetch", addr), { ...signed, [H.request]: meta, connection: "Upgrade", upgrade: "sobjects-socket" });
     if (!socket) {
       const body = await readBody(response, MAX_CALL_BYTES);
-      if (response.headers[H.error] && !response.headers[H.reply]) throw new Error(`The node at ${addr} refused the request (${response.statusCode}).`);
-      this.#checkReply(response.headers, nonce, response.statusCode);
       if (response.headers[H.error]) {
+        if (!response.headers[H.reply]) throw new Error(`The node at ${addr} refused the request (${response.statusCode}).`);
+        this.#checkReply(response.headers, nonce, response.statusCode, "peer-error");
         if (response.statusCode === 409) throw new NotOwner(body.toString("utf8"));
         throw new Error(`The node at ${addr} refused the WebSocket (${response.statusCode}).`);
       }
+      this.#checkReply(response.headers, nonce, response.statusCode, "response");
       return new Response(body, { status: response.statusCode, statusText: response.statusMessage, headers: webHeaders(response.headers) });
     }
     try {
-      this.#checkReply(response.headers, nonce, 101);
+      this.#checkReply(response.headers, nonce, 101, "socket");
     } catch (error) {
       socket.destroy();
       throw error;
@@ -321,22 +359,47 @@ function encodeData(data) {
 }
 
 function messageReader(onMessage, onError) {
-  let buffer = Buffer.alloc(0);
+  // Chunks are kept as a list until a whole message is there, so a large
+  // message isn't copied once per chunk.
+  let chunks = [];
+  let size = 0;
+  const take = (count) => {
+    const out = Buffer.allocUnsafe(count);
+    let offset = 0;
+    while (offset < count) {
+      const chunk = chunks[0];
+      const used = Math.min(chunk.length, count - offset);
+      chunk.copy(out, offset, 0, used);
+      offset += used;
+      if (used === chunk.length) chunks.shift();
+      else chunks[0] = chunk.subarray(used);
+    }
+    size -= count;
+    return out;
+  };
+  let expected = null;
   return (chunk) => {
-    buffer = buffer.length ? Buffer.concat([buffer, chunk]) : chunk;
+    chunks.push(chunk);
+    size += chunk.length;
     try {
-      while (buffer.length >= 4) {
-        const length = buffer.readUInt32BE(0);
-        if (length < 1 || length > MAX_SOCKET_MESSAGE_BYTES + 1) throw new Error("bad relay message");
-        if (buffer.length < 4 + length) return;
-        const kind = buffer[4];
-        const payload = Buffer.from(buffer.subarray(5, 4 + length));
-        buffer = buffer.subarray(4 + length);
+      for (;;) {
+        if (expected === null) {
+          if (size < 4) return;
+          expected = take(4).readUInt32BE(0);
+          if (expected < 1 || expected > MAX_SOCKET_MESSAGE_BYTES + 1) throw new Error("bad relay message");
+        }
+        if (size < expected) return;
+        const message = take(expected);
+        expected = null;
+        const kind = message[0];
+        const payload = message.subarray(1);
         if (kind === 0) onMessage(JSON.parse(payload.toString("utf8")));
         else if (kind === 1) onMessage({ data: payload.toString("utf8") });
         else onMessage({ data: payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength) });
       }
     } catch (error) {
+      chunks = [];
+      size = 0;
       onError(error);
     }
   };
@@ -346,6 +409,7 @@ function messageReader(onMessage, onError) {
 // the caller sends is applied to the end.
 function relayEndOverSocket(end, socket, head) {
   socket.setNoDelay(true);
+  socket.setKeepAlive(true, 10_000);
   end.takeOver((_end, event) => {
     if (socket.destroyed) return;
     if (event.type === "message") socket.write(encodeData(event.data));
@@ -427,10 +491,15 @@ function unreachable(url, error) {
   return new Error(`The node at ${url.origin} didn't answer (${reason}); if it stopped, another node takes its objects once its lease runs out.`);
 }
 
+// A connection to another node that goes quiet this long is given up on, so
+// calls to a partitioned node fail instead of hanging.
+const IDLE_TIMEOUT_MS = 30_000;
+
 // One request to another node; the response isn't decoded.
 function send(url, { method, headers, body }) {
   return new Promise((resolveResponse, reject) => {
     const request = (url.protocol === "https:" ? httpsRequest : httpRequest)(url, { method, headers }, resolveResponse);
+    request.setTimeout(IDLE_TIMEOUT_MS, () => request.destroy(Object.assign(new Error("timed out"), { code: "ETIMEDOUT" })));
     request.on("error", (error) => reject(unreachable(url, error)));
     if (!body) request.end();
     else if (Buffer.isBuffer(body)) request.end(body);
@@ -441,7 +510,13 @@ function send(url, { method, headers, body }) {
 function upgrade(url, headers) {
   return new Promise((resolveUpgrade, reject) => {
     const request = (url.protocol === "https:" ? httpsRequest : httpRequest)(url, { method: "GET", headers });
-    request.on("upgrade", (response, socket, head) => resolveUpgrade({ response, socket, head }));
+    request.setTimeout(IDLE_TIMEOUT_MS, () => request.destroy(Object.assign(new Error("timed out"), { code: "ETIMEDOUT" })));
+    request.on("upgrade", (response, socket, head) => {
+      // A relayed WebSocket may sit idle for long: TCP keepalive notices a dead node instead.
+      socket.setTimeout(0);
+      socket.setKeepAlive(true, 10_000);
+      resolveUpgrade({ response, socket, head });
+    });
     request.on("response", (response) => resolveUpgrade({ response }));
     request.on("error", (error) => reject(unreachable(url, error)));
     request.end();
@@ -465,9 +540,11 @@ async function readBody(stream, limit) {
   return Buffer.concat(chunks);
 }
 
+// An object's response headers, without hop-by-hop ones or any that could
+// pass for this protocol's own.
 function nodeHeaders(headers) {
   const result = {};
-  for (const [name, value] of headers) if (name !== "set-cookie" && !HOP_BY_HOP.has(name)) result[name] = value;
+  for (const [name, value] of headers) if (name !== "set-cookie" && !HOP_BY_HOP.has(name) && !name.startsWith("x-sobjects-peer-")) result[name] = value;
   const cookies = headers.getSetCookie();
   if (cookies.length) result["set-cookie"] = cookies;
   return result;

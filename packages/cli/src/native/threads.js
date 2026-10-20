@@ -17,7 +17,7 @@ import { toRequest } from "./engine.js";
 import { LogState } from "./durable.js";
 import { AlarmIndex } from "./objects.js";
 import { PortChannel, RemoteEnd, encodeRequest } from "./ports.js";
-import { connect } from "./websocket.js";
+import { connect, socketGone } from "./websocket.js";
 
 const SHARD_URL = new URL("./shard.js", import.meta.url);
 const PING_MS = 1_000;
@@ -201,7 +201,12 @@ export class ThreadedEngine {
       const request = toRequest(req, false);
       const response = await this.fetchEncoded(request);
       if (response.status === 101 && response.webSocket) {
-        return connect(socket, head, request, { headers: new Headers(response.headers), webSocket: new RemoteEnd(response.webSocket) });
+        const end = new RemoteEnd(response.webSocket);
+        if (socketGone(socket)) {
+          socket.destroy();
+          return void end.fail(new Error("connection lost"));
+        }
+        return connect(socket, head, request, { headers: new Headers(response.headers), webSocket: end });
       }
       const body = response.body ? Buffer.from(await new Response(response.body).arrayBuffer()) : Buffer.alloc(0);
       socket.end(`HTTP/1.1 ${response.status} ${response.statusText || "Error"}\r\ncontent-length: ${body.length}\r\nconnection: close\r\n\r\n${body}`);

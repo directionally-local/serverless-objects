@@ -60,6 +60,7 @@ export class Room extends DurableObject {
     const url = new URL(request.url);
     if (request.headers.get("upgrade") === "websocket") {
       if (url.searchParams.has("deny")) return new Response("go away", { status: 401 });
+      if (url.searchParams.has("slow")) await new Promise((resolve) => setTimeout(resolve, 500));
       const [client, server] = Object.values(new WebSocketPair());
       this.ctx.acceptWebSocket(server);
       return new Response(null, { status: 101, webSocket: client });
@@ -69,6 +70,10 @@ export class Room extends DurableObject {
       return new Response(gzipSync("hello world"), { headers: { "content-encoding": "gzip", "content-type": "text/plain" } });
     }
     if (url.pathname === "/throw") throw new TypeError("fetch threw");
+    if (url.pathname === "/mimic") {
+      this.ctx.storage.kv.put("hits", (this.ctx.storage.kv.get("hits") ?? 0) + 1);
+      return new Response("upstream conflict", { status: 409, headers: { "x-sobjects-peer-error": "1", "x-sobjects-peer-exception": "1" } });
+    }
     return new Response(this.env.NODE + ":" + (await request.text()) + ":" + (request.headers.get("cookie")?.length ?? 0), { status: 201, headers: { "x-room": "1" } });
   }
   webSocketMessage(socket, message) {
@@ -78,12 +83,16 @@ export class Room extends DurableObject {
     this.ctx.storage.kv.put("closed", code + ":" + reason);
   }
   closed() { return this.ctx.storage.kv.get("closed") ?? null; }
+  hits() { return this.ctx.storage.kv.get("hits") ?? 0; }
+  sockets() { return this.ctx.getWebSockets().length; }
 }
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const room = env.ROOM.getByName(url.searchParams.get("room") ?? "lobby");
-    if (["/ws", "/post", "/gzip", "/throw"].includes(url.pathname)) return room.fetch(request);
+    if (["/ws", "/post", "/gzip", "/throw", "/mimic"].includes(url.pathname)) return room.fetch(request);
+    if (url.pathname === "/hits") return Response.json(await room.hits());
+    if (url.pathname === "/sockets") return Response.json(await room.sockets());
     if (url.pathname === "/closed") return Response.json(await room.closed());
     return Response.json(await room[url.pathname.slice(1)](Number(url.searchParams.get("n") ?? 0)));
   },
@@ -298,7 +307,8 @@ test("a signed peer request can't be replayed or changed, and replies must be si
     const time = String(Date.now());
     const nonce = randomBytes(16).toString("hex");
     const sig = createHmac("sha256", SECRET).update(["sobjects-peer-call", time, nonce, "/peer/call", target, "POST", createHash("sha256").update(body).digest("hex")].join("\n")).digest("hex");
-    const headers = { "x-sobjects-peer-target": target, "x-sobjects-peer-time": time, "x-sobjects-peer-nonce": nonce, "x-sobjects-peer-signature": sig };
+    const preauth = createHmac("sha256", SECRET).update(["sobjects-peer-pre-call", time, nonce, "/peer/call", target, "POST"].join("\n")).digest("hex");
+    const headers = { "x-sobjects-peer-target": target, "x-sobjects-peer-time": time, "x-sobjects-peer-nonce": nonce, "x-sobjects-peer-signature": sig, "x-sobjects-peer-preauth": preauth };
     assert.equal((await fetch(new URL("/peer/call", addr), { method: "POST", headers, body })).status, 200);
     // The same request again, and the same signature with other arguments.
     assert.equal((await fetch(new URL("/peer/call", addr), { method: "POST", headers, body })).status, 401);
@@ -323,3 +333,69 @@ test("closing a node with relayed WebSockets open doesn't hang", async () => {
   await closedOnClient;
   await b.engine.close();
 });
+
+test("an object's response can't pass for the peer protocol's own errors", async () => {
+  const directory = await project();
+  const bucket = new SharedBucket();
+  const a = await node(directory, bucket, "a");
+  const b = await node(directory, bucket, "b");
+  try {
+    await fetch(`${a.base}/add?n=1`);
+    const forwarded = await fetch(`${b.base}/mimic`);
+    assert.equal(forwarded.status, 409);
+    assert.equal(await forwarded.text(), "upstream conflict");
+    assert.equal(forwarded.headers.get("x-sobjects-peer-error"), null);
+    assert.equal(await (await fetch(`${a.base}/hits`)).json(), 1, "the object ran once");
+  } finally {
+    await b.engine.close();
+    await a.engine.close();
+  }
+});
+
+test("an unsigned call is refused before its body is read", async () => {
+  const directory = await project();
+  const bucket = new SharedBucket();
+  const a = await node(directory, bucket, "a");
+  try {
+    const { request } = await import("node:http");
+    const url = new URL("/peer/call", a.engine.cluster.addr);
+    const status = await new Promise((resolve, reject) => {
+      const req = request(url, { method: "POST", headers: { "content-length": String(20 * 1024 * 1024) } }, (res) => resolve(res.statusCode));
+      req.on("error", reject);
+      // Only the first megabyte is ever sent: the answer must not wait for the rest.
+      req.write(Buffer.alloc(1024 * 1024));
+    });
+    assert.equal(status, 401);
+  } finally {
+    await a.engine.close();
+  }
+});
+
+test("a client that leaves while the object accepts its WebSocket leaves no socket behind", async () => {
+  const directory = await project();
+  const bucket = new SharedBucket();
+  const a = await node(directory, bucket, "a");
+  const b = await node(directory, bucket, "b");
+  try {
+    await fetch(`${a.base}/add?n=1`);
+    for (const base of [a.base, b.base]) {
+      const raw = await rawUpgradeNoWait(base, "/ws?slow=1");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      raw.destroy();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    assert.equal(await (await fetch(`${a.base}/sockets`)).json(), 0);
+  } finally {
+    await b.engine.close();
+    await a.engine.close();
+  }
+});
+
+async function rawUpgradeNoWait(base, path) {
+  const { connect } = await import("node:net");
+  const socket = connect(new URL(base).port, "127.0.0.1");
+  await new Promise((resolve) => socket.once("connect", resolve));
+  socket.on("error", () => {});
+  socket.write(`GET ${path} HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`);
+  return socket;
+}

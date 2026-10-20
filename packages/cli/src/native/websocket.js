@@ -178,8 +178,20 @@ export function acceptKey(key) {
 
 // Completes the handshake and relays frames between the TCP socket and the
 // client end of a WebSocketPair.
+// Whether an upgraded socket's client is gone. Its "end" may have fired
+// before anyone listened (nothing reads an upgraded socket until a handler
+// attaches), so destroyed alone isn't enough.
+export function socketGone(socket) {
+  return socket.destroyed || socket.readableEnded;
+}
+
 export function connect(socket, head, request, response) {
   const end = response.webSocket;
+  if (socketGone(socket)) {
+    socket.destroy();
+    end.fail?.(new Error("connection lost"));
+    return;
+  }
   const protocol = response.headers.get("sec-websocket-protocol");
   socket.write([
     "HTTP/1.1 101 Switching Protocols",
