@@ -125,15 +125,15 @@ The rule across this family is that **Cloudflare's APIs are the contract and our
 
 ## Roadmap
 
-Dates are targets, not promises.
+Dates are targets, not promises. Milestones are named separately from npm release numbers.
 
 | Milestone | Target | Scope |
 |---|---|---|
 | **M0 · Compatibility spike** | Done, Oct 2026 | Agents SDK and PartyServer samples on celld; Hotcell sandbox reattachment from an object. [Findings](docs/conformance/m0-celld.md). |
-| **v0.1 · Operating layer** | Released 19 Oct 2026 | `sobjects` CLI and supervisor, TLS ingress with ACME, dashboard and storage inspector, conformance suite with Wrangler and celld runners, install and porting guides. Single host. |
-| **v0.2 · Agent layer** | 7 Nov 2026 | Hotcell `Sandbox` binding, and Autopilot run objects with a registry, alarms, event streams and a Hotcell cell executor (first versions merged). The showcase now runs end to end: start a run, kill the node mid-tool, restart, and watch it resume from its event log. Showcase: start a run, kill the node, restart, and watch it resume from its event log in Camouflage. |
-| **v0.3 · Native engine, single node** | 21 Nov 2026 | Node-native engine with the Durable Objects API, SQLite storage, durable alarms and WebSocket hibernation. `sobjects build --strict`. Conformance parity with celld on the Durable Objects suite, then a two-week fault-injection soak before beta. |
-| **v0.4 · Multi-node and Teams** | 30 Nov 2026 | Placement and migration through the bucket, owner-aware ingress, rolling deploys, point-in-time recovery. Multiple apps and tenants, SSO, audit logs, air-gapped install, Helm. |
+| **M1 · Operating layer** | Released 19 Oct 2026 | `sobjects` CLI and supervisor, TLS ingress with ACME, dashboard and storage inspector, conformance suite with Wrangler and celld runners, install and porting guides. Single host. |
+| **M2 · Agent layer** | 7 Nov 2026 | Hotcell `Sandbox` binding, and Autopilot run objects with a registry, alarms, event streams and a Hotcell cell executor (first versions merged). The showcase now runs end to end: start a run, kill the node mid-tool, restart, and watch it resume from its event log in Camouflage. |
+| **M3 · Native engine, single node** | 21 Nov 2026 | Node-native engine with the Durable Objects API, SQLite storage, durable alarms and WebSocket hibernation. `sobjects build --strict`. Conformance parity with celld on the Durable Objects suite, then a two-week fault-injection soak before beta. |
+| **M4 · Multi-node and Teams** | 30 Nov 2026 | Placement and migration through the bucket, owner-aware ingress, rolling deploys, point-in-time recovery. Multiple apps and tenants, SSO, audit logs, air-gapped install, Helm. |
 
 Not planned: a V8 runtime of our own; replacements for Workers AI, Vectorize or Hyperdrive; Python objects.
 
