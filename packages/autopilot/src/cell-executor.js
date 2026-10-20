@@ -70,6 +70,7 @@ export class CellExecutor {
       abort_sent INTEGER NOT NULL DEFAULT 0,
       open_streams_json TEXT NOT NULL DEFAULT '[]',
       pending_text_json TEXT NOT NULL DEFAULT '{}',
+      prompt_text TEXT,
       lease_token TEXT,
       lease_until INTEGER,
       last_error TEXT
@@ -77,6 +78,7 @@ export class CellExecutor {
     const columns = new Set(db.exec("SELECT name FROM pragma_table_info('cell_executor')").map((row) => row.name));
     if (!columns.has("open_streams_json")) db.exec("ALTER TABLE cell_executor ADD COLUMN open_streams_json TEXT NOT NULL DEFAULT '[]'");
     if (!columns.has("pending_text_json")) db.exec("ALTER TABLE cell_executor ADD COLUMN pending_text_json TEXT NOT NULL DEFAULT '{}'");
+    if (!columns.has("prompt_text")) db.exec("ALTER TABLE cell_executor ADD COLUMN prompt_text TEXT");
     if (!columns.has("lease_token")) db.exec("ALTER TABLE cell_executor ADD COLUMN lease_token TEXT");
     if (!columns.has("lease_until")) db.exec("ALTER TABLE cell_executor ADD COLUMN lease_until INTEGER");
   }
@@ -114,6 +116,39 @@ export class CellExecutor {
     if (!state || !STEPS.includes(state.step) || state.nextAt === null) return null;
     // While a step holds the lease, look again when it would expire.
     return state.leaseUntil !== null && state.leaseUntil > this.#now() ? Math.max(state.nextAt, state.leaseUntil) : state.nextAt;
+  }
+
+  // Whether resume() can start a follow-up turn: the run is paused for input
+  // and the cell has finished stopping the previous turn.
+  resumable() {
+    const state = this.state();
+    if (!state) return { ok: false, reason: "this run was never started in a cell" };
+    if (state.step !== "done") return { ok: false, reason: "the cell is still stopping the previous turn; retry shortly" };
+    if (!state.cellId) return { ok: false, reason: "the run has no cell" };
+    if (this.#run.get()?.status !== "needs_input") return { ok: false, reason: `the run is not waiting for input (status: ${this.#run.get()?.status})` };
+    return { ok: true };
+  }
+
+  // Start a follow-up turn in the same cell session after the run resumed.
+  // The cell keeps the conversation, so the agent continues from where it stopped.
+  continueTurn({ message = "Continue the task from where you stopped." } = {}) {
+    if (typeof message !== "string" || !message.trim()) throw new Error("message must be a non-empty string");
+    if (new TextEncoder().encode(message).byteLength > MAX_TASK_BYTES) throw new Error(`message must be at most ${MAX_TASK_BYTES} bytes`);
+    if (this.#run.get()?.status !== "running") throw new Error("resume the run before continuing its turn");
+    this.#update({
+      step: "bridge",
+      turn_id: this.#randomId(),
+      prompt_text: message,
+      abort_sent: 0,
+      attempts: 0,
+      quiet_polls: 0,
+      last_error: null,
+      lease_token: null,
+      lease_until: null,
+      next_at: this.#now(),
+    });
+    this.#log("UserMessageCreated", { text: message });
+    return this.state();
   }
 
   // Ask the cell to stop the turn; the run finishes when the cell reports it.
@@ -223,8 +258,8 @@ export class CellExecutor {
   // The bridge remembers turn ids, so resending the prompt after a crash is safe.
   async #prompt(state) {
     const cell = await this.#cell(state);
-    const run = this.#run.get();
-    await this.#control(cell, "POST", "/rpc", { id: state.turnId, type: "prompt", message: run.task });
+    const message = state.promptText ?? this.#run.get().task;
+    await this.#control(cell, "POST", "/rpc", { id: state.turnId, type: "prompt", message });
     this.#advance(state, "poll", {}, POLL_MS);
   }
 
@@ -493,6 +528,7 @@ function rowToState(row) {
     attempts: row.attempts,
     quietPolls: row.quiet_polls,
     abortSent: row.abort_sent === 1,
+    promptText: row.prompt_text ?? null,
     leaseUntil: row.lease_until ?? null,
     lastError: row.last_error,
   };
