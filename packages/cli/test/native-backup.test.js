@@ -31,12 +31,16 @@ class MemoryBucket {
     return object ? { body: Buffer.from(object.body), etag: object.etag } : null;
   }
 
+  // ghost: uploads are stored, but answered with an error (a 500 or a timeout).
+  ghost = false;
+
   async put(key, body, { ifMatch, ifNoneMatch } = {}) {
     const current = this.objects.get(key);
     if (ifNoneMatch === "*" && current) return null;
     if (ifMatch && current?.etag !== ifMatch) return null;
     const etag = `"${(this.#version += 1)}"`;
     this.objects.set(key, { body: Buffer.from(body), etag });
+    if (this.ghost) throw new Error("S3 PUT failed: HTTP 500 InternalError");
     return etag;
   }
 }
@@ -227,4 +231,30 @@ test("native dev parses the backup options", () => {
   assert.equal(options.backupBucket, "s3://b/x");
   assert.equal(options.backupIntervalSeconds, 5);
   assert.throws(() => parseNativeDevArgs(["--backup-interval-seconds", "0"], "/tmp"), /1 or more/);
+});
+
+test("an upload that failed but landed doesn't stop the object's backups", async () => {
+  const directory = await project();
+  const bucket = new MemoryBucket();
+  const logs = [];
+  const node = await engineFor(directory, bucket, { logs });
+  try {
+    await node.env.COUNTER.getByName("a").add(1);
+    bucket.ghost = true;
+    await node.backup.flush([...node.namespaces[0].hosts()]);
+    bucket.ghost = false;
+    await node.env.COUNTER.getByName("a").add(1);
+    await node.backup.flush([...node.namespaces[0].hosts()]);
+    await node.env.COUNTER.getByName("a").add(1);
+    await node.backup.flush([...node.namespaces[0].hosts()]);
+    assert.ok(!logs.some((line) => line.includes("another node changed it")), logs.join("\n"));
+  } finally {
+    await node.close();
+  }
+  const restored = await engineFor(directory, bucket);
+  try {
+    assert.equal((await restored.env.COUNTER.getByName("a").read()).value, 3);
+  } finally {
+    await restored.close();
+  }
 });
