@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.9.0...serverless-objects-v0.9.1) (2026-10-20)
+
+
+### Bug Fixes
+
+* **cli:** keep backing up an object after an upload that failed but landed ([b552d4d](https://github.com/sinameraji/serverless-objects/commit/b552d4d6b31f3e8329b4074d6be0417f307c1d12))
+
 ## [0.9.0](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.8.0...serverless-objects-v0.9.0) (2026-10-20)
 
 
