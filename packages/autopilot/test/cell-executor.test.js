@@ -256,3 +256,28 @@ test("adds columns to a table created by an older version", () => {
   new CellExecutor({ db, run: {}, connect: async () => ({}) });
   assert.ok(db.exec("SELECT name FROM pragma_table_info('cell_executor')").some((row) => row.name === "open_streams_json"));
 });
+
+test("the session log is redacted, and streamed text is redacted whole", async () => {
+  const state = await setup();
+  await state.executor.start();
+  await drive(state, (current) => current.step === "poll");
+  const secret = "ghp_0123456789abcdefABCDEF0123456789";
+  state.cell.emit({ type: "message.start", messageId: "m1", role: "assistant" });
+  state.cell.emit({ type: "message.delta", messageId: "m1", text: "Your token is ghp_0123456789" });
+  state.cell.emit({ type: "message.delta", messageId: "m1", text: "abcdefABCDEF0123456789\nand a key:\n-----BEGIN RSA PRIVATE KEY-----\n" });
+  state.cell.emit({ type: "message.delta", messageId: "m1", text: "MIIEpAIBAAKCAQEA\n-----END RSA PRIVATE KEY-----" });
+  state.cell.emit({ type: "message.end", messageId: "m1" });
+  state.cell.emit({ type: "tool.start", toolCallId: "t1", toolName: "bash", args: { command: `echo ${secret}` } });
+  state.cell.emit({ type: "tool.result", toolCallId: "t1", toolName: "bash", result: `GITHUB_TOKEN=${secret}`, isError: false });
+  state.cell.emit({ type: "session.end", reason: "complete" });
+  await drive(state, (current) => current.step === "done");
+
+  const log = JSON.stringify(state.host.listSessionEvents());
+  assert.equal(log.includes("0123456789abcdefABCDEF"), false);
+  assert.equal(log.includes("MIIEpAIBAAKCAQEA"), false);
+  const text = state.host.listSessionEvents().filter((event) => event.event_type === "AssistantTokenDelta").map((event) => event.payload.token).join("");
+  assert.equal(text, "Your token is [REDACTED_SECRET]\nand a key:\n[REDACTED_SECRET]");
+  // The run log hashes the original output.
+  const result = state.host.listEvents().find((event) => event.type === "tool_result");
+  assert.equal(result.metadata.outputBytes, `GITHUB_TOKEN=${secret}`.length);
+});

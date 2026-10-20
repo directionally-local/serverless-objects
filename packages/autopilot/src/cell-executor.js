@@ -4,6 +4,7 @@
 // bridge's event cursor. Every step is persisted and driven by the object's
 // alarm, so a node restart resumes at the saved step and cursor while the
 // cell keeps working.
+import { redactDeep } from "./redact.js";
 
 export const DEFAULT_MODEL = "moonshotai/kimi-k2.6";
 export const DEFAULT_PACKAGE = "autopilot-ai@1.25.1";
@@ -61,10 +62,12 @@ export class CellExecutor {
       quiet_polls INTEGER NOT NULL DEFAULT 0,
       abort_sent INTEGER NOT NULL DEFAULT 0,
       open_streams_json TEXT NOT NULL DEFAULT '[]',
+      pending_text_json TEXT NOT NULL DEFAULT '{}',
       last_error TEXT
     )`);
     const columns = new Set(db.exec("SELECT name FROM pragma_table_info('cell_executor')").map((row) => row.name));
     if (!columns.has("open_streams_json")) db.exec("ALTER TABLE cell_executor ADD COLUMN open_streams_json TEXT NOT NULL DEFAULT '[]'");
+    if (!columns.has("pending_text_json")) db.exec("ALTER TABLE cell_executor ADD COLUMN pending_text_json TEXT NOT NULL DEFAULT '{}'");
   }
 
   // Queue a run for execution. The work happens on the next alarms.
@@ -85,7 +88,7 @@ export class CellExecutor {
     );
     this.#run.appendSessionEvents([
       { event_type: "SessionStarted", payload: { title: `Autopilot run ${run.id}`, detail: [model] } },
-      { event_type: "UserMessageCreated", payload: { text: run.task } },
+      { event_type: "UserMessageCreated", payload: redactDeep({ text: run.task }) },
     ]);
     return this.state();
   }
@@ -232,6 +235,8 @@ export class CellExecutor {
 
   // Returns true once the turn has ended.
   async #apply(event, state) {
+    // Keep the log in order: text buffered before a tool call or usage update goes first.
+    if (event?.type !== "message.delta" && event?.type !== "message.reasoning" && event?.type !== "message.end") this.#flushText();
     switch (event?.type) {
       case "message.start":
         if (event.role === "assistant") {
@@ -240,13 +245,14 @@ export class CellExecutor {
         }
         return false;
       case "message.delta":
-        if (typeof event.text === "string") this.#log("AssistantTokenDelta", { stream_id: event.messageId, token: event.text });
+        if (typeof event.text === "string") this.#bufferText("AssistantTokenDelta", event.messageId, event.text);
         return false;
       case "message.reasoning":
-        if (typeof event.text === "string") this.#log("AssistantReasoningDelta", { stream_id: event.messageId, token: event.text });
+        if (typeof event.text === "string") this.#bufferText("AssistantReasoningDelta", event.messageId, event.text);
         return false;
       case "message.end": {
         // Only assistant streams were started; user messages end without a stream.
+        this.#flushText(event.messageId);
         const open = this.#openStreams();
         if (!open.includes(event.messageId)) return false;
         this.#log("AssistantMessageCompleted", { stream_id: event.messageId });
@@ -299,6 +305,7 @@ export class CellExecutor {
         if (typeof event.message === "string") this.#log("ShowToast", { text: bounded(event.message, 500), kind: "warning" });
         return false;
       case "session.end": {
+        this.#flushText();
         this.#update({ step: "done", next_at: null });
         if (event.reason === "error") this.#log("RuntimeError", { message: bounded(String(event.error ?? "error"), 500) });
         const status = event.reason === "complete" ? "completed" : event.reason === "aborted" ? "cancelled" : "failed";
@@ -349,12 +356,47 @@ export class CellExecutor {
     this.#db.exec(`UPDATE cell_executor SET ${entries.map(([key]) => `${key} = ?`).join(", ")}`, ...entries.map(([, value]) => value));
   }
 
+  // Streamed text is logged a line at a time (a PEM block at once) so that a
+  // secret split across deltas is still whole when it is redacted.
+  #bufferText(eventType, streamId, text) {
+    const pending = this.#pendingText();
+    const key = `${eventType}:${streamId}`;
+    const buffered = (pending[key] ?? "") + text;
+    let cut = buffered.lastIndexOf("\n") + 1;
+    const begin = buffered.lastIndexOf("-----BEGIN");
+    if (begin !== -1) {
+      const end = /-----END [A-Z ]*-----/.exec(buffered.slice(begin));
+      if (!end) cut = Math.min(cut, begin);
+      else if (cut > begin && cut < begin + end.index + end[0].length) cut = begin + end.index + end[0].length;
+    }
+    if (cut > 0) this.#log(eventType, { stream_id: streamId, token: buffered.slice(0, cut) });
+    pending[key] = buffered.slice(Math.max(cut, 0));
+    if (!pending[key]) delete pending[key];
+    this.#update({ pending_text_json: JSON.stringify(pending) });
+  }
+
+  #flushText(streamId) {
+    const pending = this.#pendingText();
+    for (const [key, text] of Object.entries(pending)) {
+      const [eventType, id] = [key.slice(0, key.indexOf(":")), key.slice(key.indexOf(":") + 1)];
+      if (streamId !== undefined && id !== streamId) continue;
+      if (text) this.#log(eventType, { stream_id: id, token: text });
+      delete pending[key];
+    }
+    this.#update({ pending_text_json: JSON.stringify(pending) });
+  }
+
+  #pendingText() {
+    return JSON.parse(this.#db.exec("SELECT pending_text_json FROM cell_executor LIMIT 1")[0]?.pending_text_json ?? "{}");
+  }
+
   #openStreams() {
     return JSON.parse(this.#db.exec("SELECT open_streams_json FROM cell_executor LIMIT 1")[0]?.open_streams_json ?? "[]");
   }
 
+  // Session events are readable by anyone with the stream; redact likely secrets.
   #log(event_type, payload) {
-    this.#run.appendSessionEvents([{ event_type, payload }]);
+    this.#run.appendSessionEvents([{ event_type, payload: redactDeep(payload) }]);
   }
 
   async #cell(state) {

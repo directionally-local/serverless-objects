@@ -81,7 +81,11 @@ await env.RUNS.getByName(id).start({ model: "moonshotai/kimi-k2.6", egress: { sp
 - **Daemon:** set `HOTCELL_ENDPOINT` and `HOTCELL_API_KEY` in the Worker's vars and secrets.
 - **Other methods:** `cancel()` aborts the turn; `executorState()` returns the step, cell id, cursor and last error.
 
-The cell is kept after the run so its workspace can be inspected; destroy it through Hotcell when you're done. The session log includes the task and tool output, up to 16,000 characters per tool, with no secret redaction yet. The control log (`stream=run`) keeps only hashes.
+The cell is kept after the run so its workspace can be inspected; destroy it through Hotcell when you're done. The session log includes the task, assistant text, tool commands and up to 16,000 characters of each tool's output. Likely secrets are redacted before an event is stored:
+- provider keys (`sk-…`, OpenRouter), GitHub and Slack tokens, AWS access key IDs, JWTs and PEM private keys
+- `NAME=value` and `"name": "value"` pairs whose name contains SECRET, TOKEN, PASSWORD or API_KEY
+
+Streamed assistant text is logged a line at a time (and a PEM block whole), so a secret split across deltas is redacted whole. The control log (`stream=run`) keeps only hashes, which are taken over the original content. Redaction is pattern-based: treat the session log as sensitive anyway.
 
 ## RunObject methods
 
