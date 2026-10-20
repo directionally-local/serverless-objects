@@ -1,9 +1,27 @@
 {
   "name": "@serverless-objects/hotcell",
   "version": "0.0.0",
-  "private": true,
   "description": "Cloudflare Sandbox SDK-shaped Durable Object binding backed by Hotcell",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sinameraji/serverless-objects.git",
+    "directory": "packages/hotcell"
+  },
+  "homepage": "https://github.com/sinameraji/serverless-objects/tree/main/packages/hotcell#readme",
+  "bugs": {
+    "url": "https://github.com/sinameraji/serverless-objects/issues"
+  },
+  "keywords": [
+    "cloudflare-sandbox",
+    "durable-objects",
+    "hotcell",
+    "sandbox",
+    "agents"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "exports": {
     ".": "./src/index.js",
@@ -11,7 +29,8 @@
   },
   "files": [
     "src",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=22"

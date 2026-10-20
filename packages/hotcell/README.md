@@ -6,9 +6,9 @@ daemon instead of Cloudflare Containers. The object stores its Hotcell sandbox
 id in Durable Object storage, so after the object is evicted or the node
 restarts it reattaches to the same sandbox and workspace.
 
-> **Status:** pre-alpha, not yet published to npm. `@cloudflare/sandbox` 1.0
+> **Status:** pre-alpha (0.x). `@cloudflare/sandbox` 1.0
 > (a different, Containers-based API) is not implemented here; see
-> [compatibility](../../docs/compatibility.md).
+> [compatibility](https://github.com/sinameraji/serverless-objects/blob/main/docs/compatibility.md).
 
 ```js
 import { getSandbox, proxyToSandbox, Sandbox } from "@serverless-objects/hotcell";

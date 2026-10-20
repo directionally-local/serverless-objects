@@ -4,7 +4,7 @@ Autopilot runs as Durable Objects. Each run is a `RunObject` that holds the run 
 
 It ports the per-run part of Autopilot's `RunStore` and `RunWakeScheduler` (`src/runs/store.ts`, `src/runs/wake-scheduler.ts`) to Durable Object SQLite, with the same statuses, transitions, budgets, lease and retry rules. A pending wake is a durable alarm, so it fires after the node restarts.
 
-> **Status:** pre-alpha, not yet published to npm. `@serverless-objects/autopilot/cell` runs a run's task with Autopilot in a Hotcell cell.
+> **Status:** pre-alpha (0.x). `@serverless-objects/autopilot/cell` runs a run's task with Autopilot in a Hotcell cell.
 
 ## Use
 
@@ -131,7 +131,7 @@ Unit tests run the SQL against `node:sqlite`. They cover transitions, budgets, h
 
 A real Autopilot run (celld 0.6.2, Hotcell 0.1.19 container driver, `autopilot-ai` 1.25.1, `moonshotai/kimi-k2.6` through the Hotcell gateway) went from provision to completion in about 30 seconds. It wrote the requested file for $0.0084, and `camouflage-validate` accepted all 99 session events. In a second run, the node was stopped for about 45 seconds during a 40-second bash tool call. After `up`, the object resumed from its saved cursor (36 → 48) and the run completed ($0.0114). Its tool intent and result stayed paired, and all 48 session events were valid.
 
-Separately, [`examples/autopilot-runs`](../../examples/autopilot-runs) was run on celld 0.6.2 through `sobjects deploy`/`up` with a SeaweedFS bucket:
+Separately, [`examples/autopilot-runs`](https://github.com/sinameraji/serverless-objects/tree/main/examples/autopilot-runs) was run on celld 0.6.2 through `sobjects deploy`/`up` with a SeaweedFS bucket:
 - A wake fell due while the node was stopped, and fired after `up`.
 - A WebSocket opened at a cursor received the backlog, then live events.
 - Reconcile marked a run with an unmatched tool intent `interrupted_unknown`.
