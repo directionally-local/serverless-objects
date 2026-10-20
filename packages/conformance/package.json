@@ -6,7 +6,8 @@
   "scripts": {
     "test": "node --test test/*.test.js",
     "test:wrangler": "node src/run.js --target wrangler",
-    "test:celld": "node src/run.js --target celld"
+    "test:celld": "node src/run.js --target celld",
+    "test:native": "node src/run.js --target native"
   },
   "devDependencies": {
     "agents": "0.28.1",

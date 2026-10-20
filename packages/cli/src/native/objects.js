@@ -1,0 +1,277 @@
+// Durable Object namespaces, stubs and per-object hosts for the native engine.
+//
+// Each object has one host. Every incoming event (an RPC call, a fetch, an
+// alarm) starts in its own macrotask, after the previous event's microtasks
+// have run, so code that only awaits storage is never interleaved. An event
+// that awaits real I/O lets the next one start, as on Cloudflare.
+// blockConcurrencyWhile() and async transactions close the input gate until
+// they settle.
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { IdIssuer } from "./ids.js";
+import { DurableObjectStorage, ObjectDatabase } from "./storage.js";
+
+const MAX_TIMER_MS = 2 ** 31 - 1;
+const ALARM_RETRY_LIMIT = 6;
+const ALARM_RETRY_BASE_MS = 2_000;
+
+export class DurableObjectNamespace {
+  #engine;
+  #issuer;
+  #hosts = new Map();
+
+  constructor(engine, { binding, className, objectClass }) {
+    this.#engine = engine;
+    this.binding = binding;
+    this.className = className;
+    this.objectClass = objectClass;
+    this.#issuer = new IdIssuer(engine.scriptName, className);
+  }
+
+  idFromName(name) {
+    return this.#issuer.fromName(name);
+  }
+
+  newUniqueId() {
+    return this.#issuer.unique();
+  }
+
+  idFromString(hex) {
+    return this.#issuer.fromString(hex);
+  }
+
+  get(id) {
+    if (!id || typeof id.toString !== "function") throw new TypeError("get() takes a DurableObjectId.");
+    return createStub(this.host(id));
+  }
+
+  getByName(name) {
+    return this.get(this.idFromName(name));
+  }
+
+  jurisdiction() {
+    return this;
+  }
+
+  host(id) {
+    const key = id.toString();
+    let host = this.#hosts.get(key);
+    if (!host) {
+      host = new ObjectHost(this.#engine, this, this.idFromString(key), id.name);
+      this.#hosts.set(key, host);
+    }
+    return host;
+  }
+
+  hosts() {
+    return this.#hosts.values();
+  }
+}
+
+export class ObjectHost {
+  #engine;
+  #namespace;
+  #database;
+  #instance;
+  #state;
+  #queue = [];
+  #scheduled = false;
+  #gates = new Set();
+  #alarmTimer;
+  #alarmRetries = 0;
+
+  constructor(engine, namespace, id, name) {
+    this.#engine = engine;
+    this.#namespace = namespace;
+    this.#database = new ObjectDatabase(join(engine.objectsDirectory, namespace.className, `${id.toString()}.sqlite`));
+    // Remember the name, so ctx.id.name survives addressing by idFromString() and restarts.
+    if (name !== undefined && this.#database.meta("name") === null) this.#database.setMeta("name", name);
+    const storedName = this.#database.meta("name");
+    this.id = storedName === null ? id : new id.constructor(id.toString(), storedName);
+  }
+
+  call(method, args) {
+    const cloned = structuredClone(args);
+    return this.#deliver(async (instance) => {
+      const fn = instance[method];
+      if (typeof fn !== "function") throw new TypeError(`The RPC receiver does not implement the method "${String(method)}".`);
+      return structuredClone(await fn.apply(instance, cloned));
+    }).catch((error) => { throw crossBoundary(error); });
+  }
+
+  fetch(request) {
+    return this.#deliver(async (instance) => {
+      if (typeof instance.fetch !== "function") throw new TypeError("This Durable Object class has no fetch handler.");
+      return instance.fetch(request);
+    });
+  }
+
+  // Called when the alarm is set, deleted or due.
+  scheduleAlarm(at) {
+    clearTimeout(this.#alarmTimer);
+    this.#alarmTimer = undefined;
+    this.#engine.alarmIndex.set(this.#namespace.className, this.id.toString(), at);
+    if (at === null) return;
+    const delay = Math.max(0, at - Date.now());
+    this.#alarmTimer = setTimeout(() => {
+      if (delay > MAX_TIMER_MS) this.scheduleAlarm(at);
+      else void this.#runAlarm();
+    }, Math.min(delay, MAX_TIMER_MS));
+    this.#alarmTimer.unref?.();
+  }
+
+  async #runAlarm() {
+    const scheduled = this.#database.meta("alarm");
+    if (scheduled === null) return;
+    if (Number(scheduled) > Date.now()) return this.scheduleAlarm(Number(scheduled));
+    const retryCount = this.#alarmRetries;
+    // The alarm is cleared before the handler runs; the handler may set a new one.
+    this.#database.setMeta("alarm", null);
+    this.#engine.alarmIndex.set(this.#namespace.className, this.id.toString(), null);
+    try {
+      await this.#deliver(async (instance) => {
+        if (typeof instance.alarm !== "function") throw new TypeError("This Durable Object class has no alarm handler.");
+        await instance.alarm({ retryCount, isRetry: retryCount > 0 });
+      });
+      this.#alarmRetries = 0;
+    } catch (error) {
+      this.#engine.log(`alarm for ${this.#namespace.className} ${this.id} failed: ${error?.stack ?? error}`);
+      if (retryCount + 1 > ALARM_RETRY_LIMIT) {
+        this.#alarmRetries = 0;
+        return;
+      }
+      this.#alarmRetries = retryCount + 1;
+      if (this.#database.meta("alarm") === null) {
+        const at = Date.now() + ALARM_RETRY_BASE_MS * 2 ** retryCount;
+        this.#database.setMeta("alarm", at);
+        this.scheduleAlarm(at);
+      }
+    }
+  }
+
+  holdInputGate(promise) {
+    const gate = Promise.resolve(promise).then(() => {}, () => {});
+    this.#gates.add(gate);
+    gate.then(() => {
+      this.#gates.delete(gate);
+      this.#schedule();
+    });
+  }
+
+  close() {
+    clearTimeout(this.#alarmTimer);
+    this.#database.close();
+  }
+
+  #deliver(run) {
+    return new Promise((resolve, reject) => {
+      this.#queue.push({ run, resolve, reject });
+      this.#schedule();
+    });
+  }
+
+  #schedule() {
+    if (this.#scheduled || this.#queue.length === 0) return;
+    this.#scheduled = true;
+    setImmediate(() => {
+      this.#scheduled = false;
+      void this.#pump();
+    });
+  }
+
+  async #pump() {
+    if (this.#gates.size > 0 || this.#queue.length === 0) return;
+    let instance;
+    try {
+      instance = this.#ensureInstance();
+    } catch (error) {
+      for (const event of this.#queue.splice(0)) event.reject(error);
+      return;
+    }
+    // A constructor may have closed the gate with blockConcurrencyWhile().
+    if (this.#gates.size > 0) return;
+    const event = this.#queue.shift();
+    this.#schedule();
+    try {
+      event.resolve(await event.run(instance));
+    } catch (error) {
+      event.reject(error);
+    }
+  }
+
+  #ensureInstance() {
+    if (this.#instance) return this.#instance;
+    const storage = new DurableObjectStorage(this.#database, {
+      onAlarmChange: (at) => this.scheduleAlarm(at),
+      holdInputGate: (promise) => this.holdInputGate(promise),
+    });
+    this.#state = new DurableObjectState(this, this.id, storage, this.#engine.exports);
+    this.#instance = new this.#namespace.objectClass(this.#state, this.#engine.env);
+    return this.#instance;
+  }
+}
+
+export class DurableObjectState {
+  #host;
+
+  constructor(host, id, storage, exports) {
+    this.#host = host;
+    this.id = id;
+    this.storage = storage;
+    this.exports = exports;
+  }
+
+  blockConcurrencyWhile(callback) {
+    const result = (async () => callback())();
+    this.#host.holdInputGate(result);
+    return result;
+  }
+
+  waitUntil(promise) {
+    Promise.resolve(promise).catch(() => {});
+  }
+}
+
+// Which objects have a pending alarm, so alarms fire after a restart.
+export class AlarmIndex {
+  #db;
+
+  constructor(path) {
+    this.#db = new DatabaseSync(path);
+    this.#db.exec("PRAGMA journal_mode = WAL; CREATE TABLE IF NOT EXISTS alarms (class TEXT NOT NULL, id TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (class, id)) WITHOUT ROWID");
+  }
+
+  set(className, id, at) {
+    if (at === null) this.#db.prepare("DELETE FROM alarms WHERE class = ? AND id = ?").run(className, id);
+    else this.#db.prepare("INSERT INTO alarms (class, id, at) VALUES (?, ?, ?) ON CONFLICT(class, id) DO UPDATE SET at = excluded.at").run(className, id, at);
+  }
+
+  pending() {
+    return this.#db.prepare("SELECT class, id, at FROM alarms").all();
+  }
+
+  close() {
+    this.#db.close();
+  }
+}
+
+function createStub(host) {
+  return new Proxy(Object.create(null), {
+    get(_target, property) {
+      if (property === "then" || typeof property === "symbol") return undefined;
+      if (property === "id") return host.id;
+      if (property === "name") return host.id.name;
+      if (property === "fetch") return (input, init) => host.fetch(input instanceof Request && init === undefined ? input : new Request(input, init));
+      return (...args) => host.call(property, args);
+    },
+  });
+}
+
+// Errors cross an RPC boundary as a structured clone, keeping name and message.
+function crossBoundary(error) {
+  try {
+    return structuredClone(error);
+  } catch {
+    return new Error(String(error?.message ?? error));
+  }
+}

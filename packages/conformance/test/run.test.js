@@ -18,7 +18,7 @@ test("celld defaults to checking an alarm across restart", () => {
 });
 
 test("runner options validate target, port, and alarm delay", () => {
-  assert.throws(() => parseArgs(["--target", "native"]), /must be wrangler or celld/);
+  assert.throws(() => parseArgs(["--target", "bogus"]), /must be wrangler, celld or native/);
   assert.throws(() => parseArgs(["--port", "0"]), /--port/);
   assert.throws(() => parseArgs(["--alarm-delay", "5"]), /--alarm-delay/);
 });
@@ -35,4 +35,10 @@ test("runs every suite unless one is selected", () => {
   assert.deepEqual(parseArgs(["--suite", "agents"]).suites, ["agents"]);
   assert.deepEqual(parseArgs(["--suite", "all"]).suites, ["core", "agents"]);
   assert.throws(() => parseArgs(["--suite", "partyserver"]), /--suite must be/);
+});
+
+test("native runs on this checkout's CLI and checks an alarm across restart", () => {
+  const options = parseArgs(["--target", "native"]);
+  assert.equal(options.restartAfterAlarm, true);
+  assert.equal(options.alarmDelayMs, 30_000);
 });

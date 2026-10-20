@@ -10,6 +10,7 @@ const SUITES = {
   core: path.join(PACKAGE_DIR, "app"),
   agents: path.join(PACKAGE_DIR, "agents-app"),
 };
+const SOBJECTS_BIN = path.resolve(PACKAGE_DIR, "..", "cli", "bin", "sobjects.mjs");
 const DEFAULT_CELLD_BIN = path.join(os.homedir(), ".local/share/serverless-objects/engines/celld-0.6.2/celld");
 
 export function parseArgs(args) {
@@ -41,7 +42,7 @@ export function parseArgs(args) {
   }
 
   if (options.help) return options;
-  if (!["wrangler", "celld"].includes(options.target)) throw new Error("--target must be wrangler or celld");
+  if (!["wrangler", "celld", "native"].includes(options.target)) throw new Error("--target must be wrangler, celld or native");
   if (options.suites.some((suite) => !SUITES[suite])) throw new Error("--suite must be core, agents, or all");
   if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65_535) throw new Error("--port must be an integer from 1 to 65535");
   if (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 1_000) throw new Error("--timeout must be at least 1000 milliseconds");
@@ -49,7 +50,7 @@ export function parseArgs(args) {
     throw new Error("--alarm-delay must be at least 1000 milliseconds");
   }
 
-  options.restartAfterAlarm ??= options.target === "celld";
+  options.restartAfterAlarm ??= options.target !== "wrangler";
   options.alarmDelayMs ??= options.restartAfterAlarm ? 30_000 : 2_000;
   return options;
 }
@@ -62,7 +63,7 @@ export function validateCaseResult(name, response, body) {
 
 function usage() {
   return [
-    "Usage: node src/run.js [--target wrangler|celld] [options]",
+    "Usage: node src/run.js [--target wrangler|celld|native] [options]",
     "",
     "Options:",
     "  --target TARGET       Runtime to test (default: wrangler)",
@@ -89,6 +90,9 @@ function startTarget(target, projectDir, options) {
       "--local",
       "--persist-to", path.join(projectDir, ".wrangler-state"),
     ];
+  } else if (target === "native") {
+    command = process.execPath;
+    args = [SOBJECTS_BIN, "dev", projectDir, "--engine", "native", "--host", "127.0.0.1", "--port", String(options.port)];
   } else {
     command = options.celldBin;
     args = ["dev", projectDir, "--host", "127.0.0.1", "--port", String(options.port), "--no-watch"];
@@ -307,13 +311,21 @@ async function runSuite(suite, options, scratchDir) {
   try {
     await start();
     const results = await runCases(baseUrl);
+    // A check that throws is a failed check, not a failed run.
+    const record = async (name, check) => {
+      try {
+        results.push({ name, ...await check() });
+      } catch (error) {
+        results.push({ name, pass: false, detail: String(error?.message ?? error) });
+      }
+    };
     if (suite === "core") {
-      results.push({ name: "alarm-durability", ...await runAlarmCheck(baseUrl, options.alarmDelayMs, options.restartAfterAlarm, restart) });
-      results.push({ name: "websockets", ...await runWebSocketCheck(baseUrl) });
-      if (options.target === "celld") results.push({ name: "websocket-hibernation", ...await runHibernationCheck(baseUrl) });
+      await record("alarm-durability", () => runAlarmCheck(baseUrl, options.alarmDelayMs, options.restartAfterAlarm, restart));
+      await record("websockets", () => runWebSocketCheck(baseUrl));
+      if (options.target === "celld") await record("websocket-hibernation", () => runHibernationCheck(baseUrl));
     } else {
-      results.push({ name: "client-protocol", ...await runAgentsClientCheck(baseUrl) });
-      results.push({ name: "schedule-fires", ...await runAgentsScheduleCheck(baseUrl) });
+      await record("client-protocol", () => runAgentsClientCheck(baseUrl));
+      await record("schedule-fires", () => runAgentsScheduleCheck(baseUrl));
     }
     return suite === "core" ? results : results.map((result) => ({ ...result, name: `${suite}/${result.name}` }));
   } finally {

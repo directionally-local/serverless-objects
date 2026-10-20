@@ -18,3 +18,6 @@ sobjects.toml
 
 # Conformance runner scratch copies.
 packages/conformance/.runs/
+
+# Native engine state in projects run with `sobjects dev --engine native`.
+.sobjects/
