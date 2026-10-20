@@ -13,10 +13,13 @@ export class RunHost {
   #checkJob;
   #report;
   #now;
+  #extraAlarmAt;
 
   // setAlarm(timestamp | null), onWake(event), checkJob(jobId) -> status, report(run).
-  constructor({ db, setAlarm, onWake, checkJob, report, onEvent, now = () => Date.now(), randomId }) {
+  // extraAlarmAt() lets a subclass share the object's one alarm with the timers.
+  constructor({ db, setAlarm, onWake, checkJob, report, onEvent, extraAlarmAt = () => null, now = () => Date.now(), randomId }) {
     this.#setAlarm = setAlarm;
+    this.#extraAlarmAt = extraAlarmAt;
     this.#onWake = onWake;
     this.#checkJob = checkJob;
     this.#report = report;
@@ -111,16 +114,17 @@ export class RunHost {
   }
 
   // Alarm handler: process every due timer, then arm the next alarm.
-  async processDueTimers(now = this.#now()) {
+  async processDueTimers(now = this.#now(), { sync = true } = {}) {
     const timers = this.store.claimDueTimers(now);
     for (const timer of timers) await this.#processTimer(timer, now);
     await this.#failRunForFailedTimers();
-    await this.syncAlarm();
+    if (sync) await this.syncAlarm();
     return timers.length;
   }
 
   async syncAlarm() {
-    await this.#setAlarm(this.store.nextTimerAt());
+    const times = [this.store.nextTimerAt(), this.#extraAlarmAt()].filter((at) => at !== null && at !== undefined);
+    await this.#setAlarm(times.length ? Math.min(...times) : null);
   }
 
   async #processTimer(timer, now) {

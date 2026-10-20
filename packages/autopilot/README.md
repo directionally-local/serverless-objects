@@ -4,7 +4,7 @@ Autopilot runs as Durable Objects. Each run is a `RunObject` that holds the run 
 
 It ports the per-run part of Autopilot's `RunStore` and `RunWakeScheduler` (`src/runs/store.ts`, `src/runs/wake-scheduler.ts`) to Durable Object SQLite, with the same statuses, transitions, budgets, lease and retry rules. A pending wake is a durable alarm, so it fires after the node restarts.
 
-> **Status:** pre-alpha, not yet published to npm. This is the object layer only: running Autopilot itself inside a Hotcell cell (the executor) is the next step.
+> **Status:** pre-alpha, not yet published to npm. `@serverless-objects/autopilot/cell` runs a run's task with Autopilot in a Hotcell cell.
 
 ## Use
 
@@ -50,6 +50,39 @@ await run.transition("waiting");
 await env.RUN_REGISTRY.getByName("acme").list({ status: "waiting" });
 ```
 
+## Running Autopilot in a Hotcell cell
+
+`AutopilotCellRun` is a `RunObject` that runs its task with Autopilot inside a [Hotcell](https://github.com/sinameraji/hotcell) cell, following Autopilot's own cell runtime (`src/server/aster-cell-runtime.ts`):
+
+1. Create the cell with gateway egress, so the cell gets a short-lived token for model calls, never a provider key.
+2. Install `autopilot-ai` in the cell and start its bridge.
+3. Open a session and send the task as one prompt.
+4. Follow the bridge's event cursor.
+
+Control requests go through `exec`, so microVM cells without a network interface work too.
+
+```js
+import { RunRegistry } from "@serverless-objects/autopilot";
+import { AutopilotCellRun } from "@serverless-objects/autopilot/cell";
+
+export { RunRegistry };
+export class Run extends AutopilotCellRun {}
+
+await env.RUNS.getByName(id).create({ id, workspace: "acme", cwd: "/workspace", task, maxCostUsd: 1 });
+await env.RUNS.getByName(id).start({ model: "moonshotai/kimi-k2.6", egress: { spendCapUsd: 1, ttlMs: 3_600_000 } });
+```
+
+- **Steps:** each step (provision, install, bridge, session, prompt, poll) runs on the object's alarm and is persisted with the cursor. If the node or object restarts, it resumes where it stopped while the cell keeps working. The bridge de-duplicates the prompt, so a retried prompt never runs twice.
+- **Retries:** a failed setup step is retried 6 times with backoff; polling is retried for about 15 minutes. The run then fails as `cell_<step>_failed`.
+- **What gets recorded:** cell events become run records: tool intent and result hashes, usage against the token and cost budgets, and the final state. They also become Camouflage events: assistant and reasoning streams, tool start and finish, usage, todos, warnings and errors.
+- **Budgets:** a tripped tool, token or cost budget aborts the cell's turn, and the run waits in `needs_input`. Resuming a cell run isn't supported yet.
+- **Turn lost:** if the cell reports no active turn and stops producing events, the run fails as `cell_turn_lost`.
+- **Options for `start()`:** `model` (OpenRouter id, default `moonshotai/kimi-k2.6`), `packageSpec` (`autopilot-ai@<version>`, default `autopilot-ai@1.25.1`), `image` (default `ghcr.io/sinameraji/hotcell-base:latest`, which has Node 20 and git), and `egress` (a Hotcell egress policy, default a $1 spend cap and 1-hour TTL).
+- **Daemon:** set `HOTCELL_ENDPOINT` and `HOTCELL_API_KEY` in the Worker's vars and secrets.
+- **Other methods:** `cancel()` aborts the turn; `executorState()` returns the step, cell id, cursor and last error.
+
+The cell is kept after the run so its workspace can be inspected; destroy it through Hotcell when you're done. The session log includes the task and tool output, up to 16,000 characters per tool, with no secret redaction yet. The control log (`stream=run`) keeps only hashes.
+
 ## RunObject methods
 
 | Method | Notes |
@@ -94,9 +127,11 @@ The object doesn't check `event_type` against Camouflage's schema. Run `camoufla
 
 ## Tested
 
-Unit tests run the SQL against `node:sqlite`. They cover transitions, budgets, hashing, reconcile, leases, retry and backoff, job polling, runtime limits, cursors, and announcing events only after commit.
+Unit tests run the SQL against `node:sqlite`. They cover transitions, budgets, hashing, reconcile, leases, retry and backoff, job polling, runtime limits, cursors, and announcing events only after commit. The cell executor is tested against a fake bridge: setup steps, event mapping, resuming after a restart without re-prompting, budget aborts, errors and backoff, failed setup, lost turns, and schema migration.
 
-[`examples/autopilot-runs`](../../examples/autopilot-runs) was run on celld 0.6.2 through `sobjects deploy`/`up` with a SeaweedFS bucket:
+A real Autopilot run (celld 0.6.2, Hotcell 0.1.19 container driver, `autopilot-ai` 1.25.1, `moonshotai/kimi-k2.6` through the Hotcell gateway) went from provision to completion in about 30 seconds. It wrote the requested file for $0.0084, and `camouflage-validate` accepted all 99 session events. In a second run, the node was stopped for about 45 seconds during a 40-second bash tool call. After `up`, the object resumed from its saved cursor (36 → 48) and the run completed ($0.0114). Its tool intent and result stayed paired, and all 48 session events were valid.
+
+Separately, [`examples/autopilot-runs`](../../examples/autopilot-runs) was run on celld 0.6.2 through `sobjects deploy`/`up` with a SeaweedFS bucket:
 - A wake fell due while the node was stopped, and fired after `up`.
 - A WebSocket opened at a cursor received the backlog, then live events.
 - Reconcile marked a run with an unmatched tool intent `interrupted_unknown`.
