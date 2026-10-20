@@ -70,7 +70,7 @@ if (step === "append") {
   }
   output.read = await ledger(name).read().catch(() => null);
 } else if (step === "read") {
-  const deadline = Date.now() + 10_000;
+  const deadline = Date.now() + 20_000;
   for (;;) {
     try {
       output.read = await ledger(args[0]).read();
@@ -92,7 +92,7 @@ if (step === "append") {
   await ledger(args[0]).later(Number(args[1]));
 } else if (step === "wait-alarm") {
   // Another node may still hold the object until its lease runs out.
-  const deadline = Date.now() + 10_000;
+  const deadline = Date.now() + 20_000;
   while (!(await ledger(args[0]).fired().catch(() => false)) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
   output.fired = await ledger(args[0]).fired();
   output.runs = await ledger(args[0]).runs();

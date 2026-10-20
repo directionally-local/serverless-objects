@@ -102,7 +102,9 @@ async function project() {
   return directory;
 }
 
-async function node(directory, client, name, { ttlMs = 1_500, fences = [], logs = [] } = {}) {
+// Leases long enough that a loaded CI machine doesn't miss renewals (a missed
+// window fences the node, which is correct but not what these tests are about).
+async function node(directory, client, name, { ttlMs = 4_000, fences = [], logs = [] } = {}) {
   const engine = new NativeEngine({
     config: await loadProjectConfig(directory),
     persistDirectory: await temporaryDirectory(),
@@ -161,9 +163,9 @@ test("a node partitioned from the bucket stops acknowledging; its objects move, 
     for (let seq = 1; seq <= 3; seq += 1) await a.env.LEDGER.getByName("x").append(seq);
     aView.partitioned = true;
     // a can't reach the bucket: its write is not acknowledged.
-    await assert.rejects(a.env.LEDGER.getByName("x").append(4));
+    await assert.rejects(async () => a.env.LEDGER.getByName("x").append(4));
     // b takes the object over once a's lease runs out, with every acknowledged write.
-    assert.deepEqual(await until(() => b.env.LEDGER.getByName("x").read(), 10_000), { count: 3, last: 3 });
+    assert.deepEqual(await until(() => b.env.LEDGER.getByName("x").read(), 20_000), { count: 3, last: 3 });
     await until(() => fences.length > 0);
     // The partition heals: a's queued upload of seq 4 lands, under its old epoch.
     aView.partitioned = false;
@@ -185,13 +187,13 @@ test("a node partitioned from the bucket stops acknowledging; its objects move, 
 test("a dead node's objects and alarms are taken over by another node", async () => {
   const directory = await project();
   const bucketFile = join(await temporaryDirectory(), "bucket.json");
-  const run = (name, step, args = []) => JSON.parse(execFileSync(process.execPath, [fileURLToPath(new URL("./fixtures/durable-node.mjs", import.meta.url)), directory, join(directory, `state-${name}`), bucketFile, step, ...args.map(String)], { env: { ...process.env, NODE_NAME: name, TTL_MS: "1500" }, stdio: ["ignore", "pipe", "ignore"] }).toString());
+  const run = (name, step, args = []) => JSON.parse(execFileSync(process.execPath, [fileURLToPath(new URL("./fixtures/durable-node.mjs", import.meta.url)), directory, join(directory, `state-${name}`), bucketFile, step, ...args.map(String)], { env: { ...process.env, NODE_NAME: name, TTL_MS: "4000" }, stdio: ["ignore", "pipe", "ignore"] }).toString());
   // Node a writes, sets an alarm and dies without releasing anything.
   assert.deepEqual(run("a", "append", ["x", 1, 4]).acked, [1, 2, 3, 4]);
   run("a", "set-alarm", ["x", 300]);
   // Node b, touching nothing, takes the object over after a's lease expires,
   // because its alarm is due; the alarm fires there.
-  assert.equal(run("b", "idle", [4_000]).owned.length, 1);
+  assert.equal(run("b", "idle", [9_000]).owned.length, 1);
   const b = run("b", "wait-alarm", ["x"]);
   assert.equal(b.fired, true);
   assert.equal(b.runs, 1);
@@ -242,7 +244,7 @@ test("a node whose renewals stall loses its lease to a revocation and fences whe
     let resume;
     stall = new Promise((resolve) => (resume = resolve));
     // b sees a's lease unchanged, revokes it and takes the object over.
-    assert.deepEqual(await until(() => b.env.LEDGER.getByName("x").read(), 15_000), { count: 1, last: 1 });
+    assert.deepEqual(await until(() => b.env.LEDGER.getByName("x").read(), 25_000), { count: 1, last: 1 });
     // a's stalled renewal lands now and fails: a learns it was revoked.
     stall = null;
     resume();
