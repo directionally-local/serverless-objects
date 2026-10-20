@@ -4,11 +4,11 @@ Guidance for agents working in this repository. Prefer the checked-in code and t
 
 ## 1. Project
 
-- The M0 celld spike passed its documented runtime gate, but unmodified Wrangler config support is not established and the full Agents SDK sample has not been run through this CLI.
-- ACME HTTP-01 issuance is implemented and verified only against a local Pebble server; public Let's Encrypt issuance/renewal is unverified. Point-in-time restore is not available on celld 0.6. Roadmap targets are not implemented guarantees. The native engine remains planned, not shipped.
-- Conformance v0 (`packages/conformance`) passes 10/10 cases on Wrangler 4.150.0 and celld 0.6.2; WebSocket hibernation and facets are not covered. Nothing is published to npm yet.
+- Published on npm as one package, `serverless-objects` (0.3.x, pre-alpha). It contains the `sobjects` CLI, the native engine, and the `serverless-objects/hotcell` and `serverless-objects/autopilot` modules. There is no `@serverless-objects` npm scope; ship new modules as subpath exports of this package.
+- Two engines: celld (external, pinned 0.6.2) and the native engine (`sobjects dev --engine native`: in-process, trusted code, node:sqlite per object). Conformance: Wrangler 4.150.0 16/16, celld 0.6.2 17/17, native 17/17 (hibernation runs on celld and native only); facets are not covered.
+- ACME HTTP-01 is verified only against a local Pebble server. Point-in-time restore is not available on celld 0.6. The native engine has no worker-thread isolation or bucket replication yet. Roadmap targets are not guarantees.
 
-Serverless Objects is a self-hostable operating layer for Cloudflare Workers and Durable Objects applications, aimed at coding-agent infrastructure. It is JavaScript (ES modules) on Node.js >=22, managed with npm workspaces; the current product is the `sobjects` CLI (workspace package `serverless-objects`). The CLI supervises the external celld Workers-compatible runtime (currently pinned to v0.6.2); it does not implement the Workers runtime. Cloudflare Workers/Wrangler APIs are the compatibility contract. The dashboard is plain HTML/CSS/JS; there is no application framework or TypeScript codebase. Status: pre-alpha / v0.1 CLI test candidate.
+Serverless Objects is a self-hostable operating layer for Cloudflare Workers and Durable Objects applications, aimed at coding-agent infrastructure. It is JavaScript (ES modules) on Node.js >=22, managed with npm workspaces; the product is the `sobjects` CLI (workspace package `serverless-objects`). The CLI supervises the external celld runtime (pinned v0.6.2) for production nodes and also ships a Node-native engine for trusted code. Cloudflare Workers/Wrangler APIs are the compatibility contract. The dashboard is plain HTML/CSS/JS; there is no application framework or TypeScript codebase. Status: pre-alpha.
 
 ## 2. Build / test / run
 
@@ -20,7 +20,10 @@ Run from the repository root unless a command says otherwise. Node.js 22+ is req
 | All automated tests | `npm test` | Runs each workspace's test script; CI uses this. |
 | CLI workspace tests | `npm run test --workspace=serverless-objects` | Node built-in test runner over `packages/cli/test/*.test.js`. |
 | Conformance (Wrangler) | `npm run test:wrangler --workspace=sobjects-conformance` | Runs the conformance app under pinned `wrangler dev`; CI runs this. |
-| Conformance (celld) | `npm run test:celld --workspace=sobjects-conformance` | Runs the same cases against celld, including an alarm across a restart; not run in CI. |
+| Conformance (celld) | `npm run test:celld --workspace=sobjects-conformance` | Runs the same cases against celld, including an alarm across a restart and hibernation; not run in CI. |
+| Conformance (native) | `npm run test:native --workspace=sobjects-conformance` | Runs them against the native engine from this checkout; CI runs this. |
+| Native engine | `npm exec --workspace=serverless-objects -- sobjects dev [project] --engine native` | Runs a project in Node with no celld; state under `<project>/.sobjects/native`. |
+| Portability check | `npm exec --workspace=serverless-objects -- sobjects build [project] --strict` | Fails if the app imports Node.js built-ins that don't work on Cloudflare Workers. |
 | CLI help | `npm exec --workspace=serverless-objects -- sobjects --help` | Uses the workspace CLI entry point. |
 | Local project development | `npm exec --workspace=serverless-objects -- sobjects dev [project]` | Runs a Wrangler-compatible project with celld; needs a project/config and may install the pinned engine. |
 | Deploy a project | `npm exec --workspace=serverless-objects -- sobjects deploy [project]` | Forwards deploy options to celld; needs project and object-store setup. |
@@ -31,7 +34,7 @@ Run from the repository root unless a command says otherwise. Node.js 22+ is req
 | Production build | None | No build/bundle script: package is plain ESM. `prepublishOnly` runs tests. |
 | Watch, lint, format, type-check | None configured | No watch/lint/format/type-check scripts or TypeScript config. Edit and run tests directly. |
 
-CI: `.github/workflows/ci.yml` runs `npm ci`, `npm test` and the Wrangler conformance run on Ubuntu/Node 22 for pushes to `main` and pull requests; no matrix or deployment job. `release-please.yml` runs on `main` to manage release PRs/releases. When it creates a CLI release, its `publish-npm` job tests the tag and publishes `serverless-objects` to npm through trusted publishing (OIDC, no token) with provenance. Publish an existing tag with `gh workflow run release-please.yml -f tag=serverless-objects-vX.Y.Z`. Versions already on npm are skipped. Keep publishing in this one file: npm's trusted-publisher setting names it.
+CI: `.github/workflows/ci.yml` runs `npm ci`, `npm test`, and the Wrangler and native conformance runs on Ubuntu/Node 22, plus a job that builds the Docker image and checks the CLI and celld run in it. Merging a Release Please PR publishes to npm; wait for CI on `main` first, because CI on release PRs doesn't run (they are opened with GITHUB_TOKEN). `release-please.yml` runs on `main` to manage release PRs/releases. When it creates a CLI release, its `publish-npm` job tests the tag and publishes `serverless-objects` to npm through trusted publishing (OIDC, no token) with provenance. Publish an existing tag with `gh workflow run release-please.yml -f tag=serverless-objects-vX.Y.Z`. Versions already on npm are skipped. Keep publishing in this one file: npm's trusted-publisher setting names it.
 
 ## 3. Layout
 
@@ -49,11 +52,11 @@ CI: `.github/workflows/ci.yml` runs `npm ci`, `npm test` and the Wrangler confor
 | `packages/cli/autopilot/` | `serverless-objects/autopilot` (and `/autopilot/cell`): `RunObject`/`RunRegistry`/`AutopilotCellRun`. Runtime-independent logic in `run-store.js`, `run-host.js`, `registry-store.js` and `cell-executor.js` over an `{exec, transaction}` SQL adapter; tests (`test/autopilot-*.test.js`) use `node:sqlite`. |
 | `deploy/compose/` | Dockerfile and Compose bundle for a single node; pins the npm CLI version via `SOBJECTS_VERSION`. |
 | `examples/` | Runnable Wrangler projects (not workspaces) that import the packages through the root `node_modules`. |
-| `packages/conformance/` | Private workspace: conformance Worker app (`app/`), runner (`src/run.js`) for Wrangler and celld, and runner tests. |
+| `packages/conformance/` | Private workspace: conformance apps (`app/` core, `agents-app/` Agents SDK), runner (`src/run.js`) for Wrangler, celld and native, and runner tests. |
 | `sobjects.example.toml` | Safe starter configuration; copy to the ignored, machine-specific `sobjects.toml`. |
 | `docs/conformance/` | Recorded Workers/celld compatibility findings (`m0-celld.md`) and conformance results (`results.md`); consult before changing runtime assumptions. |
 | `docs/install.md`, `docs/porting-from-cloudflare.md`, `docs/compatibility.md` | User guides and the supported/unsupported table; keep them in step with conformance results. |
-| `release-please-config.json`, `.release-please-manifest.json` | Release Please setup for `packages/cli`; `bump-minor-pre-major` keeps breaking changes below 1.0. |
+| `release-please-config.json`, `.release-please-manifest.json` | Release Please setup for `packages/cli` (the only component); `bump-minor-pre-major` keeps breaking changes below 1.0, and extra-files bump the root lockfile and the Compose image pins. |
 | `private/` | Private strategy/planning material, explicitly ignored; do not add or commit it. |
 | `.github/workflows/` | CI tests, Release Please, and npm publishing. |
 
@@ -72,7 +75,7 @@ CI: `.github/workflows/ci.yml` runs `npm ci`, `npm test` and the Wrangler confor
 ## 5. Dependencies
 
 - Use npm workspaces and commit the matching `package-lock.json` update. Add CLI runtime dependencies with `npm install --workspace=serverless-objects <package>`; use `--save-dev` for tools used only in development/tests. Keep root tooling out of runtime dependencies.
-- CLI runtime dependencies: `jsonc-parser`, `smol-toml`, and for ACME `jose`, `@root/csr`, `@root/keypairs`, `@root/encoding`; tests use Node built-ins. The conformance workspace pins `wrangler` exactly as a dev dependency. Avoid adding dependencies for functionality available in supported Node versions.
+- CLI runtime dependencies: `jsonc-parser`, `smol-toml`, `esbuild` (celld deploy, the native engine and `build`), `@hotcell/sdk` (Hotcell binding and cell executor), and for ACME `jose`, `@root/csr`, `@root/keypairs`, `@root/encoding`; tests use Node built-ins and `node:sqlite`. The conformance workspace pins `wrangler` and `agents` exactly as dev dependencies. Avoid adding dependencies for functionality available in supported Node versions.
 - Examples: runtime package `npm install --workspace=serverless-objects <package>`; test/build-only tool `npm install --workspace=serverless-objects --save-dev <package>`. Keep the root lockfile synchronized.
 - No bundler/native dependency pipeline exists. Keep celld as an external executable: `engine.js` pins its version and SHA-256 asset checksums, installs/verifies it at runtime, and supports `SOBJECTS_CELLD_BIN` for an existing binary. Do not bundle or bypass verification of it.
 - Package dependency ranges currently use npm semver ranges (for example `^`) with the lockfile providing reproducibility; the engine version is exact and checksum-pinned. Preserve that distinction and update checksums when intentionally changing celld.
@@ -107,6 +110,7 @@ CI: `.github/workflows/ci.yml` runs `npm ci`, `npm test` and the Wrangler confor
 
 - Entry flow: `packages/cli/bin/sobjects.mjs` calls the exported `run()` command dispatcher in `src/cli.js`. The dispatcher coordinates config, engine, service, ingress and project preparation modules; injected process/network dependencies make orchestration testable.
 - `config.js` parses/validates `sobjects.toml`; `wrangler.js` checks/transforms project Wrangler config and discovers/builds static assets. `engine.js` downloads and verifies celld; `service.js` records detached PIDs/log paths and handles lifecycle; `units.js` generates systemd/launchd units.
-- celld runs as a separate process and implements the Workers/Durable Objects runtime. Apps run through its dev/deploy flows; object state is persisted by the engine to a configured S3/GCS/Azure-compatible bucket. Serverless Objects supplies the operating layer, not a replacement runtime.
+- celld runs as a separate process and implements the Workers/Durable Objects runtime for production nodes; object state is persisted to a configured S3/GCS/Azure-compatible bucket.
+- The native engine (`src/native/`) runs the Worker and Durable Objects in the Node process for trusted code: events start in their own macrotask while node:sqlite storage resolves as microtasks (input-gate semantics), WebSockets use a built-in RFC 6455 server, and idle objects are evicted while hibernatable sockets stay with the host.
 - The optional TLS ingress routes hostnames and WebSocket traffic to celld. The loopback admin API calls the celld adapter for node/object/storage information; a deploy-time inspector hook enables object storage inspection. The static dashboard consumes that local admin surface. The admin/operator APIs are unauthenticated and must stay loopback-only.
 - `deploy/compose/` is the only Docker setup: an image that installs the published CLI from npm and bakes in the checksum-verified celld, plus a Compose file (optional SeaweedFS `local-s3` profile). Keep celld/admin on loopback inside the container; only the ingress is published. There is no Nx/Turborepo, generated-code, or general build-transform setup. Vite building is only performed for a user's Wrangler project when asset discovery requires it; it is not a build of this CLI.
