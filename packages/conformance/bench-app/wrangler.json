@@ -1,0 +1,9 @@
+{
+  "name": "sobjects-bench",
+  "main": "src/index.js",
+  "compatibility_date": "2026-02-24",
+  "durable_objects": {
+    "bindings": [{ "name": "BENCH", "class_name": "Bench" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Bench"] }]
+}

@@ -21,6 +21,7 @@ Run from the repository root unless a command says otherwise. Node.js 22+ is req
 | CLI workspace tests | `npm run test --workspace=serverless-objects` | Node built-in test runner over `packages/cli/test/*.test.js`. |
 | Conformance (Wrangler) | `npm run test:wrangler --workspace=sobjects-conformance` | Runs the conformance app under pinned `wrangler dev`; CI runs this. |
 | Conformance (celld) | `npm run test:celld --workspace=sobjects-conformance` | Runs the same cases against celld, including an alarm across a restart and hibernation; not run in CI. |
+| Benchmark | `npm run bench --workspace=sobjects-conformance -- --target native` (or `celld`, `wrangler`, `--url URL`) | Runs `bench-app/` and prints latency/throughput; not run in CI. Results and durability caveats in `docs/benchmarks.md`. |
 | Conformance (native) | `npm run test:native --workspace=sobjects-conformance` | Runs them against the native engine from this checkout; CI runs this. |
 | Native engine | `npm exec --workspace=serverless-objects -- sobjects dev [project] --engine native` | Runs a project in Node with no celld; state under `<project>/.sobjects/native`. |
 | Portability check | `npm exec --workspace=serverless-objects -- sobjects build [project] --strict` | Fails if the app imports Node.js built-ins that don't work on Cloudflare Workers. |
