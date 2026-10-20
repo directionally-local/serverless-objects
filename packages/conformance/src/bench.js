@@ -28,6 +28,7 @@ export function parseBenchArgs(args) {
     else if (arg === "--duration") options.durationMs = Number(value());
     else if (arg === "--celld-bin") options.celldBin = value();
     else if (arg === "--native-threads") options.nativeThreads = Number(value());
+    else if (arg === "--native-arg") (options.nativeArgs ??= []).push(value());
     else if (arg === "--json") options.json = true;
     else if (arg === "--help" || arg === "-h") options.help = true;
     else throw new Error(`Unknown option: ${arg}`);

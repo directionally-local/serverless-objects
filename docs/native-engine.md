@@ -29,7 +29,7 @@ The app's own code is bundled with esbuild, which handles TypeScript and `define
 | Portability check | Yes: `sobjects build [--strict]` lists each Node.js built-in the app imports, with the files that import it, and marks it as supported on Cloudflare, a non-functional stub there, or blocked by a missing `nodejs_compat` flag or compatibility date. It also flags packages that ship compiled native addons. A portable app runs on Cloudflare, celld and the native engine; a native-only app runs only here. |
 | Autopilot in-process | Yes: `serverless-objects/autopilot/native` runs Autopilot's SDK inside an object, with tool budgets enforced before tools run ([details](autopilot.md#running-autopilot-in-process-native-engine)) |
 | `ctx.waitUntil` | Yes: keeps the object in memory until the promise settles |
-| Bucket backups | Yes: `--backup-bucket s3://bucket/prefix` copies each object to an S3-compatible bucket and restores it onto an empty disk ([details](#bucket-backups)) |
+| Bucket backups | Yes: `--backup-bucket s3://bucket/prefix` copies each object to an S3-compatible bucket and restores it onto an empty disk ([details](#bucket-backups)). With `--backup-mode durable`, every write is in the bucket before it is acknowledged ([details](#durable-mode)) |
 | Worker threads | Yes: `--threads N` runs objects on N threads, each object on one thread, with stalled or crashed threads replaced ([details](#worker-threads)) |
 | Continuous replication, multi-node | Planned |
 
@@ -50,6 +50,29 @@ What this gives you, and what it doesn't:
 - One node per prefix. Uploads are conditional on the version this node last saw, so a node that finds a copy another node wrote stops backing that object up and logs it, instead of overwriting it.
 - If the bucket can't be reached at start, a node that has local state starts from it and logs a warning; a node with an empty disk waits for the bucket, because starting empty would fork its objects' data.
 - Restores happen only for objects missing locally. There is no point-in-time restore; enable bucket versioning if you need history.
+
+### Durable mode
+
+```sh
+sobjects dev ./my-worker --engine native --backup-bucket s3://my-bucket/node-a --backup-mode durable
+```
+
+In durable mode, nothing the engine acknowledges is lost if the disk is:
+
+- **Output gate:** after each event (an RPC call, fetch, alarm or socket message), the engine reads the transactions the object committed from its SQLite WAL, and holds the event's result until they are in the bucket. A later event's result waits too, since it may show those writes. Reads don't wait when nothing is pending.
+- **Batching:** transactions from every object on a thread go up together, one gzipped segment per flush. A flush starts as soon as the previous one ends, so under load many writes share one PUT. On a local MinIO, throughput stayed at 1,200–1,600 writes/s whether one object or 32 were writing ([benchmarks](benchmarks.md)).
+- **Power loss:** object databases run with `synchronous = FULL` in this mode, so a captured transaction is on disk. At start, a copy whose WAL no longer holds what the engine recorded is dropped and restored from the bucket.
+- **Snapshots:** each object gets an exact copy of its database file every 2,000 transactions or 16 MB of log. A lost disk is rebuilt from the latest snapshot plus the transactions logged after it. Compaction then deletes segments whose transactions are all covered by snapshots.
+- **If the bucket stays down** for 30 seconds, the waiting events fail instead of being acknowledged. Their writes are committed locally and ship once the bucket answers, so a failed write may still appear later, as on Cloudflare.
+
+Limits:
+
+- A write costs one bucket round trip, batched: a few ms to a local MinIO, typically 10–40 ms to S3 or R2 in the same region.
+- Fetches and WebSocket messages an object sends while its writes are pending aren't held back. Cloudflare holds those too.
+- Writes from timers or `waitUntil` outside an event ship within 200 ms, with no gate.
+- A node in durable mode doesn't start until it can reach its bucket.
+- It needs conditional writes (`If-None-Match`). S3, R2, MinIO (since 2025-09) and SeaweedFS support them. Backblaze B2, Garage and DigitalOcean Spaces don't.
+- Still one node per prefix. Running several nodes is the next step ([design](design/multi-node.md)).
 
 ## Worker threads
 

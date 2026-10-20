@@ -14,10 +14,14 @@ const CONTROL_STATEMENT_RE = /^\s*(BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE)\
 const INTERNAL_PREFIX = "_cf_";
 
 export class ObjectDatabase {
-  constructor(path) {
+  // durable: the engine ships this database's WAL and checkpoints it itself.
+  constructor(path, { durable = false } = {}) {
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
+    this.path = path;
     this.db = new DatabaseSync(path);
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;");
+    // Durable mode ships what this WAL holds, so every commit must reach the disk first.
+    if (durable) this.db.exec("PRAGMA wal_autocheckpoint = 0; PRAGMA synchronous = FULL;");
     this.db.exec(`CREATE TABLE IF NOT EXISTS _cf_KV (key TEXT PRIMARY KEY, value BLOB NOT NULL) WITHOUT ROWID;
       CREATE TABLE IF NOT EXISTS _cf_METADATA (key TEXT PRIMARY KEY, value) WITHOUT ROWID;`);
   }
@@ -39,6 +43,18 @@ export class ObjectDatabase {
   // A consistent copy of the database in one file.
   snapshotTo(path) {
     this.db.prepare("VACUUM INTO ?").run(path);
+  }
+
+  // Runs fn in one transaction.
+  transact(fn) {
+    this.db.exec("BEGIN");
+    try {
+      fn();
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   close() {

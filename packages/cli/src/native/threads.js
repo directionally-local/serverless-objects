@@ -14,6 +14,7 @@ import { Readable } from "node:stream";
 import { MessageChannel, Worker } from "node:worker_threads";
 import { join } from "node:path";
 import { toRequest } from "./engine.js";
+import { LogState } from "./durable.js";
 import { AlarmIndex } from "./objects.js";
 import { PortChannel, RemoteEnd, encodeRequest } from "./ports.js";
 import { connect } from "./websocket.js";
@@ -52,6 +53,7 @@ export class ThreadedEngine {
     mkdirSync(this.persistDirectory, { recursive: true });
     // Created here once: threads opening a new index together would race to set WAL mode.
     new AlarmIndex(join(this.persistDirectory, "alarms.sqlite")).close();
+    if (this.backup?.mode === "durable") new LogState(join(this.persistDirectory, "log-state.sqlite")).close();
     const ready = [];
     for (let index = 0; index < this.threads; index += 1) ready.push(this.#spawn(index));
     const results = await Promise.allSettled(ready);

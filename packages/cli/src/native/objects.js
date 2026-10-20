@@ -143,15 +143,17 @@ export class ObjectHost {
   #lifetimes = new Set();
   #idleTimer;
   #closed = false;
+  #alarmActive = false;
 
   constructor(engine, namespace, id, name) {
     this.#engine = engine;
     this.#namespace = namespace;
-    this.#database = new ObjectDatabase(join(engine.objectsDirectory, namespace.className, `${id.toString()}.sqlite`));
+    this.#database = new ObjectDatabase(join(engine.objectsDirectory, namespace.className, `${id.toString()}.sqlite`), { durable: Boolean(engine.durable) });
     // Remember the name, so ctx.id.name survives addressing by idFromString() and restarts.
     if (name !== undefined && this.#database.meta("name") === null) this.#database.setMeta("name", name);
     const storedName = this.#database.meta("name");
     this.id = storedName === null ? id : new id.constructor(id.toString(), storedName);
+    engine.durable?.attach(this);
   }
 
   call(method, args) {
@@ -170,11 +172,13 @@ export class ObjectHost {
     });
   }
 
-  // Called when the alarm is set, deleted or due.
+  // Called when the alarm is set, deleted or due. The index keeps an alarm
+  // that is running until it finishes, so a restart delivers it again.
   scheduleAlarm(at) {
     clearTimeout(this.#alarmTimer);
     this.#alarmTimer = undefined;
-    this.#engine.alarmIndex.set(this.#namespace.className, this.id.toString(), at);
+    const running = this.#database.meta("alarm_running");
+    this.#engine.alarmIndex.set(this.#namespace.className, this.id.toString(), at ?? (running === null ? null : Number(running)));
     if (at === null) return;
     const delay = Math.max(0, at - Date.now());
     this.#alarmTimer = setTimeout(() => {
@@ -186,31 +190,47 @@ export class ObjectHost {
   }
 
   async #runAlarm() {
-    const scheduled = this.#database.meta("alarm");
+    // One alarm run at a time; a new alarm set meanwhile is scheduled after.
+    if (this.#alarmActive) return;
+    // An alarm whose handler was cut off (the engine stopped) runs again first.
+    const interrupted = this.#database.meta("alarm_running");
+    const pending = this.#database.meta("alarm");
+    const scheduled = interrupted ?? pending;
     if (scheduled === null) return;
-    if (Number(scheduled) > Date.now()) return this.scheduleAlarm(Number(scheduled));
+    if (interrupted === null && Number(pending) > Date.now()) return this.scheduleAlarm(Number(pending));
     const retryCount = this.#alarmRetries;
-    // The alarm is cleared before the handler runs; the handler may set a new one.
-    this.#database.setMeta("alarm", null);
-    this.#engine.alarmIndex.set(this.#namespace.className, this.id.toString(), null);
+    this.#alarmActive = true;
+    // The alarm is cleared before the handler runs (the handler may set a new
+    // one) and marked running until the handler succeeds or gives up.
+    if (interrupted === null) {
+      this.#database.transact(() => {
+        this.#database.setMeta("alarm", null);
+        this.#database.setMeta("alarm_running", scheduled);
+      });
+    }
     try {
       await this.#deliver(async (instance) => {
         if (typeof instance.alarm !== "function") throw new TypeError("This Durable Object class has no alarm handler.");
-        await instance.alarm({ retryCount, isRetry: retryCount > 0 });
+        await instance.alarm({ retryCount, isRetry: retryCount > 0 || interrupted !== null });
       });
       this.#alarmRetries = 0;
+      this.#database.setMeta("alarm_running", null);
     } catch (error) {
       this.#engine.log(`alarm for ${this.#namespace.className} ${this.id} failed: ${error?.stack ?? error}`);
       if (retryCount + 1 > ALARM_RETRY_LIMIT) {
         this.#alarmRetries = 0;
-        return;
+        this.#database.setMeta("alarm_running", null);
+      } else {
+        this.#alarmRetries = retryCount + 1;
+        this.#database.transact(() => {
+          if (this.#database.meta("alarm") === null) this.#database.setMeta("alarm", Date.now() + ALARM_RETRY_BASE_MS * 2 ** retryCount);
+          this.#database.setMeta("alarm_running", null);
+        });
       }
-      this.#alarmRetries = retryCount + 1;
-      if (this.#database.meta("alarm") === null) {
-        const at = Date.now() + ALARM_RETRY_BASE_MS * 2 ** retryCount;
-        this.#database.setMeta("alarm", at);
-        this.scheduleAlarm(at);
-      }
+    } finally {
+      this.#alarmActive = false;
+      const next = this.#database.meta("alarm");
+      this.scheduleAlarm(next === null ? null : Number(next));
     }
   }
 
@@ -283,6 +303,7 @@ export class ObjectHost {
     if (this.#closed) return;
     this.#closed = true;
     this.#engine.backup?.capture(this);
+    this.#engine.durable?.detach(this);
     clearTimeout(this.#alarmTimer);
     clearTimeout(this.#idleTimer);
     this.#database.close();
@@ -365,12 +386,30 @@ export class ObjectHost {
     this.#schedule();
     this.#running += 1;
     try {
-      event.resolve(await currentHost.run(this, () => event.run(instance)));
+      const result = await currentHost.run(this, () => event.run(instance));
+      // The output gate: the result waits until the writes it may reflect are durable.
+      await this.#outputGate();
+      event.resolve(result);
     } catch (error) {
+      await this.#outputGate().catch(() => {});
       event.reject(error);
     } finally {
       this.#running -= 1;
       this.#maybeIdle();
+    }
+  }
+
+  // If the writes can't be made durable, the instance is dropped, as on
+  // Cloudflare, so its memory doesn't run ahead of what storage promises.
+  async #outputGate() {
+    const gate = this.#engine.durable?.commit(this);
+    if (!gate) return;
+    try {
+      await gate;
+    } catch (error) {
+      this.#instance = undefined;
+      this.#state = undefined;
+      throw error;
     }
   }
 
