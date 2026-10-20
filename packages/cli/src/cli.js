@@ -21,6 +21,8 @@ import { ensureInspectorToken, readInspectorToken, tokenHash } from "./inspector
 import { renderLaunchdPlist, renderSystemdUnit, unitTarget, writeUnit } from "./units.js";
 import { prepareWranglerProject } from "./wrangler.js";
 import { runNativeDev, wantsNativeEngine } from "./native/dev.js";
+import { analyzeProject, formatReport } from "./portability.js";
+import { readProjectConfig } from "./native/project.js";
 import {
   defaultStateDirectory,
   getServiceStatus as getDetachedStatus,
@@ -50,6 +52,7 @@ Commands:
   upgrade [--rollback|--status]  Install and select a pinned celld version
   dev [project] [options]        Run a project locally with celld (--engine native: in Node)
   deploy [project] [options]     Deploy a project with celld
+  build [project] [--strict]     Check the app is portable to Cloudflare Workers
 
 Options:
   -h, --help      Show this help
@@ -168,6 +171,9 @@ export async function run(
   if (command === "down") return runDown(args, io, { env, stopService });
   if (command === "status") return runStatus(args, io, { env, getServiceStatus });
   if (command === "logs") return runLogs(args, io, { env, readServiceLogs });
+  if (command === "build") {
+    return runBuild(args, io, { cwd });
+  }
   if (command === "dev" && wantsNativeEngine(args)) {
     return runNativeDev(args, io, { cwd, onSignal });
   }
@@ -973,4 +979,36 @@ function reportSpawnError(error, executable, io) {
     return;
   }
   io.error(`Could not start celld: ${error.message}`);
+}
+
+const buildHelpText = `Usage: sobjects build [project] [--strict]
+
+Bundle the project as the native engine does and check every Node.js
+built-in it imports against what Cloudflare Workers support with
+nodejs_compat. Reports the app as portable (it runs on Cloudflare, celld and
+the native engine) or native-only. --strict exits with status 1 for a
+native-only app.`;
+
+async function runBuild(args, io, { cwd }) {
+  if (args.includes("--help") || args.includes("-h")) {
+    io.log(buildHelpText);
+    return 0;
+  }
+  const strict = args.includes("--strict");
+  const positional = args.filter((argument) => !argument.startsWith("-"));
+  const unknown = args.filter((argument) => argument.startsWith("-") && argument !== "--strict");
+  if (unknown.length > 0 || positional.length > 1) {
+    io.error(`Unknown sobjects build arguments: ${[...unknown, ...positional.slice(1)].join(" ")}`);
+    return 2;
+  }
+  let result;
+  try {
+    const config = await readProjectConfig(resolve(cwd, positional[0] ?? "."));
+    result = await analyzeProject(config);
+  } catch (error) {
+    io.error(error.message);
+    return 1;
+  }
+  (result.portable ? io.log : io.error)(formatReport(result));
+  return strict && !result.portable ? 1 : 0;
 }

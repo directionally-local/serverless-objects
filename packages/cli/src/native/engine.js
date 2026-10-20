@@ -1,21 +1,19 @@
 // The native engine: runs a Wrangler project's Worker and Durable Objects in
 // this Node process, with each object's storage in its own SQLite file. It is
 // for trusted code; there is no isolate between the app and the engine.
-import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { parse, printParseErrorCode } from "jsonc-parser";
 import { AlarmIndex, DurableObjectNamespace } from "./objects.js";
+import { readProjectConfig } from "./project.js";
 import { WebSocketPair, WebSocketRequestResponsePair, WorkersWebSocket, connect } from "./websocket.js";
 
 const SHIMS = {
   "cloudflare:workers": fileURLToPath(new URL("./workers-shim.js", import.meta.url)),
   "cloudflare:email": fileURLToPath(new URL("./email-shim.js", import.meta.url)),
 };
-const CONFIG_FILES = ["wrangler.jsonc", "wrangler.json"];
 // Keys the engine understands; anything else that declares a binding is refused.
 const SUPPORTED_KEYS = new Set([
   "$schema", "name", "main", "compatibility_date", "compatibility_flags", "durable_objects", "migrations", "vars",
@@ -24,26 +22,12 @@ const SUPPORTED_KEYS = new Set([
 ]);
 
 export async function loadProjectConfig(projectDirectory) {
-  for (const file of CONFIG_FILES) {
-    const path = join(projectDirectory, file);
-    let source;
-    try {
-      source = await readFile(path, "utf8");
-    } catch (error) {
-      if (error.code === "ENOENT") continue;
-      throw error;
-    }
-    const errors = [];
-    const config = parse(source, errors, { allowTrailingComma: true });
-    if (errors.length > 0) throw new Error(`Invalid ${path}: ${printParseErrorCode(errors[0].error)} at offset ${errors[0].offset}.`);
-    const unsupported = Object.keys(config).filter((key) => !SUPPORTED_KEYS.has(key));
-    if (unsupported.length > 0) {
-      throw new Error(`The native engine does not support these Wrangler settings yet: ${unsupported.join(", ")}. Use the celld engine for this project.`);
-    }
-    if (typeof config.main !== "string") throw new Error(`${path} needs a "main" entry point.`);
-    return { ...config, path, directory: projectDirectory };
+  const config = await readProjectConfig(projectDirectory);
+  const unsupported = Object.keys(config).filter((key) => !SUPPORTED_KEYS.has(key) && key !== "path" && key !== "directory");
+  if (unsupported.length > 0) {
+    throw new Error(`The native engine does not support these Wrangler settings yet: ${unsupported.join(", ")}. Use the celld engine for this project.`);
   }
-  throw new Error(`No wrangler.jsonc or wrangler.json in ${projectDirectory}.`);
+  return config;
 }
 
 export class NativeEngine {
