@@ -22,7 +22,9 @@ const STUBS = new Set([
 const FS_DEFAULT_DATE = "2025-09-01";
 // nodejs_compat is on by default from this compatibility date.
 const NODEJS_COMPAT_DEFAULT_DATE = "2026-08-04";
-const BUILTINS = new Set(builtinModules.map((name) => name.replace(/^node:/, "")));
+// Older Node versions omit prefix-only modules such as node:sqlite from
+// builtinModules, so the documented lists count as built-ins too.
+const BUILTINS = new Set([...builtinModules.map((name) => name.replace(/^node:/, "")), ...SUPPORTED, ...STUBS]);
 const BUILTIN_RE = /^(node:)?([a-z_]+)(\/[a-z_/]+)?$/;
 
 export function classifyImport(specifier, config) {
