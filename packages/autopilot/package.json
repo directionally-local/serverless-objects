@@ -7,7 +7,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.js",
-    "./core": "./src/run-host.js"
+    "./core": "./src/run-host.js",
+    "./cell": "./src/cell.js"
   },
   "files": [
     "src",
@@ -18,5 +19,8 @@
   },
   "scripts": {
     "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@hotcell/sdk": "^0.1.19"
   }
 }

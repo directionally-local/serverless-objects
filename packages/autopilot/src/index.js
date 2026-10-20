@@ -27,8 +27,11 @@ export class RunObject extends DurableObject {
 
   constructor(ctx, env) {
     super(ctx, env);
+    // Subclasses may keep their own tables here; storage reads are synchronous.
+    this.db = durableObjectSql(ctx.storage);
     this.#host = new RunHost({
-      db: durableObjectSql(ctx.storage),
+      db: this.db,
+      extraAlarmAt: () => this.alarmAt(),
       setAlarm: (at) => (at === null ? ctx.storage.deleteAlarm() : ctx.storage.setAlarm(at)),
       onWake: (event) => this.onWake(event),
       checkJob: (jobId) => this.checkJob(jobId),
@@ -40,6 +43,23 @@ export class RunObject extends DurableObject {
   // Called when a wake timer fires and the run moves to running. Delivery is
   // at least once: make it idempotent by timerId. Throwing retries with backoff.
   async onWake(_event) {}
+
+  // A subclass that needs its own alarm returns its next due time here; onAlarm()
+  // runs on every alarm after the timers. Call syncAlarm() after changing it.
+  alarmAt() {
+    return null;
+  }
+
+  async onAlarm() {}
+
+  syncAlarm() {
+    return this.#host.syncAlarm();
+  }
+
+  // The run host, for subclasses that drive the run themselves.
+  get runHost() {
+    return this.#host;
+  }
 
   // Returns a job's status ("starting", "running", "cancelling", "completed",
   // "failed", ...) for "job" timers.
@@ -69,7 +89,12 @@ export class RunObject extends DurableObject {
   reconcileInterrupted() { return this.#host.reconcileInterrupted(); }
 
   async alarm() {
-    await this.#host.processDueTimers();
+    await this.#host.processDueTimers(Date.now(), { sync: false });
+    try {
+      await this.onAlarm();
+    } finally {
+      await this.#host.syncAlarm();
+    }
   }
 
   // GET with `Upgrade: websocket` streams events from `after`, then live:

@@ -6,7 +6,9 @@
 //   GET  /runs/:id/stream?stream=session|run&after=N            NDJSON, or a WebSocket
 //   GET  /registry?status=             list runs in the workspace
 //   POST /registry/reconcile                                    after an executor restart
-import { RunObject, RunRegistry } from "@serverless-objects/autopilot";
+//   POST /runs/:id/start               [{model?, egress?}]      run the task in a Hotcell cell
+import { RunRegistry } from "@serverless-objects/autopilot";
+import { AutopilotCellRun } from "@serverless-objects/autopilot/cell";
 
 export { RunRegistry };
 
@@ -14,10 +16,12 @@ const WORKSPACE = "demo";
 const METHODS = new Set([
   "get", "transition", "resume", "recordToolIntent", "recordToolResult", "recordCheckpoint", "recordUsage",
   "appendSessionEvents", "listEvents", "listSessionEvents", "scheduleTimer", "cancelTimer", "listTimers", "reconcileInterrupted",
+  "start", "cancel", "executorState",
 ]);
 
-// The demo's executor: a wake appends a session event so it shows up in Camouflage.
-export class Run extends RunObject {
+// start() runs the task with Autopilot in a Hotcell cell. A wake timer only
+// appends a session event, so it shows up in Camouflage.
+export class Run extends AutopilotCellRun {
   async onWake(event) {
     this.appendSessionEvents([{
       event_type: "BackgroundTaskUpdate",
@@ -38,8 +42,8 @@ export default {
       }
       if (parts[0] !== "runs") return new Response("not found", { status: 404 });
       if (parts.length === 1 && request.method === "POST") {
-        const { id, task, cwd = "/workspace" } = await request.json();
-        return Response.json(await env.RUNS.getByName(id).create({ id, task, cwd, workspace: WORKSPACE }));
+        const { id, task, cwd = "/workspace", ...budgets } = await request.json();
+        return Response.json(await env.RUNS.getByName(id).create({ ...budgets, id, task, cwd, workspace: WORKSPACE }));
       }
       const run = env.RUNS.getByName(parts[1]);
       if (parts[2] === "stream") return run.fetch(request);
