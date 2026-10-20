@@ -33,6 +33,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # A release commit bumps the image's pin before release-please.yml has
+      # published that version, so wait for it rather than fail.
+      - name: Wait for the pinned version on npm
+        run: |
+          version=$(sed -n 's/^ARG SOBJECTS_VERSION=//p' deploy/compose/Dockerfile)
+          for attempt in $(seq 1 90); do
+            npm view "serverless-objects@$version" version --prefer-online >/dev/null 2>&1 && exit 0
+            [ "$attempt" = 1 ] && echo "serverless-objects@$version is not on npm yet; waiting for the release to publish it."
+            sleep 10
+          done
+          echo "::error::serverless-objects@$version was not published within 15 minutes; check the publish-npm job in release-please.yml."
+          exit 1
       - run: docker build -t serverless-objects:ci deploy/compose
       - name: The CLI and the pinned celld run in the image
         run: |
