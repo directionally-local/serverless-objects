@@ -99,6 +99,14 @@ async function webSocketLatency(base, messages) {
   return summarize(samples);
 }
 
+// The Worker's own average time per call to an object, without the network.
+async function inWorker(base, query) {
+  const response = await fetch(`${base}/loop?${query}`);
+  if (!response.ok) throw new Error(`/loop?${query}: HTTP ${response.status}`);
+  const { perCallMs } = await response.json();
+  return { mean: perCallMs };
+}
+
 export async function bench(base, options) {
   const run = `${Date.now().toString(36)}`;
   const rows = [];
@@ -108,6 +116,9 @@ export async function bench(base, options) {
   await add("DO write (RPC + KV put)", () => latency(base, `/write?id=${run}-a`, options.requests));
   await add("DO 100-row SQL transaction", () => latency(base, `/sql?id=${run}-sql&n=100`, Math.max(1, Math.floor(options.requests / 5))));
   await add("WebSocket echo (hibernatable)", () => webSocketLatency(base, options.requests));
+  await add("in Worker: DO read, mean per call", () => inWorker(base, `op=read&n=500&id=${run}-loop`));
+  await add("in Worker: DO write, mean per call", () => inWorker(base, `op=write&n=500&id=${run}-loop`));
+  await add("in Worker: 100-row SQL transaction, mean", () => inWorker(base, `op=sql&n=100&id=${run}-loop-sql`));
   await add(`writes, 1 object, ${options.concurrency} in flight`, () => throughput(base, () => `/write?id=${run}-hot`, options.concurrency, options.durationMs));
   await add(`writes, ${options.concurrency} objects, ${options.concurrency} in flight`, () => throughput(base, (worker) => `/write?id=${run}-w${worker}`, options.concurrency, options.durationMs));
   return rows;
@@ -118,9 +129,9 @@ export function formatTable(target, rows) {
   const lines = [
     `Benchmark — ${target}`,
     "",
-    "| Operation | p50 ms | p95 ms | p99 ms | req/s |",
-    "|---|---:|---:|---:|---:|",
-    ...rows.map((row) => `| ${row.name} | ${ms(row.p50)} | ${ms(row.p95)} | ${ms(row.p99)} | ${row.rps ?? ""}${row.failed ? ` (${row.failed} failed)` : ""} |`),
+    "| Operation | p50 ms | p95 ms | p99 ms | mean ms | req/s |",
+    "|---|---:|---:|---:|---:|---:|",
+    ...rows.map((row) => `| ${row.name} | ${ms(row.p50)} | ${ms(row.p95)} | ${ms(row.p99)} | ${ms(row.mean)} | ${row.rps ?? ""}${row.failed ? ` (${row.failed} failed)` : ""} |`),
   ];
   return lines.join("\n");
 }
