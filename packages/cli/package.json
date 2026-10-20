@@ -1,6 +1,6 @@
 {
   "name": "serverless-objects",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Run a self-hosted Workers-compatible platform for agents",
   "license": "Apache-2.0",
   "type": "module",
