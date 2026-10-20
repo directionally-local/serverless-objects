@@ -65,3 +65,17 @@ test("a portable app passes --strict", async () => {
   assert.match(output.out.join("\n"), /^Portable/m);
   assert.equal(await run(["build", directory, "--nope"], capture().io, { cwd: "/" }), 2);
 });
+
+test("packages that ship compiled addons make an app native-only", async () => {
+  const directory = await project('import { load } from "fast-native";\nexport default { fetch: () => new Response(String(load())) };\n');
+  const pkg = join(directory, "node_modules", "fast-native");
+  await mkdir(join(pkg, "build", "Release"), { recursive: true });
+  await writeFile(join(pkg, "package.json"), JSON.stringify({ name: "fast-native", main: "index.js" }));
+  await writeFile(join(pkg, "index.js"), "exports.load = () => 1;\n");
+  await writeFile(join(pkg, "build", "Release", "fast.node"), "");
+  const result = await analyzeProject(await readProjectConfig(directory));
+  const addon = result.findings.find((finding) => finding.module === "node_modules/fast-native");
+  assert.equal(result.portable, false);
+  assert.match(addon.reason, /compiled Node.js addon/);
+  assert.deepEqual(addon.importers, ["node_modules/fast-native/index.js"]);
+});
