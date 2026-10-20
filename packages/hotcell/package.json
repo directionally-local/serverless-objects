@@ -1,6 +1,6 @@
 {
   "name": "@serverless-objects/hotcell",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Cloudflare Sandbox SDK-shaped Durable Object binding backed by Hotcell",
   "license": "Apache-2.0",
   "repository": {
