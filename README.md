@@ -8,9 +8,9 @@ Run Cloudflare Workers and Durable Objects apps on your own hardware, built for 
 
 Serverless Objects is the operating layer around a Workers-compatible engine. You deploy an ordinary Wrangler project, and `sobjects` runs it on a host you control with TLS ingress, a local dashboard, engine upgrades and service units. Durable Object state lives in your own S3-compatible bucket. Today the engine is [celld](https://github.com/denoland/celld), Deno's Apache-2.0 runtime for Wrangler bundles.
 
-> **Status: pre-alpha (0.1.x).** Good for evaluation and testing, not for production. It runs on a single host on macOS arm64 or Linux arm64/x64. Read [what is and isn't supported](docs/compatibility.md) before you port an app.
+> **Status: pre-alpha.** Good for evaluation and testing, not for production. It runs on a single host on macOS arm64 or Linux arm64/x64. Read [what is and isn't supported](docs/compatibility.md) before you port an app.
 
-Part of the [Directionally Local](https://directionallylocal.com) family of self-hostable infrastructure for coding agents, alongside [Autopilot](https://github.com/sinameraji/autopilot), [Hotcell](https://github.com/sinameraji/hotcell) and [Camouflage](https://github.com/sinameraji/camouflage).
+Part of [Directionally Local](https://directionallylocal.com), an open-source stack for running coding agents on your own hardware, alongside [Autopilot](https://directionallylocal.com/autopilot/), [Hotcell](https://directionallylocal.com/hotcell/) and [Camouflage](https://github.com/sinameraji/camouflage). Product page: [directionallylocal.com/serverless-objects](https://directionallylocal.com/serverless-objects/).
 
 ## Quick start
 
