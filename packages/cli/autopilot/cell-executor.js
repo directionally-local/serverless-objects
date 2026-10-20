@@ -5,6 +5,7 @@
 // alarm, so a node restart resumes at the saved step and cursor while the
 // cell keeps working.
 import { redactDeep } from "./redact.js";
+import { TurnRecorder, bounded } from "./turn-recorder.js";
 
 export const DEFAULT_MODEL = "moonshotai/kimi-k2.6";
 export const DEFAULT_PACKAGE = "autopilot-ai@1.25.1";
@@ -35,8 +36,6 @@ const MAX_POLL_ATTEMPTS = 30;
 const MAX_RETRY_MS = 30_000;
 const QUIET_POLLS_BEFORE_STATUS = 20;
 const MAX_TASK_BYTES = 24 * 1024;
-const MAX_TOOL_OUTPUT_CHARS = 16_000;
-const MAX_TOOL_INPUT_CHARS = 2_000;
 const PACKAGE_RE = /^autopilot-ai@[0-9A-Za-z.+-]+$/;
 const MODEL_RE = /^[A-Za-z0-9._:/-]{1,200}$/;
 
@@ -276,7 +275,7 @@ export class CellExecutor {
         // Events from earlier turns in a reused cell are not this run's.
         if (entry.runId !== null && entry.runId !== state.turnId) continue;
         this.#assertLease(state);
-        const finished = await this.#apply(entry.event, state);
+        const finished = await this.#recorder(state).apply(entry.event);
         this.#update({ cursor }, state.lease);
         if (finished) return;
       }
@@ -300,91 +299,6 @@ export class CellExecutor {
       return;
     }
     this.#update({ quiet_polls: quiet, attempts: 0, next_at: this.#now() + POLL_MS }, state.lease);
-  }
-
-  // Returns true once the turn has ended.
-  async #apply(event, state) {
-    // Keep the log in order: text buffered before a tool call or usage update goes first.
-    if (event?.type !== "message.delta" && event?.type !== "message.reasoning" && event?.type !== "message.end") this.#flushText(undefined, state);
-    switch (event?.type) {
-      case "message.start":
-        if (event.role === "assistant") {
-          this.#log("AssistantStreamStarted", { stream_id: event.messageId });
-          this.#update({ open_streams_json: JSON.stringify([...this.#openStreams(), event.messageId]) }, state.lease);
-        }
-        return false;
-      case "message.delta":
-        if (typeof event.text === "string") this.#bufferText(state, "AssistantTokenDelta", event.messageId, event.text);
-        return false;
-      case "message.reasoning":
-        if (typeof event.text === "string") this.#bufferText(state, "AssistantReasoningDelta", event.messageId, event.text);
-        return false;
-      case "message.end": {
-        // Only assistant streams were started; user messages end without a stream.
-        this.#flushText(event.messageId, state);
-        const open = this.#openStreams();
-        if (!open.includes(event.messageId)) return false;
-        this.#log("AssistantMessageCompleted", { stream_id: event.messageId });
-        this.#update({ open_streams_json: JSON.stringify(open.filter((id) => id !== event.messageId)) }, state.lease);
-        return false;
-      }
-      case "tool.start":
-        this.#log("ToolExecutionStarted", { tool_id: event.toolCallId, tool: event.toolName, command: summarize(event.args) });
-        if (this.#run.get()?.status === "running") {
-          try {
-            await this.#run.recordToolIntent(event.toolCallId, event.toolName, event.args);
-          } catch (error) {
-            if (error?.reason !== "max_tool_iterations_exceeded") throw error;
-            await this.#abort(state);
-          }
-        }
-        return false;
-      case "tool.result": {
-        const output = typeof event.result === "string" ? event.result : "";
-        this.#log("ToolExecutionFinished", { tool_id: event.toolCallId, exit_code: event.isError ? 1 : 0, output: bounded(output, MAX_TOOL_OUTPUT_CHARS) });
-        if (this.#run.get()?.status === "running") {
-          await this.#run.recordToolResult(event.toolCallId, event.toolName, { ok: !event.isError, content: output });
-        }
-        return false;
-      }
-      case "usage": {
-        if (this.#run.get()?.status !== "running") return false;
-        const cost = finiteOrUndefined(event.cost);
-        const { run, budgetExceededReason } = await this.#run.recordUsage({
-          promptTokens: wholeTokens(event.inputTokens),
-          completionTokens: wholeTokens(event.outputTokens),
-          ...(cost === undefined ? {} : { costUsd: cost }),
-        });
-        this.#log("StatusUpdate", { segments: { tokens: String(run.totalPromptTokens + run.totalCompletionTokens), cost: `$${run.totalCostUsd.toFixed(4)}` } });
-        if (budgetExceededReason) await this.#abort(state);
-        return false;
-      }
-      case "tasks.update": {
-        const todos = Array.isArray(event.tasks)
-          ? event.tasks.filter((task) => typeof task?.title === "string").map((task, index) => ({
-            id: String(task.id ?? index),
-            title: task.title,
-            status: task.status === "completed" ? "completed" : task.status === "in_progress" ? "in_progress" : "pending",
-          }))
-          : [];
-        this.#log("TodoListUpdate", { todos });
-        return false;
-      }
-      case "warning":
-        if (typeof event.message === "string") this.#log("ShowToast", { text: bounded(event.message, 500), kind: "warning" });
-        return false;
-      case "session.end": {
-        this.#flushText(undefined, state);
-        this.#update({ step: "done", next_at: null }, state.lease);
-        if (event.reason === "error") this.#log("RuntimeError", { message: bounded(String(event.error ?? "error"), 500) });
-        const status = event.reason === "complete" ? "completed" : event.reason === "aborted" ? "cancelled" : "failed";
-        const reason = event.reason === "error" ? bounded(String(event.error ?? "error"), 500) : `cell_session_${event.reason}`;
-        await this.#finish(status, reason);
-        return true;
-      }
-      default:
-        return false;
-    }
   }
 
   // A budget that paused the run for input stays paused; otherwise the run ends.
@@ -438,42 +352,24 @@ export class CellExecutor {
     if (this.#db.exec("SELECT run_id FROM cell_executor WHERE lease_token = ?", state.lease).length === 0) throw new StaleStepError();
   }
 
-  // Streamed text is logged a line at a time (a PEM block at once) so that a
-  // secret split across deltas is still whole when it is redacted.
-  #bufferText(state, eventType, streamId, text) {
-    const pending = this.#pendingText();
-    const key = `${eventType}:${streamId}`;
-    const buffered = (pending[key] ?? "") + text;
-    let cut = buffered.lastIndexOf("\n") + 1;
-    const begin = buffered.lastIndexOf("-----BEGIN");
-    if (begin !== -1) {
-      const end = /-----END [A-Z ]*-----/.exec(buffered.slice(begin));
-      if (!end) cut = Math.min(cut, begin);
-      else if (cut > begin && cut < begin + end.index + end[0].length) cut = begin + end.index + end[0].length;
-    }
-    if (cut > 0) this.#log(eventType, { stream_id: streamId, token: buffered.slice(0, cut) });
-    pending[key] = buffered.slice(Math.max(cut, 0));
-    if (!pending[key]) delete pending[key];
-    this.#update({ pending_text_json: JSON.stringify(pending) }, state.lease);
-  }
-
-  #flushText(streamId, state) {
-    const pending = this.#pendingText();
-    for (const [key, text] of Object.entries(pending)) {
-      const [eventType, id] = [key.slice(0, key.indexOf(":")), key.slice(key.indexOf(":") + 1)];
-      if (streamId !== undefined && id !== streamId) continue;
-      if (text) this.#log(eventType, { stream_id: id, token: text });
-      delete pending[key];
-    }
-    this.#update({ pending_text_json: JSON.stringify(pending) }, state.lease);
-  }
-
-  #pendingText() {
-    return JSON.parse(this.#db.exec("SELECT pending_text_json FROM cell_executor LIMIT 1")[0]?.pending_text_json ?? "{}");
-  }
-
-  #openStreams() {
-    return JSON.parse(this.#db.exec("SELECT open_streams_json FROM cell_executor LIMIT 1")[0]?.open_streams_json ?? "[]");
+  #recorder(state) {
+    return new TurnRecorder({
+      run: this.#run,
+      state: {
+        get: () => {
+          const [row] = this.#db.exec("SELECT pending_text_json, open_streams_json FROM cell_executor LIMIT 1");
+          return { pending: JSON.parse(row.pending_text_json), openStreams: JSON.parse(row.open_streams_json) };
+        },
+        set: ({ pending, openStreams }) => this.#update({
+          ...(pending === undefined ? {} : { pending_text_json: JSON.stringify(pending) }),
+          ...(openStreams === undefined ? {} : { open_streams_json: JSON.stringify(openStreams) }),
+        }, state.lease),
+      },
+      finish: (status, reason) => this.#finish(status, reason),
+      abort: () => this.#abort(state),
+      onEnd: () => this.#update({ step: "done", next_at: null }, state.lease),
+      reasonPrefix: "cell",
+    });
   }
 
   // Session events are readable by anyone with the stream; redact likely secrets.
@@ -534,32 +430,6 @@ function rowToState(row) {
   };
 }
 
-function summarize(args) {
-  if (typeof args === "string") return bounded(args, MAX_TOOL_INPUT_CHARS);
-  if (args && typeof args === "object") {
-    for (const key of ["command", "path", "file_path", "pattern", "url", "query"]) {
-      if (typeof args[key] === "string") return bounded(args[key], MAX_TOOL_INPUT_CHARS);
-    }
-  }
-  try {
-    return bounded(JSON.stringify(args) ?? "", MAX_TOOL_INPUT_CHARS);
-  } catch {
-    return "";
-  }
-}
-
-function bounded(text, limit) {
-  return text.length <= limit ? text : `${text.slice(0, limit)}…`;
-}
-
 function tail(text = "") {
   return bounded(String(text).trim().split("\n").slice(-5).join("\n"), 800);
-}
-
-function wholeTokens(value) {
-  return Number.isFinite(value) && value >= 0 ? Math.trunc(value) : 0;
-}
-
-function finiteOrUndefined(value) {
-  return Number.isFinite(value) && value >= 0 ? value : undefined;
 }

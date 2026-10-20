@@ -89,6 +89,33 @@ The cell is kept after the run so its workspace can be inspected; destroy it thr
 
 Streamed assistant text is logged a line at a time (and a PEM block whole), so a secret split across deltas is redacted whole. The control log (`stream=run`) keeps only hashes, which are taken over the original content. Redaction is pattern-based: treat the session log as sensitive anyway.
 
+## Running Autopilot in-process (native engine)
+
+`AutopilotNativeRun` (`serverless-objects/autopilot/native`) runs the task with Autopilot's SDK inside the object, on the [native engine](native-engine.md). Tools run on the host in the run's `cwd`, so use it only for trusted workspaces.
+
+```js
+import { RunRegistry } from "serverless-objects/autopilot";
+import { AutopilotNativeRun } from "serverless-objects/autopilot/native";
+
+export { RunRegistry };
+export class Run extends AutopilotNativeRun {}
+```
+
+```sh
+npm install serverless-objects autopilot-ai
+sobjects dev . --engine native
+```
+
+- **Credentials:** the session reads your Autopilot config (`~/.config/kimiflare/config.json`). An `OPENROUTER_API_KEY` binding overrides its key.
+- **Gating before tools run:** the session runs in edit mode, so before each mutating tool Autopilot asks for permission. The object answers after checking `allowedTools` and the tool budget, so the call that would exceed a budget never runs. In a cell, the run only sees tool calls after they've started.
+- **Recording:** the same recorder as the cell executor turns session events into run records and a redacted Camouflage log.
+- **Pausing and resuming:** a tripped budget pauses the run in `needs_input`. `resume(budgets, { message })` continues the same Autopilot session.
+- **Restarts:** a turn cut off by a restart (the session lived in the old process) is reconciled when the object next loads, and `start()` continues the same session.
+- **Lifetime:** the object stays in memory while a turn runs (`ctx.waitUntil`).
+- **Portability:** `sobjects build --strict` reports such an app as native-only. Autopilot uses Node APIs that Cloudflare Workers lack.
+
+Tested end to end with a stand-in SDK, covering a completed turn, a budget denial before the tool, resume, and a restart between two engine processes. A real run with `autopilot-ai` 1.25.1 and `kimi-k2.6` wrote the requested file for $0.0028, and all 14 session events validate.
+
 ## RunObject methods
 
 | Method | Notes |

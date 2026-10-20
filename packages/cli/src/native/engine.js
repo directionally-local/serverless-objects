@@ -63,7 +63,7 @@ export class NativeEngine {
       this.env[binding.name] = namespace;
       this.exports[binding.class_name] = namespace;
     }
-    globalThis.__sobjectsNative = { env: this.env, exports: this.exports };
+    globalThis.__sobjectsNative = { env: this.env, exports: this.exports, projectImport: globalThis.__sobjectsProjectImport };
     this.handler = module.default;
     if (!this.handler) throw new Error("The Worker has no default export.");
     // Alarms that were pending when the engine last stopped.
@@ -156,7 +156,10 @@ export class NativeEngine {
       define: this.config.define ?? {},
       outfile,
       logLevel: "silent",
-      banner: { js: "import { createRequire as __sobjectsCreateRequire } from 'node:module'; const require = __sobjectsCreateRequire(import.meta.url);" },
+      // projectImport() resolves packages from the project, for engine-side
+      // modules (such as serverless-objects/autopilot/native) that may be linked
+      // or hoisted elsewhere.
+      banner: { js: "import { createRequire as __sobjectsCreateRequire } from 'node:module'; const require = __sobjectsCreateRequire(import.meta.url); globalThis.__sobjectsProjectImport = (specifier) => import(specifier);" },
     });
     return import(`${pathToFileURL(outfile).href}?v=${Date.now()}`);
   }

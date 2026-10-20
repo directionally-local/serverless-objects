@@ -9,6 +9,7 @@
     "./hotcell/core": "./hotcell/sandbox.js",
     "./autopilot": "./autopilot/index.js",
     "./autopilot/cell": "./autopilot/cell.js",
+    "./autopilot/native": "./autopilot/native.js",
     "./autopilot/core": "./autopilot/run-host.js",
     "./package.json": "./package.json"
   },
