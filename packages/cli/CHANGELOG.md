@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.4.0...serverless-objects-v0.5.0) (2026-10-20)
+
+
+### Features
+
+* **cli:** back up native-engine objects to an S3-compatible bucket ([292d833](https://github.com/sinameraji/serverless-objects/commit/292d8335dd6e49001b4b1509fb31acaf2eb72dc7))
+
 ## [0.4.0](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.3.0...serverless-objects-v0.4.0) (2026-10-20)
 
 
