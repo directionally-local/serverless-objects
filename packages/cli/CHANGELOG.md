@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.1.2...serverless-objects-v0.2.0) (2026-10-20)
+
+
+### Features
+
+* **cli:** ship the Hotcell binding and Autopilot run objects in serverless-objects ([218cc5e](https://github.com/sinameraji/serverless-objects/commit/218cc5e611cbd1d769f2ce95c5ab881d4bc8ba5d))
+
 ## [0.1.2](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.1.1...serverless-objects-v0.1.2) (2026-10-20)
 
 
