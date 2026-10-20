@@ -20,7 +20,9 @@ Wrangler is pinned to 4.150.0. The celld runner uses
 `$HOME/.local/share/serverless-objects/engines/celld-0.6.2/celld` by default;
 set `CELLD_BIN` or pass `--celld-bin PATH` to select another binary. Both
 runners accept `--port PORT`. The celld run restarts the process while its alarm
-is pending, then verifies that the alarm fires after restart. Its default alarm
+is pending, then verifies that the alarm fires after restart. It also sets
+`CELLD_IDLE_EVICT_S=2` so it can check WebSocket hibernation: the object is
+evicted with a socket open, and the next message must reach a new instance. Its default alarm
 delay is 30 seconds to allow for celld's graceful shutdown; `--alarm-delay MS`
 can override it.
 

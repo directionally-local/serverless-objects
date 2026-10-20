@@ -94,9 +94,9 @@ State survives `down` and `up` because it lives in the bucket. The [install guid
 
 ## Compatibility
 
-Cloudflare's APIs are the contract. The current [conformance results](docs/conformance/results.md) are 16/16 on both Wrangler 4.150.0 and celld 0.6.2. They cover Durable Object IDs, KV and SQL storage, transactions, input gates, RPC, alarms (including across a restart), WebSockets, and an Agents SDK suite: state, SQL, schedules, addressing and `@callable()` RPC.
+Cloudflare's APIs are the contract. The current [conformance results](docs/conformance/results.md) pass every check on Wrangler 4.150.0 (16/16) and celld 0.6.2 (17/17). They cover Durable Object IDs, KV and SQL storage, transactions, input gates, RPC, alarms (including across a restart), WebSockets with hibernation on celld, and an Agents SDK suite: state, SQL, schedules, addressing and `@callable()` RPC.
 
-Not covered yet: WebSocket hibernation, facets, PartyServer, Agents SDK chat, MCP and Workflows, and Cloudflare-hosted production behavior. Point-in-time restore isn't available on celld 0.6. The [compatibility table](docs/compatibility.md) has the details, including Containers and `@cloudflare/sandbox` 1.0 on celld. The [porting guide](docs/porting-from-cloudflare.md) covers moving an existing project.
+Not covered yet: sockets across a cell move between nodes, facets, PartyServer, Agents SDK chat, MCP and Workflows, and Cloudflare-hosted production behavior. Point-in-time restore isn't available on celld 0.6. The [compatibility table](docs/compatibility.md) has the details, including Containers and `@cloudflare/sandbox` 1.0 on celld. The [porting guide](docs/porting-from-cloudflare.md) covers moving an existing project.
 
 ## Repository layout
 

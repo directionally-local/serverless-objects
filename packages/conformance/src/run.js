@@ -95,7 +95,9 @@ function startTarget(target, projectDir, options) {
   }
 
   console.log(`Starting ${target}: ${command} ${args.join(" ")}`);
-  const child = spawn(command, args, { cwd: PACKAGE_DIR, stdio: "inherit", env: process.env });
+  // celld evicts idle objects only when asked; a short age lets the hibernation check run.
+  const env = target === "celld" ? { ...process.env, CELLD_IDLE_EVICT_S: process.env.CELLD_IDLE_EVICT_S ?? "2" } : process.env;
+  const child = spawn(command, args, { cwd: PACKAGE_DIR, stdio: "inherit", env });
   child.on("error", (error) => {
     child.startError = error;
   });
@@ -308,6 +310,7 @@ async function runSuite(suite, options, scratchDir) {
     if (suite === "core") {
       results.push({ name: "alarm-durability", ...await runAlarmCheck(baseUrl, options.alarmDelayMs, options.restartAfterAlarm, restart) });
       results.push({ name: "websockets", ...await runWebSocketCheck(baseUrl) });
+      if (options.target === "celld") results.push({ name: "websocket-hibernation", ...await runHibernationCheck(baseUrl) });
     } else {
       results.push({ name: "client-protocol", ...await runAgentsClientCheck(baseUrl) });
       results.push({ name: "schedule-fires", ...await runAgentsScheduleCheck(baseUrl) });
@@ -315,6 +318,32 @@ async function runSuite(suite, options, scratchDir) {
     return suite === "core" ? results : results.map((result) => ({ ...result, name: `${suite}/${result.name}` }));
   } finally {
     if (child) await stopTarget(child);
+  }
+}
+
+// Hibernation: one socket stays open while the object is evicted; the next
+// message must reach a new instance with the socket, tags and attachment intact.
+async function runHibernationCheck(baseUrl, idleMs = 8_000) {
+  const url = new URL("/socket?tag=hibernation", baseUrl);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  const socket = new WebSocket(url);
+  try {
+    await waitForWebSocketEvent(socket, "open");
+    const first = waitForWebSocketEvent(socket, "message");
+    socket.send("before");
+    const before = JSON.parse((await first).data);
+    await new Promise((resolve) => setTimeout(resolve, idleMs));
+    if (socket.readyState !== WebSocket.OPEN) throw new Error("the socket closed while the object was idle");
+    const second = waitForWebSocketEvent(socket, "message");
+    socket.send("after");
+    const after = JSON.parse((await second).data);
+    if (after.instance === before.instance) throw new Error("the object was not evicted while idle; hibernation was not exercised");
+    if (after.attachment?.tag !== "hibernation" || after.tags?.[0] !== "hibernation" || after.sockets < 1) {
+      throw new Error(`state after hibernation: ${JSON.stringify(after)}`);
+    }
+    return { pass: true, detail: "evicted with the socket open; a new instance received the next message with tags and attachment" };
+  } finally {
+    if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) socket.close();
   }
 }
 

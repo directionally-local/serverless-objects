@@ -159,6 +159,9 @@ export class Gate extends DurableObject {
 }
 
 export class Sockets extends DurableObject {
+  // A new value means the runtime constructed a new instance, e.g. after hibernation.
+  instance = crypto.randomUUID();
+
   async fetch(request) {
     const pair = new WebSocketPair();
     const tag = new URL(request.url).searchParams.get("tag") ?? "default";
@@ -177,6 +180,7 @@ export class Sockets extends DurableObject {
       tags,
       sockets: this.ctx.getWebSockets().length,
       tagged: this.ctx.getWebSockets(tags[0]).length,
+      instance: this.instance,
     }));
   }
 
