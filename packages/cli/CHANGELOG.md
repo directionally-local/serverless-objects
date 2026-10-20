@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.6.1...serverless-objects-v0.6.2) (2026-10-20)
+
+
+### Bug Fixes
+
+* **cli:** decode numeric XML entities in S3 listings, so backups keep uploading after a restart ([8d7496e](https://github.com/sinameraji/serverless-objects/commit/8d7496e36e3be03e37bdca01d0d5fa44034eae8d))
+
 ## [0.6.1](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.6.0...serverless-objects-v0.6.1) (2026-10-20)
 
 
