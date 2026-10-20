@@ -29,7 +29,25 @@ The app's own code is bundled with esbuild, which handles TypeScript and `define
 | Portability check | Yes: `sobjects build [--strict]` lists each Node.js built-in the app imports, with the files that import it, and marks it as supported on Cloudflare, a non-functional stub there, or blocked by a missing `nodejs_compat` flag or compatibility date. It also flags packages that ship compiled native addons. A portable app runs on Cloudflare, celld and the native engine; a native-only app runs only here. |
 | Autopilot in-process | Yes: `serverless-objects/autopilot/native` runs Autopilot's SDK inside an object, with tool budgets enforced before tools run ([details](autopilot.md#running-autopilot-in-process-native-engine)) |
 | `ctx.waitUntil` | Yes: keeps the object in memory until the promise settles |
-| Worker-thread isolation, bucket replication | Planned |
+| Bucket backups | Yes: `--backup-bucket s3://bucket/prefix` copies each object to an S3-compatible bucket and restores it onto an empty disk ([details](#bucket-backups)) |
+| Worker-thread isolation, continuous replication, multi-node | Planned |
+
+## Bucket backups
+
+```sh
+export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...
+export S3_ENDPOINT=https://<account>.r2.cloudflarestorage.com   # omit for AWS S3; set AWS_REGION there
+sobjects dev ./my-worker --engine native --backup-bucket s3://my-bucket/node-a
+```
+
+With `--backup-bucket`, the engine copies each object's SQLite file (a consistent `VACUUM INTO` snapshot) to `<prefix>/native/<script>/<class>/<id>.sqlite` within `--backup-interval-seconds` (default 10) of a change, and again when the object closes or the engine stops. On start, every object in the bucket that has no local file is downloaded, and its pending alarm is scheduled. Credentials come from `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and optionally `AWS_SESSION_TOKEN`, never from a file in the project. Tested against Cloudflare R2 and SeaweedFS.
+
+What this gives you, and what it doesn't:
+
+- The local file is the source of truth while the node runs. If the machine's disk is lost, writes made after the last upload are lost too: the recovery point is up to the backup interval plus the upload time. On Cloudflare, a write is durable once its output gate opens; here it isn't, until the next upload.
+- Each upload sends the whole file, so very large objects cost more per change.
+- One node per prefix. Uploads are conditional on the version this node last saw, so a node that finds a copy another node wrote stops backing that object up and logs it, instead of overwriting it.
+- Restores happen only for objects missing locally. There is no point-in-time restore; enable bucket versioning if you need history.
 
 ## Conformance
 

@@ -175,7 +175,7 @@ export async function run(
     return runBuild(args, io, { cwd });
   }
   if (command === "dev" && wantsNativeEngine(args)) {
-    return runNativeDev(args, io, { cwd, onSignal });
+    return runNativeDev(args, io, { cwd, onSignal, env });
   }
   if (command === "dev" || command === "deploy") {
     return runCelld(command, args, io, { spawnProcess, env, cwd, installEngine, prepareProject, loadConfig, readSelection, ensureToken });

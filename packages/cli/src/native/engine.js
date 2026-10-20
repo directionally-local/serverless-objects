@@ -7,6 +7,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
+import { BucketBackup } from "./backup.js";
 import { AlarmIndex, DurableObjectNamespace } from "./objects.js";
 import { readProjectConfig } from "./project.js";
 import { WebSocketPair, WebSocketRequestResponsePair, WorkersWebSocket, connect } from "./websocket.js";
@@ -34,7 +35,8 @@ export async function loadProjectConfig(projectDirectory) {
 
 export class NativeEngine {
   // idleEvictMs: drop an idle object's instance after this long (0 keeps it).
-  constructor({ config, persistDirectory, idleEvictMs = 60_000, log = (message) => console.error(message) }) {
+  // backup: { client, prefix, intervalMs } copies objects to an S3 bucket.
+  constructor({ config, persistDirectory, idleEvictMs = 60_000, backup, log = (message) => console.error(message) }) {
     this.idleEvictMs = idleEvictMs;
     this.evictions = 0;
     this.config = config;
@@ -45,6 +47,9 @@ export class NativeEngine {
     this.namespaces = [];
     this.env = {};
     this.exports = {};
+    if (backup) {
+      this.backup = new BucketBackup({ ...backup, scriptName: this.scriptName, tempDirectory: join(persistDirectory, "backup-tmp"), log });
+    }
   }
 
   async start() {
@@ -52,6 +57,7 @@ export class NativeEngine {
     installWorkersGlobals();
     mkdirSync(this.persistDirectory, { recursive: true });
     this.alarmIndex = new AlarmIndex(join(this.persistDirectory, "alarms.sqlite"));
+    await this.backup?.restore(this.objectsDirectory, this.alarmIndex);
     const module = await this.#load();
     Object.assign(this.env, this.config.vars ?? {});
     for (const binding of this.config.durable_objects?.bindings ?? []) {
@@ -66,6 +72,7 @@ export class NativeEngine {
     globalThis.__sobjectsNative = { env: this.env, exports: this.exports, projectImport: globalThis.__sobjectsProjectImport };
     this.handler = module.default;
     if (!this.handler) throw new Error("The Worker has no default export.");
+    this.backup?.start(() => this.namespaces.flatMap((namespace) => [...namespace.hosts()]));
     // Alarms that were pending when the engine last stopped.
     for (const { class: className, id, at } of this.alarmIndex.pending()) {
       const namespace = this.namespaces.find((candidate) => candidate.className === className);
@@ -99,6 +106,7 @@ export class NativeEngine {
   async close() {
     await new Promise((resolveClose) => (this.server ? this.server.close(() => resolveClose()) : resolveClose()));
     for (const namespace of this.namespaces) for (const host of namespace.hosts()) host.close();
+    await this.backup?.close();
     this.alarmIndex?.close();
   }
 

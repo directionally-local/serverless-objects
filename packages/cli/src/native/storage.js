@@ -31,6 +31,16 @@ export class ObjectDatabase {
     else this.db.prepare("INSERT INTO _cf_METADATA (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
   }
 
+  // Rows changed through this connection since it opened.
+  changes() {
+    return this.db.prepare("SELECT total_changes() AS changes").get().changes;
+  }
+
+  // A consistent copy of the database in one file.
+  snapshotTo(path) {
+    this.db.prepare("VACUUM INTO ?").run(path);
+  }
+
   close() {
     this.db.close();
   }
