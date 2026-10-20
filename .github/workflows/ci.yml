@@ -25,3 +25,15 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run test:wrangler --workspace=sobjects-conformance
+
+  docker:
+    name: Docker image (linux/amd64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t serverless-objects:ci deploy/compose
+      - name: The CLI and the pinned celld run in the image
+        run: |
+          docker run --rm serverless-objects:ci --version
+          docker run --rm --entrypoint celld serverless-objects:ci --version
+          docker run --rm --entrypoint id serverless-objects:ci -u | grep -qx 999
