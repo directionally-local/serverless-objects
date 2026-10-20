@@ -1,0 +1,61 @@
+# Single-node Serverless Objects. See README.md.
+#   docker compose up -d                          # with your own bucket
+#   docker compose --profile local-s3 up -d       # with a bundled SeaweedFS bucket
+name: serverless-objects
+
+services:
+  sobjects:
+    build:
+      context: .
+      args:
+        SOBJECTS_VERSION: "0.1.2"
+    image: serverless-objects:0.1.2
+    restart: unless-stopped
+    env_file: .env
+    # The ingress listens on 443 and 80 inside the container, so HTTP redirects
+    # and ACME HTTP-01 work without port rewriting.
+    ports:
+      - "443:443"
+      - "80:80"
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: 0
+    volumes:
+      - ./sobjects.toml:/etc/serverless-objects/sobjects.toml:ro
+      - ./tls:/etc/serverless-objects/tls:ro
+      - ./apps:/apps
+      - sobjects-data:/var/lib/serverless-objects
+    # celld drains for up to ~40 s before releasing its lease.
+    stop_grace_period: 60s
+    depends_on:
+      seaweedfs-init:
+        condition: service_completed_successfully
+        required: false
+
+  seaweedfs:
+    profiles: ["local-s3"]
+    image: chrislusf/seaweedfs:latest
+    restart: unless-stopped
+    env_file: .env
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        printf '{"identities":[{"name":"sobjects","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","Write","List","Tagging"]}]}'
+        "$$AWS_ACCESS_KEY_ID" "$$AWS_SECRET_ACCESS_KEY" > /tmp/s3.json &&
+        exec weed server -dir=/data -s3 -s3.config=/tmp/s3.json
+    volumes:
+      - seaweedfs-data:/data
+
+  seaweedfs-init:
+    profiles: ["local-s3"]
+    image: chrislusf/seaweedfs:latest
+    env_file: .env
+    depends_on: [seaweedfs]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        until echo "s3.bucket.list" | weed shell -master=seaweedfs:9333 >/dev/null 2>&1; do sleep 2; done;
+        echo "s3.bucket.create -name $$LOCAL_BUCKET" | weed shell -master=seaweedfs:9333
+
+volumes:
+  sobjects-data:
+  seaweedfs-data:

@@ -1,0 +1,31 @@
+# Copy to sobjects.toml. Paths are relative to /etc/serverless-objects.
+[celld]
+# With the local-s3 profile; for R2 or S3 use your bucket and endpoint.
+bucket = "s3://serverless-objects/node"
+endpoint = "http://seaweedfs:8333"
+region = "us-east-1"
+# Loopback inside the container; only the ingress is published.
+listen = "127.0.0.1:8787"
+
+[ingress]
+listen = "0.0.0.0:443"
+redirect_http = "0.0.0.0:80"
+access_log = "-"
+
+[ingress.tls]
+cert = "tls/fullchain.pem"
+key = "tls/privkey.pem"
+
+# Or, with public DNS and the host's port 80 reaching this container,
+# replace [ingress.tls] with ACME (exact hostnames only):
+# [ingress.acme]
+# email = "ops@example.com"
+# agree_to_terms = true
+# directory_url = "https://acme-staging-v02.api.letsencrypt.org/directory"
+
+[[ingress.routes]]
+hostname = "*"
+
+# Loopback inside the container; the healthcheck uses it.
+[admin]
+listen = "127.0.0.1:8790"

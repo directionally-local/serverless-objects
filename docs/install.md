@@ -38,6 +38,10 @@ sobjects up
 
 The first start downloads the pinned celld release and verifies its checksum. The default celld listener is `127.0.0.1:8080`. Keep it on loopback; do not expose celld's unauthenticated HTTP or operator listener to the network.
 
+## Run with Docker Compose
+
+[`deploy/compose`](../deploy/compose) runs a node in Docker. The image installs this package from npm and bakes in the checksum-verified celld. celld and the admin API stay on loopback inside the container, and only the TLS ingress is published on 443 and 80. Its README covers a local trial with a bundled SeaweedFS bucket and the production settings.
+
 ## Add ingress
 
 For production-facing traffic, configure TLS ingress in the same `sobjects.toml`. Choose one certificate mode:

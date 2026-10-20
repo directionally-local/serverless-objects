@@ -80,7 +80,7 @@ sobjects status
 sobjects down
 ```
 
-State survives `down` and `up` because it lives in the bucket. The [install guide](docs/install.md) adds TLS ingress, the dashboard and an OS service.
+State survives `down` and `up` because it lives in the bucket. The [install guide](docs/install.md) adds TLS ingress, the dashboard and an OS service. To run the node in Docker instead, use [`deploy/compose`](deploy/compose).
 
 ## What you get
 
@@ -107,6 +107,7 @@ Not covered yet: WebSocket hibernation, facets, PartyServer, Agents SDK chat, MC
 | [`packages/autopilot`](packages/autopilot) | `@serverless-objects/autopilot`, Autopilot run objects and the per-workspace registry. |
 | [`examples/autopilot-runs`](examples/autopilot-runs) | An HTTP demo of run objects: wake after restart, event streams, reconcile. |
 | [`packages/conformance`](packages/conformance) | Conformance apps and the Wrangler and celld runners. |
+| [`deploy/compose`](deploy/compose) | Dockerfile and Compose bundle for a single node, with an optional local SeaweedFS bucket. |
 | [`docs/`](docs) | Install, porting and compatibility guides, and recorded conformance results. |
 
 ## Engines
