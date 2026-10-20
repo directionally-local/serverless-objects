@@ -20,6 +20,7 @@ import { HEALTH_PATH, startIngress } from "./ingress.js";
 import { ensureInspectorToken, readInspectorToken, tokenHash } from "./inspector.js";
 import { renderLaunchdPlist, renderSystemdUnit, unitTarget, writeUnit } from "./units.js";
 import { prepareWranglerProject } from "./wrangler.js";
+import { runNativeDev, wantsNativeEngine } from "./native/dev.js";
 import {
   defaultStateDirectory,
   getServiceStatus as getDetachedStatus,
@@ -47,7 +48,7 @@ Commands:
   supervise [--config PATH]      Run only the ingress and admin API in the foreground
   service print|install [opts]   Generate a systemd or launchd unit for up
   upgrade [--rollback|--status]  Install and select a pinned celld version
-  dev [project] [options]        Run a project locally with celld
+  dev [project] [options]        Run a project locally with celld (--engine native: in Node)
   deploy [project] [options]     Deploy a project with celld
 
 Options:
@@ -167,6 +168,9 @@ export async function run(
   if (command === "down") return runDown(args, io, { env, stopService });
   if (command === "status") return runStatus(args, io, { env, getServiceStatus });
   if (command === "logs") return runLogs(args, io, { env, readServiceLogs });
+  if (command === "dev" && wantsNativeEngine(args)) {
+    return runNativeDev(args, io, { cwd, onSignal });
+  }
   if (command === "dev" || command === "deploy") {
     return runCelld(command, args, io, { spawnProcess, env, cwd, installEngine, prepareProject, loadConfig, readSelection, ensureToken });
   }

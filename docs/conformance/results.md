@@ -11,22 +11,24 @@ runner completed all of its checks in one run: 16 on Wrangler (10 core, 6 Agents
 - Command: `npm run test:wrangler --workspace=sobjects-conformance` and
   `npm run test:celld --workspace=sobjects-conformance`
 
-| Area | Wrangler 4.150.0 | celld 0.6.2 | Notes |
-|---|---:|---:|---|
-| Durable Object IDs | Pass | Pass | Deterministic/named IDs, unique IDs, string conversion and validation |
-| KV storage | Pass | Pass | Get/put/list/delete, ranges, structured-clone values |
-| SQLite storage | Pass | Pass | SQL execution, cursors, raw rows, errors and database size |
-| Transactions | Pass | Pass | `transactionSync` and async transaction commit/rollback |
-| RPC and input gates | Pass | Pass | Structured arguments/results, error propagation, serialized increments and `blockConcurrencyWhile` |
-| Alarm API and delivery | Pass | Pass | Set/delete and alarm delivery |
-| Alarm across process restart | Not run | Pass | celld was restarted with an alarm pending; alarm fired afterward |
-| `deleteAll()` clears alarm | Pass | Pass | Requires the tested compatibility date, `2026-02-24` or later |
-| WebSocket behavior | Pass | Pass | Upgrade, echo, attachment, tags and auto-response |
-| WebSocket hibernation | Not run | Pass | With `CELLD_IDLE_EVICT_S=2`, celld evicted the object while a socket stayed open; the next message reached a new instance with the socket's tags and attachment. Wrangler's local runtime gives the runner no eviction control. |
-| Agents SDK state and SQL | Pass | Pass | `setState`/`this.state` and the `this.sql` tagged template |
-| Agents SDK schedules | Pass | Pass | Delayed and cron schedules, list, cancel; a delayed schedule runs its callback |
-| Agents SDK addressing | Pass | Pass | `getAgentByName`, `this.name`, class name, `/agents/<class>/<name>` routing |
-| Agents SDK client protocol | Pass | Pass | Identity and state frames, `@callable()` RPC over WebSocket, state broadcast, non-callable methods refused |
+| Area | Wrangler 4.150.0 | celld 0.6.2 | native (in progress) | Notes |
+|---|---:|---:|---:|---|
+| Durable Object IDs | Pass | Pass | Pass | Deterministic/named IDs, unique IDs, string conversion and validation |
+| KV storage | Pass | Pass | Pass | Get/put/list/delete, ranges, structured-clone values |
+| SQLite storage | Pass | Pass | Pass | SQL execution, cursors, raw rows, errors and database size |
+| Transactions | Pass | Pass | Pass | `transactionSync` and async transaction commit/rollback |
+| RPC and input gates | Pass | Pass | Pass | Structured arguments/results, error propagation, serialized increments and `blockConcurrencyWhile` |
+| Alarm API and delivery | Pass | Pass | Pass | Set/delete and alarm delivery |
+| Alarm across process restart | Not run | Pass | Pass | celld was restarted with an alarm pending; alarm fired afterward |
+| `deleteAll()` clears alarm | Pass | Pass | Pass | Requires the tested compatibility date, `2026-02-24` or later |
+| WebSocket behavior | Pass | Pass | Fail | Upgrade, echo, attachment, tags and auto-response |
+| WebSocket hibernation | Not run | Pass | Not run | With `CELLD_IDLE_EVICT_S=2`, celld evicted the object while a socket stayed open; the next message reached a new instance with the socket's tags and attachment. Wrangler's local runtime gives the runner no eviction control. |
+| Agents SDK state and SQL | Pass | Pass | Fail | `setState`/`this.state` and the `this.sql` tagged template |
+| Agents SDK schedules | Pass | Pass | Fail | Delayed and cron schedules, list, cancel; a delayed schedule runs its callback |
+| Agents SDK addressing | Pass | Pass | Fail | `getAgentByName`, `this.name`, class name, `/agents/<class>/<name>` routing |
+| Agents SDK client protocol | Pass | Pass | Fail | Identity and state frames, `@callable()` RPC over WebSocket, state broadcast, non-callable methods refused |
+
+The native engine column is from `npm run test:native` on the same host (20 Oct 2026). It has no WebSockets yet, and the Agents SDK needs `ctx.getWebSockets()`; see [the native engine](../native-engine.md).
 
 ## Not covered
 
