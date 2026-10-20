@@ -1,0 +1,53 @@
+name: First npm publish
+
+# Publishes the first version of a package that is not on npm yet. Trusted
+# publishing only works for existing packages, so this one run uses the
+# NPM_TOKEN secret plus a 2FA code typed in when starting the workflow.
+# Afterwards, add a trusted publisher for release-please.yml and delete
+# NPM_TOKEN; every later release publishes from release-please.yml.
+on:
+  workflow_dispatch:
+    inputs:
+      otp:
+        description: Current 6-digit code from your authenticator (start the run right after copying it)
+        type: string
+        required: true
+      ref:
+        description: Release commit to publish from
+        type: string
+        default: autopilot-v0.1.0
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      # The packages are plain JavaScript with no build, so publish straight
+      # away while the code is still valid.
+      - name: Publish packages that are not on npm yet
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          OTP: ${{ inputs.otp }}
+        run: |
+          echo "::add-mask::$OTP"
+          for dir in packages/hotcell packages/autopilot; do
+            name=$(node -p "require('./$dir/package.json').name")
+            version=$(node -p "require('./$dir/package.json').version")
+            if npm view "$name" version >/dev/null 2>&1; then
+              echo "$name is already on npm; later versions publish from release-please.yml"
+              continue
+            fi
+            echo "Publishing $name@$version"
+            npm publish --workspace="$dir" --access public --provenance --otp="$OTP"
+          done
