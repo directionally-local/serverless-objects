@@ -39,6 +39,7 @@ export class WorkersWebSocket extends EventTarget {
   static CLOSED = 3;
 
   #peer;
+  #owner;
   #accepted = false;
   #pending = [];
   #attachment;
@@ -52,18 +53,31 @@ export class WorkersWebSocket extends EventTarget {
     this.#peer = peer;
   }
 
-  // Events arrive only after accept(); until then they are held.
+  // Events arrive only after accept(); until then they are held. A socket
+  // accepted this way keeps the accepting object in memory while it is open.
   accept() {
     if (this.#accepted) return;
-    this.#accepted = true;
-    const pending = this.#pending.splice(0);
-    for (const event of pending) this.#dispatch(event);
+    this.#owner = WorkersWebSocket.ownerOf?.();
+    this.#owner?.pinSocket(this);
+    this.#open();
   }
 
   // The engine takes over delivery instead of event listeners (hibernation API).
   takeOver(sink) {
     this.#sink = sink;
-    this.accept();
+    if (!this.#accepted) this.#open();
+  }
+
+  #open() {
+    this.#accepted = true;
+    const pending = this.#pending.splice(0);
+    for (const event of pending) this.#dispatch(event);
+  }
+
+  #release() {
+    const owner = this.#owner;
+    this.#owner = undefined;
+    owner?.unpinSocket(this);
   }
 
   send(data) {
@@ -90,6 +104,7 @@ export class WorkersWebSocket extends EventTarget {
   fail(error) {
     if (this.readyState === READY_STATE.CLOSED) return;
     this.readyState = READY_STATE.CLOSED;
+    this.#release();
     this.#peer.#receive({ type: "error", error });
     this.#peer.#receive({ type: "close", code: 1006, reason: "", clean: false });
   }
@@ -99,6 +114,7 @@ export class WorkersWebSocket extends EventTarget {
       if (this.readyState === READY_STATE.CLOSED) return;
       const wasOpen = this.readyState === READY_STATE.OPEN;
       this.readyState = READY_STATE.CLOSED;
+      this.#release();
       if (wasOpen && event.clean !== false) this.#peer.#acknowledgeClose(event.code, event.reason);
     }
     if (this.#accepted) this.#dispatch(event);
@@ -109,6 +125,7 @@ export class WorkersWebSocket extends EventTarget {
   #acknowledgeClose(code, reason) {
     if (this.readyState === READY_STATE.CLOSED) return;
     this.readyState = READY_STATE.CLOSED;
+    this.#release();
     const event = { type: "close", code, reason, clean: true, echo: true };
     if (this.#accepted) this.#dispatch(event);
     else this.#pending.push(event);

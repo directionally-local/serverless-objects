@@ -92,7 +92,8 @@ function startTarget(target, projectDir, options) {
     ];
   } else if (target === "native") {
     command = process.execPath;
-    args = [SOBJECTS_BIN, "dev", projectDir, "--engine", "native", "--host", "127.0.0.1", "--port", String(options.port)];
+    // A short idle eviction lets the hibernation check run, as CELLD_IDLE_EVICT_S does for celld.
+    args = [SOBJECTS_BIN, "dev", projectDir, "--engine", "native", "--host", "127.0.0.1", "--port", String(options.port), "--idle-evict-seconds", "2"];
   } else {
     command = options.celldBin;
     args = ["dev", projectDir, "--host", "127.0.0.1", "--port", String(options.port), "--no-watch"];
@@ -322,7 +323,7 @@ async function runSuite(suite, options, scratchDir) {
     if (suite === "core") {
       await record("alarm-durability", () => runAlarmCheck(baseUrl, options.alarmDelayMs, options.restartAfterAlarm, restart));
       await record("websockets", () => runWebSocketCheck(baseUrl));
-      if (options.target === "celld") await record("websocket-hibernation", () => runHibernationCheck(baseUrl));
+      if (options.target !== "wrangler") await record("websocket-hibernation", () => runHibernationCheck(baseUrl));
     } else {
       await record("client-protocol", () => runAgentsClientCheck(baseUrl));
       await record("schedule-fires", () => runAgentsScheduleCheck(baseUrl));
