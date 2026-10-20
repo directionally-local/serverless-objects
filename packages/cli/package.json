@@ -4,12 +4,22 @@
   "description": "Run a self-hosted Workers-compatible platform for agents",
   "license": "Apache-2.0",
   "type": "module",
+  "exports": {
+    "./hotcell": "./hotcell/index.js",
+    "./hotcell/core": "./hotcell/sandbox.js",
+    "./autopilot": "./autopilot/index.js",
+    "./autopilot/cell": "./autopilot/cell.js",
+    "./autopilot/core": "./autopilot/run-host.js",
+    "./package.json": "./package.json"
+  },
   "bin": {
     "sobjects": "./bin/sobjects.mjs"
   },
   "files": [
     "bin",
     "src",
+    "hotcell",
+    "autopilot",
     "README.md"
   ],
   "engines": {
@@ -33,9 +43,13 @@
     "durable-objects",
     "agents",
     "self-hosted",
-    "serverless"
+    "serverless",
+    "hotcell",
+    "sandbox",
+    "autopilot"
   ],
   "dependencies": {
+    "@hotcell/sdk": "^0.1.19",
     "@root/csr": "^0.8.1",
     "@root/encoding": "^1.0.1",
     "@root/keypairs": "^0.10.3",

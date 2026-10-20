@@ -1,4 +1,4 @@
-# @serverless-objects/hotcell
+# Hotcell Sandbox binding (`serverless-objects/hotcell`)
 
 A `Sandbox` Durable Object and `getSandbox()` in the shape of the
 `@cloudflare/sandbox` **0.x** API, backed by a [Hotcell](https://github.com/sinameraji/hotcell)
@@ -6,12 +6,12 @@ daemon instead of Cloudflare Containers. The object stores its Hotcell sandbox
 id in Durable Object storage, so after the object is evicted or the node
 restarts it reattaches to the same sandbox and workspace.
 
-> **Status:** pre-alpha (0.x). `@cloudflare/sandbox` 1.0
+> **Status:** pre-alpha (0.x). Ships in the `serverless-objects` npm package: `npm install serverless-objects`. `@cloudflare/sandbox` 1.0
 > (a different, Containers-based API) is not implemented here; see
 > [compatibility](https://github.com/sinameraji/serverless-objects/blob/main/docs/compatibility.md).
 
 ```js
-import { getSandbox, proxyToSandbox, Sandbox } from "@serverless-objects/hotcell";
+import { getSandbox, proxyToSandbox, Sandbox } from "serverless-objects/hotcell";
 
 export { Sandbox };
 

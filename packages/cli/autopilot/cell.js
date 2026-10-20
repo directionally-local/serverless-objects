@@ -1,6 +1,6 @@
 // A RunObject that executes its task with Autopilot inside a Hotcell cell.
 //
-//   import { AutopilotCellRun } from "@serverless-objects/autopilot/cell";
+//   import { AutopilotCellRun } from "serverless-objects/autopilot/cell";
 //   export class Run extends AutopilotCellRun {}
 //
 //   await env.RUNS.getByName(id).create({ id, workspace, cwd: "/workspace", task });

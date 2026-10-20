@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { REDACTED, redactDeep, redactLikelySecrets } from "../src/redact.js";
+import { REDACTED, redactDeep, redactLikelySecrets } from "../autopilot/redact.js";
 
 test("redacts provider keys, tokens, private keys, and secret assignments", () => {
   const samples = [

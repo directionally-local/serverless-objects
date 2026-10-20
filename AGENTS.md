@@ -43,8 +43,8 @@ CI: `.github/workflows/ci.yml` runs `npm ci`, `npm test` and the Wrangler confor
 | `packages/cli/src/dashboard/` | Static dashboard assets served by the admin surface, kept separate from server-side modules. |
 | `packages/cli/test/` | Node test-runner tests grouped by implementation module, plus TLS fixtures. |
 | `packages/cli/package.json` | Publishable CLI workspace metadata, executable mapping, runtime dependencies and test script. |
-| `packages/hotcell/` | `@serverless-objects/hotcell`: Sandbox SDK 0.x-shaped Durable Object over `@hotcell/sdk`; logic in `src/sandbox.js`, DO glue in `src/index.js`. |
-| `packages/autopilot/` | `@serverless-objects/autopilot`: `RunObject`/`RunRegistry`. Runtime-independent logic in `run-store.js`, `run-host.js` and `registry-store.js` over an `{exec, transaction}` SQL adapter; tests use `node:sqlite`. |
+| `packages/cli/hotcell/` | `serverless-objects/hotcell`: Sandbox SDK 0.x-shaped Durable Object over `@hotcell/sdk`; logic in `sandbox.js`, DO glue in `index.js`. Tests are `test/hotcell-*.test.js`. |
+| `packages/cli/autopilot/` | `serverless-objects/autopilot` (and `/autopilot/cell`): `RunObject`/`RunRegistry`/`AutopilotCellRun`. Runtime-independent logic in `run-store.js`, `run-host.js`, `registry-store.js` and `cell-executor.js` over an `{exec, transaction}` SQL adapter; tests (`test/autopilot-*.test.js`) use `node:sqlite`. |
 | `deploy/compose/` | Dockerfile and Compose bundle for a single node; pins the npm CLI version via `SOBJECTS_VERSION`. |
 | `examples/` | Runnable Wrangler projects (not workspaces) that import the packages through the root `node_modules`. |
 | `packages/conformance/` | Private workspace: conformance Worker app (`app/`), runner (`src/run.js`) for Wrangler and celld, and runner tests. |

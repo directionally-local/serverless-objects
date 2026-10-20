@@ -88,8 +88,8 @@ State survives `down` and `up` because it lives in the bucket. The [install guid
 - **Wrangler config preflight.** Unknown keys are rejected with a readable error, keys celld can't use are removed with a warning, and `build.command` and Vite asset builds run before deploy.
 - **TLS ingress.** Static certificates or ACME HTTP-01, hostname routing, WebSocket tunnelling, HTTP→HTTPS redirect, a health endpoint and JSON access logs. Client `X-Forwarded-*` and `CF-Connecting-IP` headers are replaced with the real peer address.
 - **A loopback dashboard and admin API.** Node load, the objects in each namespace, a key-value browser and read-only SQL console per object, eviction, logical JSON export, and Prometheus `/metrics`.
-- **A Hotcell `Sandbox` binding** ([`@serverless-objects/hotcell`](packages/hotcell), not yet on npm). It has the Cloudflare Sandbox SDK 0.x call shape and reattaches to its sandbox after the object is evicted. With egress enabled, sandboxes get gateway tokens, never real provider keys.
-- **Autopilot runs as objects** ([`@serverless-objects/autopilot`](packages/autopilot), not yet on npm). One Durable Object per run holds its state machine, budgets, hash-only tool records, durable wake timers and a Camouflage session log that streams from a cursor. A registry per workspace lists and reconciles runs. `AutopilotCellRun` executes the task with Autopilot in a Hotcell cell. Stop the node mid-run, and after restart the object resumes from its saved cursor while the cell keeps working.
+- **A Hotcell `Sandbox` binding** ([`serverless-objects/hotcell`](docs/hotcell-binding.md)). It has the Cloudflare Sandbox SDK 0.x call shape and reattaches to its sandbox after the object is evicted. With egress enabled, sandboxes get gateway tokens, never real provider keys.
+- **Autopilot runs as objects** ([`serverless-objects/autopilot`](docs/autopilot.md)). One Durable Object per run holds its state machine, budgets, hash-only tool records, durable wake timers and a Camouflage session log that streams from a cursor. A registry per workspace lists and reconciles runs. `AutopilotCellRun` executes the task with Autopilot in a Hotcell cell. Stop the node mid-run, and after restart the object resumes from its saved cursor while the cell keeps working.
 - **A conformance suite** ([`packages/conformance`](packages/conformance)) that runs the same apps under `wrangler dev` and celld, so engine differences show up as failing checks.
 
 ## Compatibility
@@ -102,9 +102,7 @@ Not covered yet: sockets across a cell move between nodes, facets, PartyServer, 
 
 | Path | What |
 |---|---|
-| [`packages/cli`](packages/cli) | The `serverless-objects` npm package (`sobjects` binary). Its README is the CLI reference. |
-| [`packages/hotcell`](packages/hotcell) | `@serverless-objects/hotcell`, the Sandbox binding backed by Hotcell. |
-| [`packages/autopilot`](packages/autopilot) | `@serverless-objects/autopilot`, Autopilot run objects and the per-workspace registry. |
+| [`packages/cli`](packages/cli) | The `serverless-objects` npm package: the `sobjects` CLI (`src/`), the Hotcell Sandbox binding (`hotcell/`, imported as `serverless-objects/hotcell`) and Autopilot run objects (`autopilot/`, imported as `serverless-objects/autopilot`). Its README is the CLI reference. |
 | [`examples/autopilot-runs`](examples/autopilot-runs) | An HTTP demo of run objects: wake after restart, event streams, reconcile. |
 | [`packages/conformance`](packages/conformance) | Conformance apps and the Wrangler and celld runners. |
 | [`deploy/compose`](deploy/compose) | Dockerfile and Compose bundle for a single node, with an optional local SeaweedFS bucket. |

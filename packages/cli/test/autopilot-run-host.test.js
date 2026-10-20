@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { RegistryStore } from "../src/registry-store.js";
-import { RunHost, runSummary } from "../src/run-host.js";
-import { RUN, clock, ids, memoryDb } from "./helpers.js";
+import { RegistryStore } from "../autopilot/registry-store.js";
+import { RunHost, runSummary } from "../autopilot/run-host.js";
+import { RUN, clock, ids, memoryDb } from "./autopilot-helpers.js";
 
 function host({ onWake = async () => {}, checkJob } = {}) {
   const time = clock();

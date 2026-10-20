@@ -7,8 +7,8 @@
 //   GET  /registry?status=             list runs in the workspace
 //   POST /registry/reconcile                                    after an executor restart
 //   POST /runs/:id/start               [{model?, egress?}]      run the task in a Hotcell cell
-import { RunRegistry } from "@serverless-objects/autopilot";
-import { AutopilotCellRun } from "@serverless-objects/autopilot/cell";
+import { RunRegistry } from "serverless-objects/autopilot";
+import { AutopilotCellRun } from "serverless-objects/autopilot/cell";
 
 export { RunRegistry };
 

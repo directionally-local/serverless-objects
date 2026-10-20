@@ -1,15 +1,15 @@
-# @serverless-objects/autopilot
+# Autopilot run objects (`serverless-objects/autopilot`)
 
 Autopilot runs as Durable Objects. Each run is a `RunObject` that holds the run record and its state machine, tool-boundary events, usage budgets, durable wake timers and a Camouflage session log. A `RunRegistry` per workspace answers the cross-run queries: list by status, and reconcile after a restart.
 
 It ports the per-run part of Autopilot's `RunStore` and `RunWakeScheduler` (`src/runs/store.ts`, `src/runs/wake-scheduler.ts`) to Durable Object SQLite, with the same statuses, transitions, budgets, lease and retry rules. A pending wake is a durable alarm, so it fires after the node restarts.
 
-> **Status:** pre-alpha (0.x). `@serverless-objects/autopilot/cell` runs a run's task with Autopilot in a Hotcell cell.
+> **Status:** pre-alpha (0.x). Ships in the `serverless-objects` npm package: `npm install serverless-objects`. `serverless-objects/autopilot/cell` runs a run's task with Autopilot in a Hotcell cell.
 
 ## Use
 
 ```js
-import { RunObject, RunRegistry } from "@serverless-objects/autopilot";
+import { RunObject, RunRegistry } from "serverless-objects/autopilot";
 
 export { RunRegistry };
 
@@ -62,8 +62,8 @@ await env.RUN_REGISTRY.getByName("acme").list({ status: "waiting" });
 Control requests go through `exec`, so microVM cells without a network interface work too.
 
 ```js
-import { RunRegistry } from "@serverless-objects/autopilot";
-import { AutopilotCellRun } from "@serverless-objects/autopilot/cell";
+import { RunRegistry } from "serverless-objects/autopilot";
+import { AutopilotCellRun } from "serverless-objects/autopilot/cell";
 
 export { RunRegistry };
 export class Run extends AutopilotCellRun {}

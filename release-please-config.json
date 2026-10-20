@@ -21,32 +21,6 @@
           "path": "/deploy/compose/compose.yaml"
         }
       ]
-    },
-    "packages/hotcell": {
-      "release-type": "node",
-      "package-name": "@serverless-objects/hotcell",
-      "component": "hotcell",
-      "bump-minor-pre-major": true,
-      "extra-files": [
-        {
-          "type": "json",
-          "path": "/package-lock.json",
-          "jsonpath": "$.packages['packages/hotcell'].version"
-        }
-      ]
-    },
-    "packages/autopilot": {
-      "release-type": "node",
-      "package-name": "@serverless-objects/autopilot",
-      "component": "autopilot",
-      "bump-minor-pre-major": true,
-      "extra-files": [
-        {
-          "type": "json",
-          "path": "/package-lock.json",
-          "jsonpath": "$.packages['packages/autopilot'].version"
-        }
-      ]
     }
   }
 }
