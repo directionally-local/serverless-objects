@@ -8,7 +8,8 @@
 // transactions in the log.
 //
 // Layout under <prefix>/native/<script>/:
-//   objects/<class>/<id>/snapshot-<txid>.sqlite   the database file at txid
+//   objects/<class>/<id>/snapshot-<txid>-e<epoch>.sqlite   the database file at txid
+//     (snapshot-<txid>.sqlite from before epochs counts as epoch 0)
 //   log/<writer>/<session>/<seq>.seg              gzipped transactions of many objects
 //
 // Invariants:
@@ -27,9 +28,11 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, re
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { gunzipSync, gzipSync } from "node:zlib";
+import { inHistory } from "./cluster.js";
 import { WalReader, applyTransactions } from "./wal.js";
 
 const SEGMENT_FORMAT = 1;
+const SNAPSHOT_RE = /objects\/([^/]+)\/([0-9a-f]{64})\/snapshot-(\d+)(?:-e(\d+))?\.sqlite$/;
 const DEFAULTS = {
   // How long a write waits for the bucket before its event fails.
   gateTimeoutMs: 30_000,
@@ -58,7 +61,10 @@ export class LogState {
         class TEXT NOT NULL, id TEXT NOT NULL,
         captured INTEGER NOT NULL DEFAULT 0, shipped INTEGER NOT NULL DEFAULT 0, snapshot INTEGER NOT NULL DEFAULT 0,
         log_bytes INTEGER NOT NULL DEFAULT 0, position TEXT, needs_snapshot INTEGER NOT NULL DEFAULT 0,
+        epoch INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (class, id)) WITHOUT ROWID`);
+    const columns = this.#db.prepare("PRAGMA table_info(objects)").all().map((column) => column.name);
+    if (!columns.includes("epoch")) this.#db.exec("ALTER TABLE objects ADD COLUMN epoch INTEGER NOT NULL DEFAULT 0");
   }
 
   get(className, id) {
@@ -66,10 +72,10 @@ export class LogState {
   }
 
   set(row) {
-    this.#db.prepare(`INSERT INTO objects (class, id, captured, shipped, snapshot, log_bytes, position, needs_snapshot) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    this.#db.prepare(`INSERT INTO objects (class, id, captured, shipped, snapshot, log_bytes, position, needs_snapshot, epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (class, id) DO UPDATE SET captured = excluded.captured, shipped = excluded.shipped, snapshot = excluded.snapshot,
-      log_bytes = excluded.log_bytes, position = excluded.position, needs_snapshot = excluded.needs_snapshot`)
-      .run(row.class, row.id, row.captured, row.shipped, row.snapshot, row.log_bytes, row.position, row.needs_snapshot ? 1 : 0);
+      log_bytes = excluded.log_bytes, position = excluded.position, needs_snapshot = excluded.needs_snapshot, epoch = excluded.epoch`)
+      .run(row.class, row.id, row.captured, row.shipped, row.snapshot, row.log_bytes, row.position, row.needs_snapshot ? 1 : 0, row.epoch ?? 0);
   }
 
   all() {
@@ -108,7 +114,14 @@ export class DurableLog {
   // writer names this engine thread (stable across restarts, e.g. "t0");
   // owns(id) says which objects this thread runs (--threads); tuning
   // overrides DEFAULTS.
-  constructor({ client, prefix, scriptName, writer = "t0", statePath, objectsDirectory, owns = () => true, tuning = {}, log = () => {} }) {
+  #alive;
+  #mayCompact;
+
+  // alive() (with --node-name) says whether this node still holds its lease;
+  // mayCompact(row) whether it may snapshot an object and drop its log.
+  constructor({ client, prefix, scriptName, writer = "t0", statePath, objectsDirectory, owns = () => true, alive = () => true, mayCompact = () => true, tuning = {}, log = () => {} }) {
+    this.#alive = alive;
+    this.#mayCompact = mayCompact;
     if (typeof new DatabaseSync(":memory:").isTransaction !== "boolean") throw new Error("Durable mode needs Node.js 22.16 or newer.");
     this.#tuning = { ...DEFAULTS, ...tuning };
     this.#client = client;
@@ -124,7 +137,7 @@ export class DurableLog {
     const key = `${className}/${id}`;
     let row = this.#rows.get(key);
     if (!row) {
-      row = this.#state.get(className, id) ?? { class: className, id, captured: 0, shipped: 0, snapshot: 0, log_bytes: 0, position: null, needs_snapshot: 0 };
+      row = this.#state.get(className, id) ?? { class: className, id, captured: 0, shipped: 0, snapshot: 0, log_bytes: 0, position: null, needs_snapshot: 0, epoch: 0 };
       this.#rows.set(key, row);
     }
     return row;
@@ -154,7 +167,7 @@ export class DurableLog {
     const highest = new Map();
     const seen = (objectKey, txid) => highest.set(objectKey, Math.max(highest.get(objectKey) ?? 0, txid));
     for (const { key } of await this.#client.list(`${this.#root}/objects/`)) {
-      const match = /objects\/([^/]+)\/([0-9a-f]{64})\/snapshot-(\d+)\.sqlite$/.exec(key);
+      const match = SNAPSHOT_RE.exec(key);
       if (!match || !owns(match[2])) continue;
       const objectKey = `${match[1]}/${match[2]}`;
       const txid = Number(match[3]);
@@ -239,6 +252,120 @@ export class DurableLog {
     }
   }
 
+  // ---- takeover (--node-name) ------------------------------------------------
+
+  #segmentCache = new Map();
+
+  // An object's snapshots and logged transactions in the bucket that belong
+  // to its history (owner record), across every writer.
+  async #objectHistory(className, id, history) {
+    const snapshots = [];
+    for (const { key } of await this.#client.list(`${this.#root}/objects/${className}/${id}/`)) {
+      const match = SNAPSHOT_RE.exec(key);
+      if (!match) continue;
+      const txid = Number(match[3]);
+      const epoch = Number(match[4] ?? 0);
+      if (inHistory(history, epoch, txid, { snapshot: true })) snapshots.push({ key, txid, epoch });
+    }
+    const entries = new Map();
+    const keys = (await this.#client.list(`${this.#root}/log/`)).map(({ key }) => key).filter((key) => key.endsWith(".seg"));
+    for (const key of [...this.#segmentCache.keys()]) if (!keys.includes(key)) this.#segmentCache.delete(key);
+    for (const key of keys) {
+      let decoded = this.#segmentCache.get(key);
+      if (!decoded) {
+        const object = await this.#client.get(key);
+        if (!object) continue;
+        decoded = decodeSegment(object.body);
+        this.#segmentCache.set(key, decoded);
+      }
+      for (const entry of decoded) {
+        if (entry.class !== className || entry.id !== id || !inHistory(history, entry.epoch ?? 0, entry.txid)) continue;
+        if (!entries.has(entry.txid)) entries.set(entry.txid, entry);
+      }
+    }
+    snapshots.sort((a, b) => b.txid - a.txid);
+    return { snapshots, entries };
+  }
+
+  // Where an object's history ends in the bucket: the range a clean release
+  // recorded, or the last contiguous transaction after its latest snapshot.
+  async cutFor(className, id, record) {
+    const last = record.history?.at(-1);
+    if (last && last.upTo !== undefined && last.upTo !== null) return last.upTo;
+    const { snapshots, entries } = await this.#objectHistory(className, id, record.history);
+    let txid = snapshots[0]?.txid ?? 0;
+    while (entries.has(txid + 1)) txid += 1;
+    return txid;
+  }
+
+  // Runs before a newly owned object opens: reuses the local copy when it is
+  // exactly the bucket's up to the cut, and otherwise rebuilds it from the
+  // bucket. The object then starts its epoch from a fresh snapshot.
+  async prepareObject(className, id, { record, cut, alarmIndex }) {
+    const path = join(this.#objectsDirectory, className, `${id}.sqlite`);
+    const row = this.#row(className, id);
+    const previous = record.history.at(-2);
+    const reusable = existsSync(path) && previous && row.epoch === previous.epoch && row.captured === cut && row.shipped === cut
+      && (!row.position || walReaches(`${path}-wal`, JSON.parse(row.position)));
+    if (!reusable) {
+      // Nothing local is removed until the bucket's copy is complete.
+      const { snapshots, entries } = await this.#objectHistory(className, id, record.history);
+      const snapshot = snapshots.find((candidate) => candidate.txid <= cut);
+      const usable = [];
+      for (let txid = (snapshot?.txid ?? 0) + 1; txid <= cut; txid += 1) {
+        const entry = entries.get(txid);
+        if (!entry) throw new Error(`${className} ${id}: transaction ${txid} is missing from the bucket; refusing to take the object over.`);
+        usable.push(entry);
+      }
+      if (snapshot || usable.length > 0) {
+        const alarm = await this.#rebuild(path, snapshot ? (await this.#client.get(snapshot.key)).body : null, usable, `${className}/${id}`);
+        if (alarm !== null) alarmIndex.set(className, id, Number(alarm));
+      } else {
+        for (const suffix of ["", "-wal", "-shm"]) rmSync(`${path}${suffix}`, { force: true });
+      }
+      Object.assign(row, { snapshot: snapshot?.txid ?? 0 });
+    }
+    Object.assign(row, { captured: cut, shipped: cut, log_bytes: 0, position: reusable ? row.position : null, needs_snapshot: 1, epoch: record.epoch });
+    this.#save(row);
+  }
+
+  // Writes snapshot + transactions to a fresh file at path (fsynced, checked)
+  // and returns the object's pending alarm, if any.
+  async #rebuild(path, snapshotBody, transactions, label) {
+    mkdirSync(dirname(path), { recursive: true });
+    const temporary = `${path}.restore`;
+    rmSync(temporary, { force: true });
+    if (snapshotBody) writeFileSync(temporary, snapshotBody);
+    applyTransactions(temporary, transactions);
+    const db = new DatabaseSync(temporary);
+    let alarm = null;
+    try {
+      const integrity = db.prepare("PRAGMA quick_check").get().quick_check;
+      if (integrity !== "ok") throw new Error(`restored ${label} failed its integrity check: ${integrity}`);
+      const meta = (key) => db.prepare("SELECT value FROM _cf_METADATA WHERE key = ?").get(key)?.value ?? null;
+      alarm = meta("alarm") ?? meta("alarm_running");
+    } finally {
+      db.close();
+    }
+    fsyncPath(temporary);
+    // The old copy's WAL must not be applied to the new file.
+    for (const suffix of ["-wal", "-shm"]) rmSync(`${path}${suffix}`, { force: true });
+    renameSync(temporary, path);
+    fsyncPath(dirname(path));
+    return alarm;
+  }
+
+  // The epoch this node's copy of an object belongs to.
+  epochOf(className, id) {
+    return this.#row(className, id).epoch ?? 0;
+  }
+
+  // An object's captured and shipped transaction numbers on this node.
+  progress(className, id) {
+    const row = this.#rows.get(`${className}/${id}`);
+    return row ? { captured: row.captured, shipped: row.shipped } : null;
+  }
+
   // ---- objects -------------------------------------------------------------
 
   // Called when an object's database opens.
@@ -285,14 +412,19 @@ export class DurableLog {
 
   #waitFor(object) {
     const { row } = object;
+    if (!this.#alive()) return Promise.reject(new Error("This node's lease expired; the write is not acknowledged."));
     if (row.shipped >= row.captured) return null;
     return new Promise((resolve, reject) => this.#waiters.push({ row, txid: row.captured, resolve, reject, at: Date.now() }));
   }
 
+  // A node that may have lost its lease acknowledges nothing: another node
+  // could already own its objects.
   #release() {
+    const alive = this.#alive();
     this.#waiters = this.#waiters.filter((waiter) => {
-      if (waiter.row.shipped < waiter.txid) return true;
-      waiter.resolve();
+      if (waiter.row.shipped < waiter.txid && alive) return true;
+      if (alive) waiter.resolve();
+      else waiter.reject(new Error("This node's lease expired; the write is not acknowledged."));
       return false;
     });
   }
@@ -312,7 +444,7 @@ export class DurableLog {
     const { row } = object;
     for (const transaction of transactions) {
       row.captured += 1;
-      this.#pending.push({ row, entry: { class: row.class, id: row.id, txid: row.captured, ...transaction } });
+      this.#pending.push({ row, entry: { class: row.class, id: row.id, epoch: row.epoch ?? 0, txid: row.captured, ...transaction } });
     }
     row.position = JSON.stringify(object.reader.position);
     this.#save(row);
@@ -466,7 +598,7 @@ export class DurableLog {
     const body = readFileSync(object.database.path);
     // A snapshot key already taken with other content (a history this node
     // doesn't know) is never overwritten: the snapshot takes the next txid.
-    while (!(await this.#putSnapshot(row.class, row.id, row.captured, body))) {
+    while (!(await this.#putSnapshot(row, row.captured, body))) {
       row.captured += 1;
       this.#save(row);
     }
@@ -483,8 +615,8 @@ export class DurableLog {
   }
 
   // True once the snapshot is in the bucket; false if the key holds other content.
-  async #putSnapshot(className, id, txid, body) {
-    const key = `${this.#root}/objects/${className}/${id}/snapshot-${pad(txid)}.sqlite`;
+  async #putSnapshot(row, txid, body) {
+    const key = `${this.#root}/objects/${row.class}/${row.id}/snapshot-${pad(txid)}-e${row.epoch ?? 0}.sqlite`;
     if ((await this.#client.put(key, body, { ifNoneMatch: "*" })) !== null) return true;
     const existing = await this.#client.get(key);
     if (existing && Buffer.compare(existing.body, body) === 0) return true;
@@ -501,7 +633,7 @@ export class DurableLog {
   async compact() {
     if (this.#closed) return;
     for (const row of this.#state.all()) {
-      if (!this.#owns(row.id) || row.shipped <= row.snapshot) continue;
+      if (!this.#owns(row.id) || row.shipped <= row.snapshot || !this.#mayCompact(row)) continue;
       const open = [...this.#objects.values()].find((object) => object.row.class === row.class && object.row.id === row.id);
       if (open) await this.#snapshotNow(open);
       else await this.#snapshotClosed(this.#row(row.class, row.id));
@@ -512,7 +644,10 @@ export class DurableLog {
       if (!key.endsWith(".seg") || key === live) continue;
       const object = await this.#client.get(key);
       if (!object) continue;
-      const covered = decodeSegment(object.body).every((entry) => (this.#state.get(entry.class, entry.id)?.snapshot ?? 0) >= entry.txid);
+      const covered = decodeSegment(object.body).every((entry) => {
+        const row = this.#state.get(entry.class, entry.id);
+        return row !== null && this.#mayCompact(row) && row.snapshot >= entry.txid;
+      });
       if (covered) await this.#client.delete(key);
     }
   }
@@ -521,7 +656,7 @@ export class DurableLog {
     const path = join(this.#objectsDirectory, row.class, `${row.id}.sqlite`);
     if (!existsSync(path) || existsSync(`${path}-wal`) || row.captured !== row.shipped) return;
     const body = readFileSync(path);
-    while (!(await this.#putSnapshot(row.class, row.id, row.captured, body))) {
+    while (!(await this.#putSnapshot(row, row.captured, body))) {
       row.captured += 1;
       row.shipped = row.captured;
       this.#save(row);
@@ -588,6 +723,8 @@ function encodeSegment(entries) {
     entries: entries.map((entry) => ({
       class: entry.class,
       id: entry.id,
+      // Absent in segments from before epochs: read as 0.
+      epoch: entry.epoch ?? 0,
       txid: entry.txid,
       pageSize: entry.pageSize,
       databasePages: entry.databasePages,

@@ -8,6 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { BucketBackup } from "./backup.js";
+import { Cluster } from "./cluster.js";
 import { DurableLog } from "./durable.js";
 import { AlarmIndex, DurableObjectNamespace } from "./objects.js";
 import { shardOf } from "./ports.js";
@@ -42,8 +43,12 @@ export class NativeEngine {
   // acknowledged ("durable").
   // shard: { index, count, peer(index) } when this engine is one of several
   // threads (--threads); it then runs only the objects whose IDs map to it.
-  constructor({ config, persistDirectory, idleEvictMs = 60_000, backup, shard, log = (message) => console.error(message) }) {
+  // cluster: { name, ttlMs, onFence } makes this node one of several sharing
+  // the bucket (durable mode only); objects are claimed as they are used.
+  constructor({ config, persistDirectory, idleEvictMs = 60_000, backup, shard, cluster, log = (message) => console.error(message) }) {
     this.shard = shard;
+    if (cluster && backup?.mode !== "durable") throw new Error("Running several nodes needs --backup-mode durable.");
+    if (cluster && shard) throw new Error("--node-name can't be combined with --threads yet.");
     this.idleEvictMs = idleEvictMs;
     this.evictions = 0;
     this.config = config;
@@ -59,15 +64,29 @@ export class NativeEngine {
         client: backup.client,
         prefix: backup.prefix,
         scriptName: this.scriptName,
-        writer: shard ? `t${shard.index}` : "t0",
+        writer: cluster ? cluster.name : shard ? `t${shard.index}` : "t0",
         statePath: join(persistDirectory, "log-state.sqlite"),
         objectsDirectory: this.objectsDirectory,
         owns: (id) => this.owns(id),
+        alive: () => !this.cluster || this.cluster.alive(),
+        // With several nodes, only objects this node owns now, in their current epoch.
+        mayCompact: (row) => !this.cluster || (this.cluster.alive() && this.owned.get(`${row.class}/${row.id}`)?.record.epoch === row.epoch),
         tuning: backup.tuning,
         log,
       });
     } else if (backup) {
       this.backup = new BucketBackup({ ...backup, scriptName: this.scriptName, tempDirectory: join(persistDirectory, "backup-tmp"), log });
+    }
+    if (cluster) {
+      this.cluster = new Cluster({
+        client: backup.client, prefix: backup.prefix, scriptName: this.scriptName, name: cluster.name, addr: cluster.addr, ttlMs: cluster.ttlMs, log,
+        onFence: (reason) => {
+          this.#stopServing(reason);
+          cluster.onFence?.(reason);
+        },
+      });
+      this.owned = new Map();
+      this.clusterOptions = cluster;
     }
   }
 
@@ -76,7 +95,9 @@ export class NativeEngine {
     installWorkersGlobals();
     mkdirSync(this.objectsDirectory, { recursive: true });
     this.alarmIndex = new AlarmIndex(join(this.persistDirectory, "alarms.sqlite"));
-    if (this.backup || this.durable) await this.#restore();
+    // With several nodes, objects are restored as they are claimed.
+    if (this.cluster) await this.cluster.start();
+    else if (this.backup || this.durable) await this.#restore();
     const module = await this.#load();
     Object.assign(this.env, this.config.vars ?? {});
     for (const binding of this.config.durable_objects?.bindings ?? []) {
@@ -97,8 +118,41 @@ export class NativeEngine {
     for (const { class: className, id, at } of this.alarmIndex.pending()) {
       if (!this.owns(id)) continue;
       const namespace = this.namespaces.find((candidate) => candidate.className === className);
-      if (namespace) namespace.host(namespace.idFromString(id)).scheduleAlarm(at);
+      if (!namespace) continue;
+      // A claimed object schedules its own alarm once it opens.
+      if (this.cluster) namespace.host(namespace.idFromString(id));
+      else namespace.host(namespace.idFromString(id)).scheduleAlarm(at);
     }
+    if (this.cluster) {
+      // Runs alarms of objects whose node is gone: claiming the object takes it over.
+      this.waker = setInterval(() => void this.#wake(), this.clusterOptions.wakeMs ?? 5_000);
+      this.waker.unref?.();
+    }
+  }
+
+  #wakeSkip = new Map();
+
+  async #wake() {
+    if (this.fenced) return;
+    try {
+      for (const { className, id } of await this.cluster.dueAlarms()) {
+        const key = `${className}/${id}`;
+        if (this.owned.has(key) || (this.#wakeSkip.get(key) ?? 0) > Date.now()) continue;
+        const namespace = this.namespaces.find((candidate) => candidate.className === className);
+        if (!namespace) continue;
+        // A live node runs it: look again after a lease period.
+        await namespace.host(namespace.idFromString(id)).whenReady().catch(() => this.#wakeSkip.set(key, Date.now() + this.cluster.ttlMs));
+      }
+    } catch (error) {
+      this.log(`alarm waker failed: ${error.message}`);
+    }
+  }
+
+  // Once fenced, the node serves nothing: another node may own its objects.
+  #stopServing(reason) {
+    this.fenced = reason;
+    clearInterval(this.waker);
+    for (const namespace of this.namespaces) for (const host of [...namespace.hosts()]) host.close();
   }
 
   // Objects missing locally come back from the bucket. If the bucket can't
@@ -155,10 +209,27 @@ export class NativeEngine {
   }
 
   async close() {
+    clearInterval(this.waker);
     await new Promise((resolveClose) => (this.server ? this.server.close(() => resolveClose()) : resolveClose()));
     for (const namespace of this.namespaces) for (const host of namespace.hosts()) host.close();
     await this.backup?.close();
     await this.durable?.close();
+    if (this.cluster) {
+      // Hand objects back so other nodes take them at once, but only those
+      // whose writes all reached the bucket; the rest wait out the lease.
+      for (const { className, id, record } of this.cluster.fenced ? [] : this.owned.values()) {
+        // An object never prepared here (its claim failed) has no writes in
+        // this epoch: its history ends where the epoch began.
+        let cut = record.history.at(-1).from;
+        if (this.durable.epochOf(className, id) === record.epoch) {
+          const progress = this.durable.progress(className, id);
+          if (!progress || progress.captured !== progress.shipped) continue;
+          cut = progress.shipped;
+        }
+        await this.cluster.release(className, id, record, cut).catch((error) => this.log(`releasing ${className} ${id} failed: ${error.message}`));
+      }
+      await this.cluster.stop();
+    }
     this.alarmIndex?.close();
   }
 

@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 export const nativeDevHelp = `Usage: sobjects dev [project] --engine native [--port PORT] [--host HOST] [--persist-to DIR] [--idle-evict-seconds N]
        [--backup-bucket s3://BUCKET/PREFIX] [--backup-mode interval|durable] [--backup-interval-seconds N]
        [--threads N] [--thread-stall-seconds N] [--thread-memory-mb N]
+       [--node-name NAME] [--lease-seconds N]
 
 Run a Wrangler project's Worker and Durable Objects in this Node process, with
 each object's storage in a SQLite file under --persist-to (default:
@@ -34,14 +35,22 @@ them. A thread that crashes, exceeds --thread-memory-mb, or doesn't answer for
 --thread-stall-seconds (default 30) is replaced, and its objects reload from
 disk; calls in flight on it fail. Threads use more cores and keep a busy or
 stuck object from blocking objects on other threads. They are not a security
-boundary.`;
+boundary.
+
+With --node-name (and --backup-mode durable), this node is one of several
+sharing the bucket prefix. Each object runs on one node at a time: a node
+claims an object when it first serves it, and takes over the objects of a
+node whose lease (--lease-seconds, default 10) ran out, restoring them from
+the bucket. A node that can't renew its lease stops acknowledging writes.
+Names must be unique and stable per node. Calls for an object another live
+node runs fail for now; forwarding between nodes comes next.`;
 
 export function wantsNativeEngine(args) {
   return args.some((argument, index) => argument === "--engine=native" || (argument === "--engine" && args[index + 1] === "native"));
 }
 
 export function parseNativeDevArgs(args, cwd) {
-  const options = { project: ".", port: 8787, host: "127.0.0.1", persistTo: undefined, idleEvictSeconds: 60, backupBucket: undefined, backupMode: "interval", backupIntervalSeconds: 10, threads: 0, threadStallSeconds: 30, threadMemoryMb: undefined };
+  const options = { project: ".", port: 8787, host: "127.0.0.1", persistTo: undefined, idleEvictSeconds: 60, backupBucket: undefined, backupMode: "interval", backupIntervalSeconds: 10, threads: 0, threadStallSeconds: 30, threadMemoryMb: undefined, nodeName: undefined, leaseSeconds: 10 };
   let sawProject = false;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
@@ -61,6 +70,8 @@ export function parseNativeDevArgs(args, cwd) {
     else if (argument === "--backup-interval-seconds") options.backupIntervalSeconds = Number(value());
     else if (argument === "--backup-mode") options.backupMode = value();
     else if (argument === "--threads") options.threads = Number(value());
+    else if (argument === "--node-name") options.nodeName = value();
+    else if (argument === "--lease-seconds") options.leaseSeconds = Number(value());
     else if (argument === "--thread-stall-seconds") options.threadStallSeconds = Number(value());
     else if (argument === "--thread-memory-mb") options.threadMemoryMb = Number(value());
     else if (!argument.startsWith("-") && !sawProject) {
@@ -75,6 +86,9 @@ export function parseNativeDevArgs(args, cwd) {
   if (!Number.isInteger(options.threads) || options.threads < 0 || options.threads > 256) throw new Error("--threads must be an integer from 0 to 256.");
   if (!Number.isFinite(options.threadStallSeconds) || options.threadStallSeconds < 1) throw new Error("--thread-stall-seconds must be 1 or more.");
   if (options.threadMemoryMb !== undefined && (!Number.isInteger(options.threadMemoryMb) || options.threadMemoryMb < 16)) throw new Error("--thread-memory-mb must be an integer of 16 or more.");
+  if (!Number.isFinite(options.leaseSeconds) || options.leaseSeconds < 3) throw new Error("--lease-seconds must be 3 or more.");
+  if (options.nodeName !== undefined && (options.backupMode !== "durable" || !options.backupBucket)) throw new Error("--node-name needs --backup-bucket with --backup-mode durable.");
+  if (options.nodeName !== undefined && options.threads > 0) throw new Error("--node-name can't be combined with --threads yet.");
   const project = resolve(cwd, options.project);
   return { ...options, project, persistTo: resolve(cwd, options.persistTo ?? resolve(project, ".sobjects", "native")) };
 }
@@ -115,12 +129,16 @@ export async function runNativeDev(args, io, { cwd, onSignal, env = process.env 
         const { client, prefix } = S3Client.fromEnvironment({ bucketUri: options.backupBucket, env });
         backup = { client, prefix, intervalMs: options.backupIntervalSeconds * 1000, mode: options.backupMode };
       }
-      engine = new NativeEngine({ ...common, backup });
+      const cluster = options.nodeName ? { name: options.nodeName, ttlMs: options.leaseSeconds * 1000, onFence: () => {
+        io.error("Stopping: this node lost its lease, and another node may now run its objects.");
+        process.exit(3);
+      } } : undefined;
+      engine = new NativeEngine({ ...common, backup, cluster });
     }
     await engine.start();
     const address = await engine.listen({ host: options.host, port: options.port });
     if (engine.restoredObjects) io.log(`Restored ${engine.restoredObjects} object(s) from ${options.backupBucket}`);
-    io.log(`Native engine ready on http://${address.address}:${address.port} (state: ${options.persistTo}${options.backupBucket ? `, backups: ${options.backupBucket} (${options.backupMode})` : ""}${options.threads ? `, threads: ${options.threads}` : ""})`);
+    io.log(`Native engine ready on http://${address.address}:${address.port} (state: ${options.persistTo}${options.backupBucket ? `, backups: ${options.backupBucket} (${options.backupMode})` : ""}${options.threads ? `, threads: ${options.threads}` : ""}${options.nodeName ? `, node: ${options.nodeName}` : ""})`);
   } catch (error) {
     io.error(error.message);
     await engine?.close().catch(() => {});
