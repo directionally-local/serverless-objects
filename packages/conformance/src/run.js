@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -36,13 +36,15 @@ export function parseArgs(args) {
       options.suites = suite === "all" ? Object.keys(SUITES) : [suite];
     }
     else if (arg === "--restart-after-alarm") options.restartAfterAlarm = true;
+    else if (arg === "--keep-deployment") options.keepDeployment = true;
     else if (arg === "--no-restart-after-alarm") options.restartAfterAlarm = false;
     else if (arg === "--help" || arg === "-h") options.help = true;
     else throw new Error(`Unknown option: ${arg}`);
   }
 
   if (options.help) return options;
-  if (!["wrangler", "celld", "native"].includes(options.target)) throw new Error("--target must be wrangler, celld or native");
+  if (!["wrangler", "celld", "native", "cloudflare"].includes(options.target)) throw new Error("--target must be wrangler, celld, native or cloudflare");
+  if (options.target === "cloudflare" && options.restartAfterAlarm) throw new Error("--restart-after-alarm is not possible on Cloudflare");
   if (options.suites.some((suite) => !SUITES[suite])) throw new Error("--suite must be core, agents, or all");
   if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65_535) throw new Error("--port must be an integer from 1 to 65535");
   if (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 1_000) throw new Error("--timeout must be at least 1000 milliseconds");
@@ -50,7 +52,7 @@ export function parseArgs(args) {
     throw new Error("--alarm-delay must be at least 1000 milliseconds");
   }
 
-  options.restartAfterAlarm ??= options.target !== "wrangler";
+  options.restartAfterAlarm ??= options.target !== "wrangler" && options.target !== "cloudflare";
   options.alarmDelayMs ??= options.restartAfterAlarm ? 30_000 : 2_000;
   return options;
 }
@@ -63,7 +65,7 @@ export function validateCaseResult(name, response, body) {
 
 function usage() {
   return [
-    "Usage: node src/run.js [--target wrangler|celld|native] [options]",
+    "Usage: node src/run.js [--target wrangler|celld|native|cloudflare] [options]",
     "",
     "Options:",
     "  --target TARGET       Runtime to test (default: wrangler)",
@@ -72,6 +74,7 @@ function usage() {
     "  --alarm-delay MS      Alarm delay (default: 2000; 30000 with restart)",
     "  --celld-bin PATH      celld executable (or set CELLD_BIN)",
     "  --suite SUITE         core, agents, or all (default: all)",
+    "  --keep-deployment     cloudflare: leave the Workers deployed afterwards",
     "  --restart-after-alarm Restart target while a durable alarm is pending",
     "  --no-restart-after-alarm  Do not restart target during alarm check",
   ].join("\n");
@@ -294,10 +297,33 @@ async function runAgentsScheduleCheck(baseUrl) {
   throw new Error(`Schedule did not fire before timeout: ${JSON.stringify(status)}`);
 }
 
+// Deploys a suite's app to the Cloudflare account Wrangler is logged in to
+// and returns its workers.dev URL.
+async function deployToCloudflare(projectDir) {
+  const config = path.join(projectDir, "wrangler.json");
+  const output = await wrangler(["deploy", "--config", config]);
+  const url = /https:\/\/[a-z0-9.-]+\.workers\.dev/.exec(output)?.[0];
+  if (!url) throw new Error(`wrangler deploy printed no workers.dev URL:\n${output}`);
+  console.log(`Deployed to ${url}`);
+  return url;
+}
+
+function wrangler(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("wrangler", args, { cwd: PACKAGE_DIR, stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    child.stdout.on("data", (chunk) => (output += chunk));
+    child.stderr.on("data", (chunk) => (output += chunk));
+    child.on("error", reject);
+    child.on("close", (code) => (code === 0 ? resolve(output) : reject(new Error(`wrangler ${args[0]} exited ${code}:\n${output}`))));
+  });
+}
+
 async function runSuite(suite, options, scratchDir) {
-  const baseUrl = `http://127.0.0.1:${options.port}`;
   const projectDir = path.join(scratchDir, suite);
   await cp(SUITES[suite], projectDir, { recursive: true });
+  if (options.target === "cloudflare") return runCloudflareSuite(suite, options, projectDir);
+  const baseUrl = `http://127.0.0.1:${options.port}`;
   let child;
 
   const start = async () => {
@@ -332,6 +358,60 @@ async function runSuite(suite, options, scratchDir) {
   } finally {
     if (child) await stopTarget(child);
   }
+}
+
+// On Cloudflare there is no process to restart, and objects hibernate on
+// their own after about 10 seconds without events.
+async function runCloudflareSuite(suite, options, projectDir) {
+  const name = JSON.parse(await readFile(path.join(projectDir, "wrangler.json"), "utf8")).name;
+  const baseUrl = await deployToCloudflare(projectDir);
+  try {
+    await waitForCloudflare(baseUrl, options.timeoutMs);
+    const results = await runCases(baseUrl);
+    const record = async (checkName, check) => {
+      try {
+        results.push({ name: checkName, ...await check() });
+      } catch (error) {
+        results.push({ name: checkName, pass: false, detail: String(error?.message ?? error) });
+      }
+    };
+    if (suite === "core") {
+      await record("alarm-durability", () => runAlarmCheck(baseUrl, options.alarmDelayMs, false));
+      await record("websockets", () => runWebSocketCheck(baseUrl));
+      await record("websocket-hibernation", () => runHibernationCheck(baseUrl, 30_000));
+    } else {
+      await record("client-protocol", () => runAgentsClientCheck(baseUrl));
+      await record("schedule-fires", () => runAgentsScheduleCheck(baseUrl));
+    }
+    return suite === "core" ? results : results.map((result) => ({ ...result, name: `${suite}/${result.name}` }));
+  } finally {
+    if (!options.keepDeployment) await wrangler(["delete", "--name", name, "--force"]).catch((error) => console.error(`Could not delete ${name}: ${error.message}`));
+  }
+}
+
+// A fresh workers.dev hostname can take a few seconds to serve the new Worker.
+async function waitForCloudflare(baseUrl, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  let ready = 0;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${baseUrl}/cases`, { signal: AbortSignal.timeout(5_000) });
+      const body = response.ok ? await response.json().catch(() => null) : null;
+      if (Array.isArray(body)) {
+        // Edge locations pick up a new deployment at different times.
+        if (++ready >= 5) return;
+      } else {
+        ready = 0;
+        lastError = new Error(`HTTP ${response.status}`);
+      }
+    } catch (error) {
+      ready = 0;
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  throw new Error(`Deployment did not answer within ${timeoutMs}ms: ${lastError?.message}`);
 }
 
 // Hibernation: one socket stays open while the object is evicted; the next
