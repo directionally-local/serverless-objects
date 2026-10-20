@@ -52,6 +52,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.sha }}
+      # The publish script always comes from the commit that runs this
+      # workflow, so publishing an older tag uses the current script.
+      - uses: actions/checkout@v4
+        with:
+          path: .ci
+          sparse-checkout: .github/scripts
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -61,7 +67,7 @@ jobs:
       - run: npm install --global npm@11
       - run: npm ci
       - run: npm test
-      - run: node .github/scripts/publish.mjs
+      - run: node .ci/.github/scripts/publish.mjs
         env:
           RELEASE_OUTPUTS: ${{ needs.release-please.outputs.release_outputs }}
           DISPATCH_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || '' }}
