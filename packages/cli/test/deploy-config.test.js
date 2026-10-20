@@ -97,3 +97,46 @@ test("preserves explicit celld flags and environment overrides", async () => {
     args: ["deploy", "--bucket", "s3://cli/fleet", "--endpoint=https://cli.example", "--dry-run"],
   });
 });
+
+test("falls back to SOBJECTS_CONFIG when the project has no sobjects.toml", async () => {
+  const configDirectory = await projectWithConfig();
+  const cwd = await mkdtemp(join(tmpdir(), "sobjects-deploy-project-"));
+  directories.push(cwd);
+  const output = capture();
+  let invocation;
+  const exitCode = await run(["deploy"], output.io, {
+    cwd,
+    env: { SOBJECTS_CELLD_BIN: "/celld", PATH: "/usr/bin", SOBJECTS_CONFIG: join(configDirectory, "sobjects.toml") },
+    ensureToken: async () => "test-token",
+    spawnProcess: (executable, args) => {
+      invocation = { executable, args };
+      return childWithExit();
+    },
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(invocation.args, [
+    "deploy",
+    "--bucket", "s3://example/fleet",
+    "--endpoint", "https://storage.example.test",
+    "--region", "auto",
+  ]);
+});
+
+test("deploys without defaults when neither config exists", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "sobjects-deploy-project-"));
+  directories.push(cwd);
+  const output = capture();
+  let invocation;
+  const exitCode = await run(["deploy", "--bucket", "s3://explicit"], output.io, {
+    cwd,
+    env: { SOBJECTS_CELLD_BIN: "/celld", PATH: "/usr/bin" },
+    ensureToken: async () => "test-token",
+    spawnProcess: (executable, args) => {
+      invocation = { executable, args };
+      return childWithExit();
+    },
+  });
+  assert.equal(exitCode, 0);
+  assert.deepEqual(invocation.args, ["deploy", "--bucket", "s3://explicit"]);
+});

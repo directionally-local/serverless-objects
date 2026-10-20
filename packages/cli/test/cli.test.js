@@ -111,6 +111,23 @@ test("passes deploy arguments to the configured celld binary", async () => {
   assert.equal(exitCode, 0);
 });
 
+test("up reads SOBJECTS_CONFIG when --config is absent, and --config wins", async () => {
+  const loaded = [];
+  const options = (env) => ({
+    cwd: "/work",
+    env: { SOBJECTS_CELLD_BIN: "/celld", ...env },
+    loadConfig: async (path) => {
+      loaded.push(path);
+      return { bucket: "s3://example/fleet", listen: "127.0.0.1:8080" };
+    },
+    spawnProcess: () => childWithExit(0),
+  });
+  assert.equal(await run(["up"], capture().io, options({ SOBJECTS_CONFIG: "/etc/serverless-objects/sobjects.toml" })), 0);
+  assert.equal(await run(["up", "--config", "mine.toml"], capture().io, options({ SOBJECTS_CONFIG: "/etc/serverless-objects/sobjects.toml" })), 0);
+  assert.equal(await run(["up"], capture().io, options({})), 0);
+  assert.deepEqual(loaded, ["/etc/serverless-objects/sobjects.toml", "/work/mine.toml", "/work/sobjects.toml"]);
+});
+
 test("up installs pinned celld and starts it with validated config", async () => {
   const output = capture();
   const cwd = "/work/app";

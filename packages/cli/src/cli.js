@@ -62,7 +62,8 @@ const upHelpText = `Usage: sobjects up [--config PATH] [--detach]
 Read [celld] settings from sobjects.toml, install pinned celld if needed, and
 run the node in the foreground by default. When [ingress] or [admin] is
 configured, the supervisor (TLS ingress and loopback admin API) starts first.
-Use --detach to run them in the background. The default config path is ./sobjects.toml.`;
+Use --detach to run them in the background. The default config path is
+$SOBJECTS_CONFIG, else ./sobjects.toml.`;
 
 const serviceHelpText = `Usage: sobjects service print|install [options]
 
@@ -82,7 +83,8 @@ config (systemd) or in the unit's environment, never in sobjects.toml.`;
 const superviseHelpText = `Usage: sobjects supervise [--config PATH]
 
 Run the [ingress] and [admin] services from sobjects.toml in the foreground,
-next to a celld started separately. SIGHUP reloads TLS certificates from disk.
+next to a celld started separately. The default config path is
+$SOBJECTS_CONFIG, else ./sobjects.toml. SIGHUP reloads TLS certificates from disk.
 Ingress health: ${HEALTH_PATH}. Admin API: /api/v1/health, /api/v1/node,
 /api/v1/objects, POST /api/v1/objects/<Class:id>/evict, and /metrics.`;
 
@@ -180,7 +182,7 @@ async function runUp(args, io, dependencies) {
     return 0;
   }
 
-  const options = parseConfigOptions(args, io, "up", { allowDetach: true });
+  const options = parseConfigOptions(args, io, "up", { allowDetach: true, env: dependencies.env });
   if (!options) return 2;
   const { configPath, detached } = options;
 
@@ -301,7 +303,7 @@ async function runSupervise(args, io, dependencies) {
     io.log(superviseHelpText);
     return 0;
   }
-  const options = parseConfigOptions(args, io, "supervise");
+  const options = parseConfigOptions(args, io, "supervise", { env: dependencies.env });
   if (!options) return 2;
 
   let config;
@@ -433,8 +435,9 @@ async function openAccessLog(target, io) {
   };
 }
 
-function parseConfigOptions(args, io, command, { allowDetach = false } = {}) {
-  let configPath = "sobjects.toml";
+// SOBJECTS_CONFIG sets the default, e.g. in a container image.
+function parseConfigOptions(args, io, command, { allowDetach = false, env = {} } = {}) {
+  let configPath = env.SOBJECTS_CONFIG || "sobjects.toml";
   let detached = false;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
@@ -897,13 +900,15 @@ function reportProcessError(error, executable, io, context) {
   }
 }
 
+// Deploy defaults come from the project's sobjects.toml, else from SOBJECTS_CONFIG.
 async function deployArgsFromConfig(args, { cwd, env, loadConfig }) {
-  const configPath = join(projectDirectory(args, cwd), "sobjects.toml");
+  let configPath = join(projectDirectory(args, cwd), "sobjects.toml");
   try {
     await access(configPath);
   } catch (error) {
-    if (error.code === "ENOENT") return args;
-    throw new Error(`Could not access ${configPath}: ${error.message}`);
+    if (error.code !== "ENOENT") throw new Error(`Could not access ${configPath}: ${error.message}`);
+    if (!env.SOBJECTS_CONFIG) return args;
+    configPath = resolve(cwd, env.SOBJECTS_CONFIG);
   }
 
   const config = await loadConfig(configPath);
