@@ -86,6 +86,7 @@ export class RunObject extends DurableObject {
   scheduleTimer(input) { return this.#host.scheduleTimer(input); }
   cancelTimer(id) { return this.#host.cancelTimer(id); }
   listTimers() { return this.#host.listTimers(); }
+  approve(timerId, decision) { return this.#host.approve(timerId, decision); }
   reconcileInterrupted() { return this.#host.reconcileInterrupted(); }
 
   async alarm() {

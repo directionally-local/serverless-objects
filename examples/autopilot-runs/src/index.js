@@ -16,7 +16,7 @@ const WORKSPACE = "demo";
 const METHODS = new Set([
   "get", "transition", "resume", "recordToolIntent", "recordToolResult", "recordCheckpoint", "recordUsage",
   "appendSessionEvents", "listEvents", "listSessionEvents", "scheduleTimer", "cancelTimer", "listTimers", "reconcileInterrupted",
-  "start", "cancel", "executorState",
+  "start", "cancel", "executorState", "approve",
 ]);
 
 // start() runs the task with Autopilot in a Hotcell cell. A wake timer only

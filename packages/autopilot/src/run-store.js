@@ -23,6 +23,9 @@ export const DEFAULT_LEASE_MS = 30_000;
 const DEFAULT_RETRY_MS = 1_000;
 const MAX_RETRY_MS = 60_000;
 const MAX_PAGE = 500;
+// Timers the alarm delivers: time and job timers, and approvals once decided.
+const DELIVERABLE = "(condition_type IN ('time', 'job') OR (condition_type = 'approval' AND decision_json IS NOT NULL))";
+const APPROVAL_DECISIONS = new Set(["approved", "denied"]);
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS run (
@@ -67,7 +70,8 @@ const SCHEMA = `
     max_attempts INTEGER NOT NULL DEFAULT 5,
     lease_until INTEGER,
     last_error TEXT,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    decision_json TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_run_timers_due ON run_timers(status, wake_at);
   CREATE TABLE IF NOT EXISTS session_events (
@@ -99,6 +103,8 @@ export class RunStore {
     this.#randomId = randomId;
     this.#onEvent = onEvent;
     for (const statement of SCHEMA.split(";").map((part) => part.trim()).filter(Boolean)) db.exec(statement);
+    const timerColumns = new Set(db.exec("SELECT name FROM pragma_table_info('run_timers')").map((row) => row.name));
+    if (!timerColumns.has("decision_json")) db.exec("ALTER TABLE run_timers ADD COLUMN decision_json TEXT");
   }
 
   createRun(input) {
@@ -351,8 +357,16 @@ export class RunStore {
     ).map((row) => ({ ...JSON.parse(row.event_json), seq: row.seq }));
   }
 
-  scheduleTimer({ condition, wakeAt, intervalMs = 10_000, jobId, maxAttempts = 5 }) {
+  // Approval timers wait for approve(); expiresAt (optional) fails one left unanswered.
+  scheduleTimer({ condition, wakeAt, expiresAt, intervalMs = 10_000, jobId, maxAttempts = 5 }) {
     if (!TIMER_CONDITIONS.includes(condition)) throw new Error(`Unknown timer condition: ${condition}`);
+    if (condition === "approval") {
+      if (wakeAt !== undefined) throw new Error("approval timers take expiresAt, not wakeAt");
+      if (expiresAt !== undefined && !Number.isFinite(expiresAt)) throw new Error("expiresAt must be a finite timestamp");
+      wakeAt = expiresAt === undefined ? -1 : expiresAt;
+    } else if (expiresAt !== undefined) {
+      throw new Error("only approval timers take expiresAt");
+    }
     if (!Number.isFinite(wakeAt)) throw new Error("wakeAt must be a finite timestamp");
     if (condition === "job" && !jobId) throw new Error("job timers require jobId");
     if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 100) {
@@ -383,12 +397,30 @@ export class RunStore {
     return this.#db.exec("SELECT * FROM run_timers ORDER BY wake_at").map(rowToTimer);
   }
 
-  // The earliest moment a timer needs attention: a scheduled wake or an expired lease.
+  // The earliest moment a timer needs attention: a scheduled wake, an expired
+  // lease, or an approval's expiry.
   nextTimerAt() {
     return this.#db.exec(
       `SELECT MIN(CASE WHEN status = 'scheduled' THEN wake_at ELSE lease_until END) AS next_at
-       FROM run_timers WHERE status IN ('scheduled', 'claimed') AND condition_type IN ('time', 'job')`,
+       FROM run_timers WHERE status IN ('scheduled', 'claimed')
+         AND (${DELIVERABLE} OR (condition_type = 'approval' AND decision_json IS NULL AND wake_at >= 0))`,
     )[0].next_at ?? null;
+  }
+
+  // Record an approval decision once and make the timer due for delivery.
+  resolveApproval(id, decision, reason) {
+    if (!APPROVAL_DECISIONS.has(decision)) throw new Error("decision must be approved or denied");
+    if (reason !== undefined && reason !== null && typeof reason !== "string") throw new Error("reason must be a string");
+    return this.#tx(() => {
+      const timer = this.getTimer(id);
+      if (!timer || timer.condition !== "approval") throw new Error(`Approval timer not found: ${id}`);
+      if (timer.decision) throw new Error(`Approval ${id} was already ${timer.decision.decision}`);
+      if (timer.status !== "scheduled") throw new Error(`Approval ${id} is ${timer.status}`);
+      const record = { decision, reason: reason ?? null };
+      this.#db.exec("UPDATE run_timers SET decision_json = ?, wake_at = ? WHERE id = ?", JSON.stringify(record), this.#now(), id);
+      this.#appendEvent("approval", id, null, record);
+      return this.getTimer(id);
+    });
   }
 
   // Lease due timers; a lease that expires (the object died mid-wake) is retried.
@@ -400,10 +432,15 @@ export class RunStore {
          WHERE status = 'claimed' AND lease_until <= ? AND attempts >= max_attempts`,
         now,
       );
+      this.#db.exec(
+        `UPDATE run_timers SET status = 'failed', last_error = 'approval expired'
+         WHERE condition_type = 'approval' AND decision_json IS NULL AND status = 'scheduled' AND wake_at >= 0 AND wake_at <= ?`,
+        now,
+      );
       const due = this.#db.exec(
         `SELECT id FROM run_timers
          WHERE ((status = 'scheduled' AND wake_at <= ?) OR (status = 'claimed' AND lease_until <= ?))
-           AND condition_type IN ('time', 'job') AND attempts < max_attempts
+           AND ${DELIVERABLE} AND attempts < max_attempts
          ORDER BY wake_at LIMIT ?`,
         now, now, MAX_PAGE,
       );
@@ -583,5 +620,7 @@ function rowToTimer(row) {
     leaseUntil: row.lease_until,
     lastError: row.last_error,
     createdAt: row.created_at,
+    decision: row.decision_json ? JSON.parse(row.decision_json) : null,
+    expiresAt: row.condition_type === "approval" && !row.decision_json && row.wake_at >= 0 ? row.wake_at : null,
   };
 }

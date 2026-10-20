@@ -98,10 +98,11 @@ Streamed assistant text is logged a line at a time (and a PEM block whole), so a
 | `recordToolIntent(id, name, args)` / `recordToolResult(id, name, {ok, content, errorCode})` | Hashes only, never raw arguments or output. A tool budget throws `RunToolBudgetExceededError` and moves the run to `needs_input`. |
 | `recordCheckpoint()` | The executor saved its session after its last tool results. |
 | `recordUsage({promptTokens, completionTokens, costUsd?})` | Token and cost budgets move the run to `needs_input`. |
-| `scheduleTimer({condition, wakeAt, intervalMs?, jobId?, maxAttempts?})` / `cancelTimer(id)` / `listTimers()` | `time` and `job` timers drive the alarm. `job` timers call your `checkJob(jobId)` override. `approval` timers are stored but never fire. |
+| `scheduleTimer({condition, wakeAt, intervalMs?, jobId?, maxAttempts?})` / `cancelTimer(id)` / `listTimers()` | `time` and `job` timers drive the alarm. `job` timers call your `checkJob(jobId)` override. `approval` timers take an optional `expiresAt` instead of `wakeAt`. |
+| `approve(timerId, {decision, reason?})` | Resolves an approval timer of a waiting run exactly once, with `decision` either `"approved"` or `"denied"`. It records an `approval` run event (whose `toolCallId` holds the timer id), then delivers a wake with `condition: "approval"`, `decision` and `reason` under the usual rules: running before notify, retry and backoff. An approval left past `expiresAt` fails the timer and the waiting run. |
 | `reconcileInterrupted()` | After an executor restart: requeue from a checkpoint, or mark `interrupted_unknown` if a tool action may have been cut off. Usually called through `RunRegistry.reconcile()`. |
 | `appendSessionEvents(events)` / `listSessionEvents({after, limit})` | The Camouflage session log; see below. |
-| `listEvents({after, limit})` | Control events: `state`, `tool_intent`, `tool_result`, `usage`, `checkpoint`. |
+| `listEvents({after, limit})` | Control events: `state`, `tool_intent`, `tool_result`, `usage`, `checkpoint`, `approval`. |
 
 ## Event streams
 

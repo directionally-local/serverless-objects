@@ -107,6 +107,17 @@ export class RunHost {
     return this.store.listTimers();
   }
 
+  // Resolve an approval timer and deliver it as a wake right away. Delivery
+  // follows the usual rules: the run is marked running first, and a failing
+  // onWake retries with backoff.
+  async approve(timerId, { decision, reason } = {}) {
+    const run = this.store.getRun();
+    if (run?.status !== "waiting") throw new Error(`Run ${run?.id ?? ""} is not waiting (status: ${run?.status ?? "none"})`);
+    this.store.resolveApproval(timerId, decision, reason);
+    await this.processDueTimers();
+    return this.store.getTimer(timerId);
+  }
+
   async reconcileInterrupted() {
     const run = this.store.reconcileInterrupted();
     if (run) await this.#afterChange(run);
@@ -165,6 +176,7 @@ export class RunHost {
         condition: timer.condition,
         ...(timer.jobId ? { jobId: timer.jobId } : {}),
         ...(jobStatus ? { jobStatus } : {}),
+        ...(timer.decision ? { decision: timer.decision.decision, reason: timer.decision.reason } : {}),
       });
       this.store.completeTimer(timer.id);
     } catch (error) {
