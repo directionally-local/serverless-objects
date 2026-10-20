@@ -2,7 +2,7 @@
 
 Recorded 19 Oct 2026 on macOS arm64 with Node.js 24.12.0, using the local
 Wrangler runner as the reference and celld's local development server. Each
-runner completed all 16 checks (10 core, 6 Agents SDK) in one run.
+runner completed all of its checks in one run: 16 on Wrangler (10 core, 6 Agents SDK) and 17 on celld (adding hibernation).
 
 - Wrangler: 4.150.0 (`wrangler dev --local`)
 - celld: 0.6.2 (`celld dev`)
@@ -22,6 +22,7 @@ runner completed all 16 checks (10 core, 6 Agents SDK) in one run.
 | Alarm across process restart | Not run | Pass | celld was restarted with an alarm pending; alarm fired afterward |
 | `deleteAll()` clears alarm | Pass | Pass | Requires the tested compatibility date, `2026-02-24` or later |
 | WebSocket behavior | Pass | Pass | Upgrade, echo, attachment, tags and auto-response |
+| WebSocket hibernation | Not run | Pass | With `CELLD_IDLE_EVICT_S=2`, celld evicted the object while a socket stayed open; the next message reached a new instance with the socket's tags and attachment. Wrangler's local runtime gives the runner no eviction control. |
 | Agents SDK state and SQL | Pass | Pass | `setState`/`this.state` and the `this.sql` tagged template |
 | Agents SDK schedules | Pass | Pass | Delayed and cron schedules, list, cancel; a delayed schedule runs its callback |
 | Agents SDK addressing | Pass | Pass | `getAgentByName`, `this.name`, class name, `/agents/<class>/<name>` routing |
@@ -29,7 +30,7 @@ runner completed all 16 checks (10 core, 6 Agents SDK) in one run.
 
 ## Not covered
 
-This v0 run does not test WebSocket hibernation/eviction, facets, all
+This v0 run does not test hibernation on Wrangler, sockets across a cell move between nodes, facets, all
 compatibility flags, Cloudflare-hosted production behavior, PartyServer, or
 Agents SDK chat agents, MCP, Workflows, streaming RPC and schedules across a
 restart. These runners use `wrangler dev` and `celld dev` directly; they do not
