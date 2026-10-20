@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { RunStore, RunToolBudgetExceededError } from "../src/run-store.js";
-import { RUN, clock, ids, memoryDb } from "./helpers.js";
+import { RunStore, RunToolBudgetExceededError } from "../autopilot/run-store.js";
+import { RUN, clock, ids, memoryDb } from "./autopilot-helpers.js";
 
 function store(options = {}) {
   const time = clock();

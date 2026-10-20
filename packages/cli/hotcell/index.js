@@ -1,6 +1,6 @@
 // Drop-in for the @cloudflare/sandbox 0.x entry points:
 //
-//   import { getSandbox, Sandbox } from "@serverless-objects/hotcell";
+//   import { getSandbox, Sandbox } from "serverless-objects/hotcell";
 //   export { Sandbox };
 //   const sandbox = getSandbox(env.Sandbox, "user-123");
 //   await sandbox.exec("python3 -c 'print(2 + 2)'");

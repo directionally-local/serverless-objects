@@ -1,6 +1,6 @@
 # Autopilot runs as objects
 
-A small HTTP API over [`@serverless-objects/autopilot`](../../packages/autopilot). Its `Run` class is an `AutopilotCellRun`: `start` runs the task with Autopilot in a Hotcell cell. A wake timer only appends a Camouflage `BackgroundTaskUpdate` event, to show durable wakes on their own.
+A small HTTP API over [`serverless-objects/autopilot`](../../docs/autopilot.md). Its `Run` class is an `AutopilotCellRun`: `start` runs the task with Autopilot in a Hotcell cell. A wake timer only appends a Camouflage `BackgroundTaskUpdate` event, to show durable wakes on their own.
 
 ## Deploy
 

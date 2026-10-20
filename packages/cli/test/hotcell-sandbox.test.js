@@ -10,7 +10,7 @@ import {
   isoTimestamp,
   quote,
   sandboxName,
-} from "../src/sandbox.js";
+} from "../hotcell/sandbox.js";
 
 function memoryStorage(entries = []) {
   const map = new Map(entries);

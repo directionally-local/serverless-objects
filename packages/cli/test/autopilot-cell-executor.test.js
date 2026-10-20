@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CellExecutor } from "../src/cell-executor.js";
-import { RunHost } from "../src/run-host.js";
-import { RUN, clock, ids, memoryDb } from "./helpers.js";
+import { CellExecutor } from "../autopilot/cell-executor.js";
+import { RunHost } from "../autopilot/run-host.js";
+import { RUN, clock, ids, memoryDb } from "./autopilot-helpers.js";
 
 // A cell running the Autopilot bridge: control requests arrive as a JSON file
 // plus an exec of the control runner, as in autopilot's aster-cell.ts.

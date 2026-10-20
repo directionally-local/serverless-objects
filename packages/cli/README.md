@@ -43,6 +43,17 @@ sobjects down
 
 The [project README](https://github.com/sinameraji/serverless-objects#quick-start) walks through a complete Durable Object example.
 
+## Modules for Worker code
+
+The package also ships two Durable Object modules, imported from your Worker:
+
+- [`serverless-objects/hotcell`](https://github.com/sinameraji/serverless-objects/blob/main/docs/hotcell-binding.md): a `Sandbox` Durable Object and `getSandbox()` with the Cloudflare Sandbox SDK 0.x call shape, backed by a Hotcell daemon.
+- [`serverless-objects/autopilot`](https://github.com/sinameraji/serverless-objects/blob/main/docs/autopilot.md): Autopilot runs as Durable Objects (`RunObject`, `RunRegistry`). `serverless-objects/autopilot/cell` runs a task with Autopilot in a Hotcell cell (`AutopilotCellRun`).
+
+```sh
+npm install serverless-objects
+```
+
 ## Commands
 
 | Command | What it does |

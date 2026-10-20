@@ -1,7 +1,7 @@
 // Autopilot runs as Durable Objects: one RunObject per run, one RunRegistry
 // per workspace.
 //
-//   import { RunObject, RunRegistry } from "@serverless-objects/autopilot";
+//   import { RunObject, RunRegistry } from "serverless-objects/autopilot";
 //   export { RunObject, RunRegistry };
 //
 //   const run = env.RUNS.getByName(runId);
