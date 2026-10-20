@@ -1,0 +1,13 @@
+{
+  "name": "sobjects-soak",
+  "main": "src/index.js",
+  "compatibility_date": "2026-02-24",
+  "durable_objects": {
+    "bindings": [
+      { "name": "LEDGER", "class_name": "Ledger" },
+      { "name": "TICKER", "class_name": "Ticker" },
+      { "name": "ECHO", "class_name": "Echo" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Ledger", "Ticker", "Echo"] }]
+}
