@@ -195,6 +195,72 @@ test("unsupported Wrangler settings and dev options are refused", async () => {
     port: 9,
     host: "127.0.0.1",
     persistTo: "/work/app/.sobjects/native",
+    idleEvictSeconds: 60,
   });
   assert.throws(() => parseNativeDevArgs(["--inspect"], "/work"), /Unknown option/);
+});
+
+const EVICTION_APP = `
+import { DurableObject } from "cloudflare:workers";
+
+export class Thing extends DurableObject {
+  instance = crypto.randomUUID();
+  async who() {
+    return { instance: this.instance, count: await this.bump() };
+  }
+  async bump() {
+    const count = ((await this.ctx.storage.get("count")) ?? 0) + 1;
+    await this.ctx.storage.put("count", count);
+    return count;
+  }
+  async fetch() {
+    const [client, server] = new WebSocketPair();
+    server.accept();
+    server.addEventListener("message", (event) => server.send(this.instance + ":" + event.data));
+    return new Response(null, { status: 101, webSocket: client });
+  }
+}
+
+export default {
+  async fetch(request, env) {
+    const thing = env.THING.getByName(new URL(request.url).searchParams.get("name") ?? "a");
+    if (request.headers.get("upgrade") === "websocket") return thing.fetch(request);
+    return Response.json(await thing.who());
+  },
+};
+`;
+
+test("idle objects are evicted and rebuilt with their state; an accept()ed socket keeps one in memory", async () => {
+  const directory = await temporaryDirectory();
+  await mkdir(join(directory, "src"));
+  await writeFile(join(directory, "src/index.js"), EVICTION_APP);
+  await writeFile(join(directory, "wrangler.json"), JSON.stringify({ name: "evict", main: "src/index.js", durable_objects: { bindings: [{ name: "THING", class_name: "Thing" }] } }));
+  const engine = new NativeEngine({ config: await loadProjectConfig(directory), persistDirectory: join(directory, ".state"), idleEvictMs: 100, log: () => {} });
+  await engine.start();
+  const { port } = await engine.listen({ port: 0 });
+  const get = async (name) => (await fetch(`http://127.0.0.1:${port}/?name=${name}`)).json();
+  try {
+    const first = await get("a");
+    assert.equal((await get("a")).instance, first.instance);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const rebuilt = await get("a");
+    assert.notEqual(rebuilt.instance, first.instance);
+    assert.equal(rebuilt.count, 3);
+    assert.ok(engine.evictions >= 1);
+
+    // A socket accepted with accept() and listeners pins its object.
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/?name=b`);
+    await new Promise((resolve) => socket.addEventListener("open", resolve, { once: true }));
+    const reply = () => new Promise((resolve) => socket.addEventListener("message", (event) => resolve(event.data.split(":")[0]), { once: true }));
+    const before = reply();
+    socket.send("x");
+    const pinnedInstance = await before;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const after = reply();
+    socket.send("y");
+    assert.equal(await after, pinnedInstance);
+    socket.close();
+  } finally {
+    await engine.close();
+  }
 });

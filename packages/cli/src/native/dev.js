@@ -1,20 +1,22 @@
 // `sobjects dev --engine native`: run a project on the native engine.
 import { resolve } from "node:path";
 
-export const nativeDevHelp = `Usage: sobjects dev [project] --engine native [--port PORT] [--host HOST] [--persist-to DIR]
+export const nativeDevHelp = `Usage: sobjects dev [project] --engine native [--port PORT] [--host HOST] [--persist-to DIR] [--idle-evict-seconds N]
 
 Run a Wrangler project's Worker and Durable Objects in this Node process, with
 each object's storage in a SQLite file under --persist-to (default:
 <project>/.sobjects/native). For trusted code: there is no isolate between the
 app and the engine. Supported: Durable Objects (IDs, RPC, fetch, KV and SQL
-storage, transactions, alarms, input gates) and vars.`;
+storage, transactions, alarms, input gates, WebSockets with the hibernation API)
+and vars. An object idle for --idle-evict-seconds (default 60; 0 never) is
+evicted; its hibernatable WebSockets stay open and wake it again.`;
 
 export function wantsNativeEngine(args) {
   return args.some((argument, index) => argument === "--engine=native" || (argument === "--engine" && args[index + 1] === "native"));
 }
 
 export function parseNativeDevArgs(args, cwd) {
-  const options = { project: ".", port: 8787, host: "127.0.0.1", persistTo: undefined };
+  const options = { project: ".", port: 8787, host: "127.0.0.1", persistTo: undefined, idleEvictSeconds: 60 };
   let sawProject = false;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
@@ -29,12 +31,14 @@ export function parseNativeDevArgs(args, cwd) {
     else if (argument === "--port") options.port = Number(value());
     else if (argument === "--host" || argument === "--ip") options.host = value();
     else if (argument === "--persist-to") options.persistTo = value();
+    else if (argument === "--idle-evict-seconds") options.idleEvictSeconds = Number(value());
     else if (!argument.startsWith("-") && !sawProject) {
       options.project = argument;
       sawProject = true;
     } else throw new Error(`Unknown option for the native engine: ${argument}`);
   }
   if (!Number.isInteger(options.port) || options.port < 0 || options.port > 65_535) throw new Error("--port must be an integer from 0 to 65535.");
+  if (!Number.isFinite(options.idleEvictSeconds) || options.idleEvictSeconds < 0) throw new Error("--idle-evict-seconds must be 0 or more.");
   const project = resolve(cwd, options.project);
   return { ...options, project, persistTo: resolve(cwd, options.persistTo ?? resolve(project, ".sobjects", "native")) };
 }
@@ -51,7 +55,7 @@ export async function runNativeDev(args, io, { cwd, onSignal }) {
     // Loaded on demand: node:sqlite prints an experimental warning when imported.
     const { NativeEngine, loadProjectConfig } = await import("./engine.js");
     const config = await loadProjectConfig(options.project);
-    engine = new NativeEngine({ config, persistDirectory: options.persistTo, log: (message) => io.error(message) });
+    engine = new NativeEngine({ config, persistDirectory: options.persistTo, idleEvictMs: options.idleEvictSeconds * 1000, log: (message) => io.error(message) });
     await engine.start();
     const address = await engine.listen({ host: options.host, port: options.port });
     io.log(`Native engine ready on http://${address.address}:${address.port} (state: ${options.persistTo})`);

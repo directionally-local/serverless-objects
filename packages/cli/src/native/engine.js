@@ -47,7 +47,10 @@ export async function loadProjectConfig(projectDirectory) {
 }
 
 export class NativeEngine {
-  constructor({ config, persistDirectory, log = (message) => console.error(message) }) {
+  // idleEvictMs: drop an idle object's instance after this long (0 keeps it).
+  constructor({ config, persistDirectory, idleEvictMs = 60_000, log = (message) => console.error(message) }) {
+    this.idleEvictMs = idleEvictMs;
+    this.evictions = 0;
     this.config = config;
     this.scriptName = config.name ?? "worker";
     this.persistDirectory = persistDirectory;

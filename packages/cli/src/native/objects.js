@@ -6,6 +6,7 @@
 // that awaits real I/O lets the next one start, as on Cloudflare.
 // blockConcurrencyWhile() and async transactions close the input gate until
 // they settle.
+import { AsyncLocalStorage } from "node:async_hooks";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { IdIssuer } from "./ids.js";
@@ -13,6 +14,10 @@ import { DurableObjectStorage, ObjectDatabase } from "./storage.js";
 import { READY_STATE, WebSocketRequestResponsePair, WorkersWebSocket } from "./websocket.js";
 
 const MAX_TIMER_MS = 2 ** 31 - 1;
+// The object whose event is running, so a socket accepted with accept() keeps
+// that object in memory.
+const currentHost = new AsyncLocalStorage();
+WorkersWebSocket.ownerOf = () => currentHost.getStore();
 const ALARM_RETRY_LIMIT = 6;
 const ALARM_RETRY_BASE_MS = 2_000;
 
@@ -43,7 +48,8 @@ export class DurableObjectNamespace {
 
   get(id) {
     if (!id || typeof id.toString !== "function") throw new TypeError("get() takes a DurableObjectId.");
-    return createStub(this.host(id));
+    const host = this.host(id);
+    return createStub(() => this.host(id), host.id);
   }
 
   getByName(name) {
@@ -67,6 +73,10 @@ export class DurableObjectNamespace {
   hosts() {
     return this.#hosts.values();
   }
+
+  release(host) {
+    if (this.#hosts.get(host.id.toString()) === host) this.#hosts.delete(host.id.toString());
+  }
 }
 
 export class ObjectHost {
@@ -83,6 +93,10 @@ export class ObjectHost {
   // Hibernatable sockets belong to the host, not the instance.
   #sockets = new Map();
   #autoResponse = null;
+  #running = 0;
+  #pinned = new Set();
+  #idleTimer;
+  #closed = false;
 
   constructor(engine, namespace, id, name) {
     this.#engine = engine;
@@ -118,6 +132,7 @@ export class ObjectHost {
     if (at === null) return;
     const delay = Math.max(0, at - Date.now());
     this.#alarmTimer = setTimeout(() => {
+      this.#alarmTimer = undefined;
       if (delay > MAX_TIMER_MS) this.scheduleAlarm(at);
       else void this.#runAlarm();
     }, Math.min(delay, MAX_TIMER_MS));
@@ -215,11 +230,49 @@ export class ObjectHost {
   }
 
   close() {
+    if (this.#closed) return;
+    this.#closed = true;
     clearTimeout(this.#alarmTimer);
+    clearTimeout(this.#idleTimer);
     this.#database.close();
   }
 
+  // A socket accepted with accept() and listeners keeps the object in memory.
+  pinSocket(socket) {
+    this.#pinned.add(socket);
+    clearTimeout(this.#idleTimer);
+  }
+
+  unpinSocket(socket) {
+    this.#pinned.delete(socket);
+    this.#maybeIdle();
+  }
+
+  // Drops the instance after the idle period. Hibernatable sockets and a
+  // pending alarm stay with the host; a fully idle host also closes its
+  // database and leaves memory.
+  #maybeIdle() {
+    clearTimeout(this.#idleTimer);
+    const idleMs = this.#engine.idleEvictMs;
+    if (!idleMs || this.#closed || !this.#instance) return;
+    if (this.#running > 0 || this.#queue.length > 0 || this.#gates.size > 0 || this.#pinned.size > 0) return;
+    this.#idleTimer = setTimeout(() => this.#evict(), idleMs);
+    this.#idleTimer.unref?.();
+  }
+
+  #evict() {
+    if (this.#running > 0 || this.#queue.length > 0 || this.#gates.size > 0 || this.#pinned.size > 0) return;
+    this.#instance = undefined;
+    this.#state = undefined;
+    this.#engine.evictions += 1;
+    if (this.#sockets.size === 0 && this.#alarmTimer === undefined) {
+      this.close();
+      this.#namespace.release(this);
+    }
+  }
+
   #deliver(run) {
+    clearTimeout(this.#idleTimer);
     return new Promise((resolve, reject) => {
       this.#queue.push({ run, resolve, reject });
       this.#schedule();
@@ -239,7 +292,7 @@ export class ObjectHost {
     if (this.#gates.size > 0 || this.#queue.length === 0) return;
     let instance;
     try {
-      instance = this.#ensureInstance();
+      instance = currentHost.run(this, () => this.#ensureInstance());
     } catch (error) {
       for (const event of this.#queue.splice(0)) event.reject(error);
       return;
@@ -248,10 +301,14 @@ export class ObjectHost {
     if (this.#gates.size > 0) return;
     const event = this.#queue.shift();
     this.#schedule();
+    this.#running += 1;
     try {
-      event.resolve(await event.run(instance));
+      event.resolve(await currentHost.run(this, () => event.run(instance)));
     } catch (error) {
       event.reject(error);
+    } finally {
+      this.#running -= 1;
+      this.#maybeIdle();
     }
   }
 
@@ -341,14 +398,15 @@ export class AlarmIndex {
   }
 }
 
-function createStub(host) {
+// The host is looked up per call: an idle object's host may have been released.
+function createStub(resolveHost, id) {
   return new Proxy(Object.create(null), {
     get(_target, property) {
       if (property === "then" || typeof property === "symbol") return undefined;
-      if (property === "id") return host.id;
-      if (property === "name") return host.id.name;
-      if (property === "fetch") return (input, init) => host.fetch(input instanceof Request && init === undefined ? input : new Request(input, init));
-      return (...args) => host.call(property, args);
+      if (property === "id") return id;
+      if (property === "name") return id.name;
+      if (property === "fetch") return (input, init) => resolveHost().fetch(input instanceof Request && init === undefined ? input : new Request(input, init));
+      return (...args) => resolveHost().call(property, args);
     },
   });
 }
