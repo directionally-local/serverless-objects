@@ -1,6 +1,7 @@
 // The benchmark app: the same Worker runs on Cloudflare, Wrangler, celld and
-// the native engine. Each route is one measured operation; timing is done by
-// the client (Workers clocks don't advance during compute).
+// the native engine. Each route is one measured operation, timed by the
+// client; /loop also times calls inside the Worker, where the clock advances
+// across I/O, so a remote target can be measured without the network.
 import { DurableObject } from "cloudflare:workers";
 
 export class Bench extends DurableObject {
@@ -55,6 +56,19 @@ export default {
         return Response.json(await stub().increment());
       case "/sql":
         return Response.json(await stub().insertRows(Math.min(Number(url.searchParams.get("n") ?? 100), 1000)));
+      case "/loop": {
+        // n sequential calls from this Worker to one object; the average cost of a call.
+        const op = url.searchParams.get("op") ?? "write";
+        const n = Math.min(Number(url.searchParams.get("n") ?? 100), 1000);
+        const object = stub();
+        const call = { read: () => object.read(), write: () => object.increment(), sql: () => object.insertRows(100) }[op];
+        if (!call) return new Response("op must be read, write or sql", { status: 400 });
+        await call();
+        const started = Date.now();
+        for (let index = 0; index < n; index += 1) await call();
+        const totalMs = Date.now() - started;
+        return Response.json({ op, n, totalMs, perCallMs: totalMs / n });
+      }
       case "/ws":
         return stub().fetch(request);
       default:

@@ -16,6 +16,6 @@ test("latency summaries report percentiles and the table renders every row", () 
   const summary = summarize(Array.from({ length: 100 }, (_, index) => index + 1));
   assert.deepEqual(summary, { count: 100, p50: 51, p95: 96, p99: 100, max: 100 });
   const table = formatTable("native", [{ name: "noop", ...summary }, { name: "writes", ...summary, rps: 900, failed: 2 }]);
-  assert.match(table, /\| noop \| 51\.00 \| 96\.00 \| 100\.00 \|  \|/);
+  assert.match(table, /\| noop \| 51\.00 \| 96\.00 \| 100\.00 \|  \|  \|/);
   assert.match(table, /\| writes \| .* \| 900 \(2 failed\) \|/);
 });

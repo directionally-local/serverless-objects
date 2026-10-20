@@ -31,23 +31,38 @@ So the native engine is the right choice when the app is trusted and a few secon
 
 ## Results, 20 Oct 2026
 
-Apple M1 Pro, Node.js 24.12, all targets on loopback, `--requests 300 --duration 3000`, serverless-objects 0.5.0, celld 0.6.2 (`celld dev`), Wrangler 4.150.0. One run each; treat differences under ~20% as noise.
+Client: Apple M1 Pro, Node.js 24.12. Local targets on loopback: serverless-objects 0.5.0 native engine, celld 0.6.2 (`celld dev`), Wrangler 4.150.0. Cloudflare: the same app deployed to a workers.dev subdomain on the free plan, served from Frankfurt (`colo=FRA`), about 130–200 ms of internet away from the client. One run each; treat differences under ~20% as noise.
 
-| Operation | native p50 / p99 ms | celld p50 / p99 ms | Wrangler p50 / p99 ms |
-|---|---:|---:|---:|
-| noop (Worker only) | 0.34 / 1.09 | 0.26 / 0.68 | 1.20 / 2.57 |
-| DO read (RPC + KV get) | 0.28 / 0.75 | 0.29 / 1.08 | 1.35 / 2.84 |
-| DO write (RPC + KV put) | 0.28 / 1.13 | 8.00 / 14.35 | 1.48 / 3.54 |
-| DO 100-row SQL transaction | 0.65 / 1.76 | 8.22 / 16.98 | 4.25 / 7.00 |
-| WebSocket echo (hibernatable) | 0.13 / 0.88 | 0.14 / 0.22 | 0.23 / 0.62 |
+### Inside the Worker (no client network)
 
-| Throughput, 32 in flight | native req/s (p99 ms) | celld req/s (p99 ms) | Wrangler req/s (p99 ms) |
-|---|---:|---:|---:|
-| writes, 1 object | 9,187 (7.6) | 1,883 (31.2) | 1,561 (45.9) |
-| writes, 32 objects | 11,743 (8.4) | 180 (2,611.6) | 1,406 (65.7) |
+The Worker makes 500 sequential calls to one object (100 for SQL) and reports the mean. On Cloudflare this includes the hop from the Worker to wherever the object lives and, for writes, the wait for durable storage.
 
-Findings:
+| Mean per call, ms | Cloudflare | native | celld | Wrangler |
+|---|---:|---:|---:|---:|
+| DO read (RPC + KV get) | 10.89 | 0.03 | 0.07 | 0.39 |
+| DO write (RPC + KV put) | 19.32 | 0.05 | 9.29 | 0.68 |
+| 100-row SQL transaction | 39.08 | 0.35 | 9.90 | 4.86 |
 
-- Reads and WebSocket round trips are sub-millisecond on both native and celld; the per-request engine overhead is not where the differences are.
-- celld's write latency is ~8 ms against ~0.3 ms reads. With 32 objects writing at once its throughput collapsed to 180 req/s with multi-second tails in `celld dev`; this needs investigating on `celld serve` with a real bucket before drawing conclusions about production nodes.
-- Cloudflare results are not recorded yet: they need a deployment to a Cloudflare account.
+### From the client
+
+| p50 / p99 ms | Cloudflare | native | celld | Wrangler |
+|---|---:|---:|---:|---:|
+| noop (Worker only) | 202 / 571 | 0.28 / 1.11 | 0.32 / 3.39 | 1.32 / 2.72 |
+| DO read | 222 / 482 | 0.25 / 0.91 | 0.41 / 1.11 | 1.60 / 7.27 |
+| DO write | 301 / 744 | 0.22 / 1.09 | 8.70 / 24.39 | 1.68 / 3.56 |
+| 100-row SQL transaction | 253 / 740 | 0.51 / 1.20 | 9.48 / 21.30 | 4.69 / 21.94 |
+| WebSocket echo (hibernatable) | 151 / 373 | 0.08 / 0.17 | 0.13 / 0.19 | 0.30 / 0.89 |
+
+| Writes, 32 in flight, req/s (p99 ms) | Cloudflare | native | celld | Wrangler |
+|---|---:|---:|---:|---:|
+| 1 object | 136 (871)\* | 4,507 (44.0) | 1,705 (39.5) | 1,437 (48.4) |
+| 32 objects | 153 (623)\* | 9,721 (9.9) | 178 (2,780) | 1,207 (92.4) |
+
+\* Limited by the client: 32 requests in flight over a ~200 ms round trip caps out near 160 req/s. These rows say nothing about Cloudflare's capacity; run the client next to the Worker to measure that.
+
+### Findings
+
+- A Cloudflare Durable Object call costs about 11 ms to read and 19 ms to write from the Worker that calls it, in this setup. That is the network hop to the object plus, for writes, confirmation from replicated storage. On one machine, the native engine and celld have no hop at all, which is where most of their advantage comes from. It is the trade-off of running on one node, not a faster implementation of the same guarantees.
+- celld's writes (~9 ms) wait for something: its reads are as fast as native's. Its write cost is in the same range as Cloudflare's, so it may be giving similar durability; that needs confirming in celld's source before anyone relies on it.
+- With 32 objects writing at once, `celld dev` collapsed to 178 req/s with multi-second tails. This needs investigating on `celld serve` with a real bucket before drawing conclusions about production nodes.
+- The native engine is the fastest target by one to two orders of magnitude, and its writes are the least durable: local WAL commits, then the bucket within the backup interval.
