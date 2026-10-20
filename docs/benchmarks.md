@@ -27,7 +27,7 @@ Writes are **not equally durable** across targets, and that dominates the write 
 - **The native engine** commits to a local SQLite file in WAL mode with `synchronous = NORMAL`. A committed write survives the process crashing, but not the machine losing power or the disk, and there is no output gate. With `--backup-bucket`, it reaches the bucket within the backup interval. Its write numbers are local-SQLite numbers, not replicated-storage numbers.
 - **Wrangler** (`wrangler dev --local`) runs workerd with local SQLite. It is a development server, not a production runtime.
 
-So the native engine is the right choice when the app is trusted and a few seconds of writes on one machine are an acceptable loss; Cloudflare and celld are the choice when every acknowledged write must survive the machine.
+So the native engine is the right choice when the app is trusted and a few seconds of writes on one machine are an acceptable loss; choose Cloudflare (or celld, once its write durability is confirmed) when every acknowledged write must survive the machine.
 
 ## Results, 20 Oct 2026
 
