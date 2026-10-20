@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.6.2...serverless-objects-v0.7.0) (2026-10-20)
+
+
+### Features
+
+* **cli:** durable writes for the native engine (--backup-mode durable) ([9e244fa](https://github.com/sinameraji/serverless-objects/commit/9e244faec451ead5c094f6a01d05727e24b339c9))
+
 ## [0.6.2](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.6.1...serverless-objects-v0.6.2) (2026-10-20)
 
 
