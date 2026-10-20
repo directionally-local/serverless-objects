@@ -21,14 +21,14 @@ runner completed all of its checks in one run: 16 on Wrangler (10 core, 6 Agents
 | Alarm API and delivery | Pass | Pass | Pass | Set/delete and alarm delivery |
 | Alarm across process restart | Not run | Pass | Pass | celld was restarted with an alarm pending; alarm fired afterward |
 | `deleteAll()` clears alarm | Pass | Pass | Pass | Requires the tested compatibility date, `2026-02-24` or later |
-| WebSocket behavior | Pass | Pass | Fail | Upgrade, echo, attachment, tags and auto-response |
+| WebSocket behavior | Pass | Pass | Pass | Upgrade, echo, attachment, tags and auto-response |
 | WebSocket hibernation | Not run | Pass | Not run | With `CELLD_IDLE_EVICT_S=2`, celld evicted the object while a socket stayed open; the next message reached a new instance with the socket's tags and attachment. Wrangler's local runtime gives the runner no eviction control. |
-| Agents SDK state and SQL | Pass | Pass | Fail | `setState`/`this.state` and the `this.sql` tagged template |
-| Agents SDK schedules | Pass | Pass | Fail | Delayed and cron schedules, list, cancel; a delayed schedule runs its callback |
-| Agents SDK addressing | Pass | Pass | Fail | `getAgentByName`, `this.name`, class name, `/agents/<class>/<name>` routing |
-| Agents SDK client protocol | Pass | Pass | Fail | Identity and state frames, `@callable()` RPC over WebSocket, state broadcast, non-callable methods refused |
+| Agents SDK state and SQL | Pass | Pass | Pass | `setState`/`this.state` and the `this.sql` tagged template |
+| Agents SDK schedules | Pass | Pass | Pass | Delayed and cron schedules, list, cancel; a delayed schedule runs its callback |
+| Agents SDK addressing | Pass | Pass | Pass | `getAgentByName`, `this.name`, class name, `/agents/<class>/<name>` routing |
+| Agents SDK client protocol | Pass | Pass | Pass | Identity and state frames, `@callable()` RPC over WebSocket, state broadcast, non-callable methods refused |
 
-The native engine column is from `npm run test:native` on the same host (20 Oct 2026). It has no WebSockets yet, and the Agents SDK needs `ctx.getWebSockets()`; see [the native engine](../native-engine.md).
+The native engine column is from `npm run test:native` on the same host (20 Oct 2026): 16/16. Hibernation isn't run there, because the engine doesn't evict objects yet; see [the native engine](../native-engine.md).
 
 ## Not covered
 

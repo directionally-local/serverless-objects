@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { IdIssuer } from "./ids.js";
 import { DurableObjectStorage, ObjectDatabase } from "./storage.js";
+import { READY_STATE, WebSocketRequestResponsePair, WorkersWebSocket } from "./websocket.js";
 
 const MAX_TIMER_MS = 2 ** 31 - 1;
 const ALARM_RETRY_LIMIT = 6;
@@ -79,6 +80,9 @@ export class ObjectHost {
   #gates = new Set();
   #alarmTimer;
   #alarmRetries = 0;
+  // Hibernatable sockets belong to the host, not the instance.
+  #sockets = new Map();
+  #autoResponse = null;
 
   constructor(engine, namespace, id, name) {
     this.#engine = engine;
@@ -147,6 +151,58 @@ export class ObjectHost {
         this.scheduleAlarm(at);
       }
     }
+  }
+
+  acceptWebSocket(socket, tags = []) {
+    if (!(socket instanceof WorkersWebSocket)) throw new TypeError("acceptWebSocket() takes the server end of a WebSocketPair.");
+    if (this.#sockets.has(socket)) throw new TypeError("This WebSocket was already accepted.");
+    if (!Array.isArray(tags) || tags.some((tag) => typeof tag !== "string")) throw new TypeError("WebSocket tags must be an array of strings.");
+    if (tags.length > 10) throw new RangeError("A WebSocket can have at most 10 tags.");
+    this.#sockets.set(socket, { tags: [...tags], autoResponseAt: null });
+    socket.takeOver((target, event) => this.#socketEvent(target, event));
+  }
+
+  webSockets(tag) {
+    return [...this.#sockets].filter(([socket, record]) => socket.readyState !== READY_STATE.CLOSED && (tag === undefined || record.tags.includes(tag))).map(([socket]) => socket);
+  }
+
+  tags(socket) {
+    const record = this.#sockets.get(socket);
+    if (!record) throw new TypeError("This WebSocket was not accepted with acceptWebSocket().");
+    return [...record.tags];
+  }
+
+  setAutoResponse(pair) {
+    if (pair !== undefined && pair !== null && !(pair instanceof WebSocketRequestResponsePair)) throw new TypeError("setWebSocketAutoResponse() takes a WebSocketRequestResponsePair.");
+    this.#autoResponse = pair ?? null;
+  }
+
+  autoResponse() {
+    return this.#autoResponse;
+  }
+
+  autoResponseTimestamp(socket) {
+    return this.#sockets.get(socket)?.autoResponseAt ?? null;
+  }
+
+  // Socket events reach the object's handlers through its event queue. An
+  // auto-response is answered without waking the object.
+  #socketEvent(socket, event) {
+    const record = this.#sockets.get(socket);
+    if (event.type === "message" && this.#autoResponse && event.data === this.#autoResponse.request && socket.readyState === READY_STATE.OPEN) {
+      socket.send(this.#autoResponse.response);
+      if (record) record.autoResponseAt = new Date();
+      return;
+    }
+    const handler = { message: "webSocketMessage", close: "webSocketClose", error: "webSocketError" }[event.type];
+    const args = event.type === "message" ? [event.data]
+      : event.type === "close" ? [event.code ?? 1005, event.reason ?? "", event.clean !== false]
+        : [event.error];
+    this.#deliver(async (instance) => {
+      if (typeof instance[handler] === "function") await instance[handler](socket, ...args);
+    }).catch((error) => this.#engine.log(`${handler} failed: ${error?.stack ?? error}`)).finally(() => {
+      if (event.type === "close") this.#sockets.delete(socket);
+    });
   }
 
   holdInputGate(promise) {
@@ -229,6 +285,36 @@ export class DurableObjectState {
 
   waitUntil(promise) {
     Promise.resolve(promise).catch(() => {});
+  }
+
+  acceptWebSocket(socket, tags) {
+    this.#host.acceptWebSocket(socket, tags);
+  }
+
+  getWebSockets(tag) {
+    return this.#host.webSockets(tag);
+  }
+
+  getTags(socket) {
+    return this.#host.tags(socket);
+  }
+
+  setWebSocketAutoResponse(pair) {
+    this.#host.setAutoResponse(pair);
+  }
+
+  getWebSocketAutoResponse() {
+    return this.#host.autoResponse();
+  }
+
+  getWebSocketAutoResponseTimestamp(socket) {
+    return this.#host.autoResponseTimestamp(socket);
+  }
+
+  setHibernatableWebSocketEventTimeout() {}
+
+  getHibernatableWebSocketEventTimeout() {
+    return null;
   }
 }
 

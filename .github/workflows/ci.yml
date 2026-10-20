@@ -25,6 +25,7 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run test:wrangler --workspace=sobjects-conformance
+      - run: npm run test:native --workspace=sobjects-conformance
 
   docker:
     name: Docker image (linux/amd64)

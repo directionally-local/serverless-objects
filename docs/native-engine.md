@@ -19,12 +19,14 @@ It is for **trusted code**: there's no isolate between the app and the engine, a
 | Storage | Yes: async and synchronous (`ctx.storage.kv`) KV with V8 structured clone, ordered `list`, `sql.exec` cursors (`toArray`, `one`, `raw`, `columnNames`, `rowsRead`, `rowsWritten`, `databaseSize`), `transactionSync`, `transaction`, `deleteAll` (also clears the alarm) |
 | Alarms | Yes: `setAlarm`/`getAlarm`/`deleteAlarm`, delivered after a restart, and retried with backoff (up to 6 retries) when the handler throws |
 | `vars`, `cloudflare:workers` (`DurableObject`, `WorkerEntrypoint`, `WorkflowEntrypoint`, `RpcTarget`, `env`, `exports`), `cloudflare:email` (`EmailMessage` only) | Yes |
-| WebSockets and the hibernation API | Not yet. The Agents SDK needs `ctx.getWebSockets()`, so Agents apps don't run yet. |
+| WebSockets | Yes: `WebSocketPair`, `accept()`, event listeners, attachments, and a built-in RFC 6455 server (handshake, masking, fragmentation, ping/pong, close handshake) |
+| Hibernation API | Yes: `acceptWebSocket` with tags, `getWebSockets`, `getTags`, `setWebSocketAutoResponse` (answered without waking the object), and `webSocketMessage`/`webSocketClose`/`webSocketError` delivered through the object's input-gated queue. Sockets belong to the object's host, but objects aren't evicted yet, so there's no real hibernation. |
+| Agents SDK | Yes: the conformance Agents suite passes (state, SQL, schedules, addressing, `@callable()` RPC over WebSocket) |
 | KV, D1, R2, Queues, Workflows, service bindings, assets | Not yet. The engine refuses a config that declares them. |
-| Idle eviction, worker-thread isolation, bucket replication, `sobjects build --strict` | Planned |
+| Idle eviction (true hibernation), worker-thread isolation, bucket replication, `sobjects build --strict` | Planned |
 
 ## Conformance
 
 The conformance runner has a `native` target: `npm run test:native --workspace=sobjects-conformance`.
 
-The core suite passes 9 of 10 checks, the alarm-across-restart check included; WebSockets are the missing one. The Agents suite needs WebSockets first. See [results](conformance/results.md).
+It passes all 16 checks, the same set Wrangler runs: the core suite with the alarm-across-restart check, and the Agents SDK suite. CI runs it on every change. The hibernation check (the object evicted while a socket stays open) isn't run on native yet, because the engine doesn't evict objects. See [results](conformance/results.md).
