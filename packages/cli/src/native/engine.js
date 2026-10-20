@@ -8,6 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { BucketBackup } from "./backup.js";
+import { DurableLog } from "./durable.js";
 import { AlarmIndex, DurableObjectNamespace } from "./objects.js";
 import { shardOf } from "./ports.js";
 import { readProjectConfig } from "./project.js";
@@ -36,7 +37,9 @@ export async function loadProjectConfig(projectDirectory) {
 
 export class NativeEngine {
   // idleEvictMs: drop an idle object's instance after this long (0 keeps it).
-  // backup: { client, prefix, intervalMs } copies objects to an S3 bucket.
+  // backup: { client, prefix, intervalMs, mode } puts objects in an S3
+  // bucket: copies every interval ("interval"), or every write before it is
+  // acknowledged ("durable").
   // shard: { index, count, peer(index) } when this engine is one of several
   // threads (--threads); it then runs only the objects whose IDs map to it.
   constructor({ config, persistDirectory, idleEvictMs = 60_000, backup, shard, log = (message) => console.error(message) }) {
@@ -51,7 +54,19 @@ export class NativeEngine {
     this.namespaces = [];
     this.env = {};
     this.exports = {};
-    if (backup) {
+    if (backup?.mode === "durable") {
+      this.durable = new DurableLog({
+        client: backup.client,
+        prefix: backup.prefix,
+        scriptName: this.scriptName,
+        writer: shard ? `t${shard.index}` : "t0",
+        statePath: join(persistDirectory, "log-state.sqlite"),
+        objectsDirectory: this.objectsDirectory,
+        owns: (id) => this.owns(id),
+        tuning: backup.tuning,
+        log,
+      });
+    } else if (backup) {
       this.backup = new BucketBackup({ ...backup, scriptName: this.scriptName, tempDirectory: join(persistDirectory, "backup-tmp"), log });
     }
   }
@@ -61,7 +76,7 @@ export class NativeEngine {
     installWorkersGlobals();
     mkdirSync(this.objectsDirectory, { recursive: true });
     this.alarmIndex = new AlarmIndex(join(this.persistDirectory, "alarms.sqlite"));
-    if (this.backup) await this.#restore();
+    if (this.backup || this.durable) await this.#restore();
     const module = await this.#load();
     Object.assign(this.env, this.config.vars ?? {});
     for (const binding of this.config.durable_objects?.bindings ?? []) {
@@ -77,6 +92,7 @@ export class NativeEngine {
     this.handler = module.default;
     if (!this.handler) throw new Error("The Worker has no default export.");
     this.backup?.start(() => this.namespaces.flatMap((namespace) => [...namespace.hosts()]));
+    this.durable?.start();
     // Alarms that were pending when the engine last stopped.
     for (const { class: className, id, at } of this.alarmIndex.pending()) {
       if (!this.owns(id)) continue;
@@ -93,9 +109,11 @@ export class NativeEngine {
     const hasLocalState = readdirSync(this.objectsDirectory, { withFileTypes: true }).some((entry) => entry.isDirectory());
     for (let attempt = 0; ; attempt += 1) {
       try {
-        return await this.backup.restore(this.objectsDirectory, this.alarmIndex, (id) => this.owns(id));
+        return await (this.backup ?? this.durable).restore(this.objectsDirectory, this.alarmIndex, (id) => this.owns(id));
       } catch (error) {
-        if (hasLocalState) {
+        // In durable mode the bucket holds the latest copy of every object, so
+        // a node never starts without it.
+        if (hasLocalState && !this.durable) {
           this.log(`The backup bucket is unreachable (${error.message}); starting from local state without restoring.`);
           return;
         }
@@ -106,7 +124,7 @@ export class NativeEngine {
   }
 
   get restoredObjects() {
-    return this.backup?.restored ?? 0;
+    return (this.backup ?? this.durable)?.restored ?? 0;
   }
 
   owns(id) {
@@ -140,6 +158,7 @@ export class NativeEngine {
     await new Promise((resolveClose) => (this.server ? this.server.close(() => resolveClose()) : resolveClose()));
     for (const namespace of this.namespaces) for (const host of namespace.hosts()) host.close();
     await this.backup?.close();
+    await this.durable?.close();
     this.alarmIndex?.close();
   }
 

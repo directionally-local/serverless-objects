@@ -77,3 +77,15 @@ The Worker makes 500 sequential calls to one object (100 for SQL) and reports th
 
   The bucket is not the limit: the same SeaweedFS took about 4,300 4 KiB PUTs/s at 32 in parallel (p50 6 ms). One busy object amortizes a proof over many writes; many objects each wait for their own proof round on a node with no follower. celld's source describes bundled, paced uploads for the `fleet` mode once a healthy follower exists, so a multi-node cluster is expected to behave differently. That is unmeasured here.
 - The native engine is the fastest target by one to two orders of magnitude, and its writes are the least durable: local WAL commits, then the bucket within the backup interval.
+
+### Native engine with durable writes
+
+`--backup-mode durable` against a local MinIO (RELEASE.2025-09-07, Docker on the same Mac): every acknowledged write is in the bucket first. With 32 requests in flight spread over N objects:
+
+| Objects | 1 | 2 | 4 | 8 | 16 | 32 |
+|---|---:|---:|---:|---:|---:|---:|
+| writes/s | 1,199 | 1,442 | 1,367 | 1,593 | 1,376 | 1,207 |
+| p50 ms | 24.8 | 21.5 | 21.9 | 18.8 | 22.3 | 21.7 |
+
+Throughput stays flat as writes spread over more objects, because each flush uploads one segment for every object on the thread; celld's single node fell from about 1,800 to 240 writes/s on the same load. A single write from inside the Worker cost about 4 ms against this local bucket; against R2 or S3 in the same region expect one round trip, typically 10–40 ms.
+

@@ -196,6 +196,7 @@ test("unsupported Wrangler settings and dev options are refused", async () => {
     host: "127.0.0.1",
     persistTo: "/work/app/.sobjects/native",
     backupBucket: undefined,
+    backupMode: "interval",
     backupIntervalSeconds: 10,
     threads: 0,
     threadStallSeconds: 30,
