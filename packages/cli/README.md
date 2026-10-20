@@ -58,11 +58,12 @@ npm install serverless-objects
 
 | Command | What it does |
 |---|---|
-| `sobjects dev [project] [celld dev options]` | Local development with celld. It doesn't run the ingress. |
+| `sobjects dev [project] [celld dev options]` | Local development with celld. It doesn't run the ingress. With `--engine native`, it runs the app in Node instead ([native engine](https://github.com/sinameraji/serverless-objects/blob/main/docs/native-engine.md)). |
 | `sobjects deploy [project] [celld deploy options]` | Preflights the Wrangler config, bundles the app and uploads it to the bucket. Running nodes pick up the new version on their next poll. |
 | `sobjects up [--config PATH] [--detach]` | Starts celld plus the configured ingress and admin API from `./sobjects.toml`, in the foreground or in the background. |
 | `sobjects status` / `logs [--supervisor] [--tail N]` / `down` | Inspect or stop a node started with `--detach`. `down` waits for celld to drain and release its lease. |
 | `sobjects supervise [--config PATH]` | Runs only the ingress and admin API in the foreground. |
+| `sobjects build [project] [--strict]` | Bundles the app and checks every Node.js built-in it imports against Cloudflare's `nodejs_compat` support. Reports the app as portable or native-only; `--strict` exits 1 for native-only. |
 | `sobjects upgrade [--engine-version V \| --rollback \| --status]` | Installs and selects a pinned celld release. |
 | `sobjects service print\|install [opts]` | Generates a systemd or launchd unit for `up`. |
 | `sobjects --help`, `--version` | Help and version. Every command takes `--help`; for `dev` and `deploy` it shows celld's own options. |
