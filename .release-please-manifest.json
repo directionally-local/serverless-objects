@@ -1,3 +1,5 @@
 {
-  "packages/cli": "0.1.2"
+  "packages/cli": "0.1.2",
+  "packages/hotcell": "0.0.0",
+  "packages/autopilot": "0.0.0"
 }
