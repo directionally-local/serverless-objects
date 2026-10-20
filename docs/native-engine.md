@@ -72,7 +72,28 @@ Limits:
 - Writes from timers or `waitUntil` outside an event ship within 200 ms, with no gate.
 - A node in durable mode doesn't start until it can reach its bucket.
 - It needs conditional writes (`If-None-Match`). S3, R2, MinIO (since 2025-09) and SeaweedFS support them. Backblaze B2, Garage and DigitalOcean Spaces don't.
-- Still one node per prefix. Running several nodes is the next step ([design](design/multi-node.md)).
+- One node per prefix, unless the nodes are named ([several nodes](#several-nodes)).
+
+### Several nodes
+
+```sh
+# on each node, with a unique, stable name
+sobjects dev ./my-worker --engine native --backup-bucket s3://my-bucket/app --backup-mode durable --node-name node-a
+```
+
+With `--node-name`, nodes in durable mode share one bucket prefix and each object runs on one node at a time ([design](design/multi-node.md)):
+
+- **Leases:** each node renews `nodes/<name>.json` every third of `--lease-seconds` (default 10). A node that can't renew in time stops acknowledging writes and exits, so another node can take its objects.
+- **Owners:** a node claims an object the first time it serves it, by writing `owners/<class>/<id>.json` with a conditional PUT. The record names the node and an epoch, which grows with every change of owner.
+- **Takeover:** when an object's owner released it (a clean shutdown) or its lease ran out, another node claims it. It records where the old owner's history ends (the cut), rebuilds the object from the bucket up to that point, and continues from there. Transactions and snapshots carry their epoch, so anything a stale owner uploads after the cut is ignored by every later restore.
+- **Alarms:** owners mirror pending alarms to `alarms/<class>/<id>.json`. Every node checks for due alarms whose owner is gone, and claims those objects so the alarm runs.
+- **Restarts:** a node restarted under the same name reclaims its objects at once. Two running nodes must never share a name.
+
+Not yet:
+
+- **No forwarding:** a call for an object that another live node runs fails, naming that node. Forwarding calls between nodes is the next step, so for now clients or a router must send each object's traffic to its node.
+- **No threads:** `--node-name` can't be combined with `--threads`.
+- **No cross-node compaction:** compaction only deletes segments that every object they touch has snapshotted on this node. Segments of objects that moved away are kept.
 
 ## Worker threads
 

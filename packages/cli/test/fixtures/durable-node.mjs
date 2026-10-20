@@ -56,6 +56,8 @@ const engine = new NativeEngine({
   idleEvictMs: 0,
   backup: { client: new FileBucket(), prefix: "p", mode: "durable", tuning: { snapshotTransactions: Number(process.env.SNAPSHOT_TRANSACTIONS ?? 2000), gateTimeoutMs: Number(process.env.GATE_TIMEOUT_MS ?? 30000), closeTimeoutMs: 0 } },
   log: (line) => logs.push(line),
+  // NODE_NAME makes this one of several nodes sharing the bucket.
+  cluster: process.env.NODE_NAME ? { name: process.env.NODE_NAME, ttlMs: Number(process.env.TTL_MS ?? 3000), wakeMs: 200 } : undefined,
 });
 await engine.start();
 const ledger = (name) => engine.env.LEDGER.getByName(name);
@@ -68,14 +70,30 @@ if (step === "append") {
   }
   output.read = await ledger(name).read().catch(() => null);
 } else if (step === "read") {
-  output.read = await ledger(args[0]).read();
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    try {
+      output.read = await ledger(args[0]).read();
+      break;
+    } catch (error) {
+      if (Date.now() > deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
 } else if (step === "hang-alarm") {
   await ledger(args[0]).later(100, true);
   // The handler starts and never finishes; the node dies meanwhile.
   await new Promise((resolve) => setTimeout(resolve, 600));
+} else if (step === "idle") {
+  // Touches nothing; reports which objects this node took over by itself.
+  await new Promise((resolve) => setTimeout(resolve, Number(args[0])));
+  output.owned = [...engine.owned.keys()];
+} else if (step === "set-alarm") {
+  await ledger(args[0]).later(Number(args[1]));
 } else if (step === "wait-alarm") {
-  const deadline = Date.now() + 5_000;
-  while (!(await ledger(args[0]).fired()) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+  // Another node may still hold the object until its lease runs out.
+  const deadline = Date.now() + 10_000;
+  while (!(await ledger(args[0]).fired().catch(() => false)) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
   output.fired = await ledger(args[0]).fired();
   output.runs = await ledger(args[0]).runs();
 }

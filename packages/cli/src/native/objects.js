@@ -63,6 +63,7 @@ export class DurableObjectNamespace {
 
   // The object's host: here, or a relay to the thread that owns it (--threads).
   host(id) {
+    if (this.#engine.fenced) throw new Error(`This node stopped serving: ${this.#engine.fenced}.`);
     const key = id.toString();
     const shard = this.#engine.shard;
     if (shard && shardOf(key, shard.count) !== shard.index) return new RemoteHost(this.#engine, this.className, id);
@@ -145,15 +146,79 @@ export class ObjectHost {
   #closed = false;
   #alarmActive = false;
 
+  #ready = null;
+
   constructor(engine, namespace, id, name) {
     this.#engine = engine;
     this.#namespace = namespace;
-    this.#database = new ObjectDatabase(join(engine.objectsDirectory, namespace.className, `${id.toString()}.sqlite`), { durable: Boolean(engine.durable) });
+    this.id = id;
+    // With several nodes the object is claimed (and, if its owner changed,
+    // restored from the bucket) before it opens; events wait for that.
+    if (engine.cluster) {
+      this.#ready = this.#claim(name);
+      // Events see the error; nothing else waits on it.
+      this.#ready.catch(() => {});
+    } else this.#open(name);
+  }
+
+  #open(name) {
+    const id = this.id;
+    this.#database = new ObjectDatabase(join(this.#engine.objectsDirectory, this.#namespace.className, `${id.toString()}.sqlite`), { durable: Boolean(this.#engine.durable) });
     // Remember the name, so ctx.id.name survives addressing by idFromString() and restarts.
     if (name !== undefined && this.#database.meta("name") === null) this.#database.setMeta("name", name);
     const storedName = this.#database.meta("name");
     this.id = storedName === null ? id : new id.constructor(id.toString(), storedName);
-    engine.durable?.attach(this);
+    this.#engine.durable?.attach(this);
+  }
+
+  // One mirror write at a time, each writing the latest value, with retries.
+  #mirror = { value: undefined, chain: Promise.resolve() };
+
+  #mirrorAlarm(value) {
+    this.#mirror.value = value;
+    this.#mirror.chain = this.#mirror.chain.then(async () => {
+      const value = this.#mirror.value;
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        try {
+          return await this.#engine.cluster.setAlarm(this.#namespace.className, this.id.toString(), value);
+        } catch (error) {
+          if (attempt === 4) this.#engine.log(`alarm mirror for ${this.#namespace.className} ${this.id} failed: ${error.message}`);
+          await new Promise((resolve) => setTimeout(resolve, 200 * 2 ** attempt));
+        }
+      }
+    });
+  }
+
+  // Resolves once the object is open here (with several nodes, once claimed).
+  whenReady() {
+    return this.#ready ?? Promise.resolve();
+  }
+
+  async #claim(name) {
+    const engine = this.#engine;
+    const className = this.#namespace.className;
+    const id = this.id.toString();
+    try {
+      const { record, cut, changed } = await engine.cluster.acquire(className, id, { cutFor: (owner) => engine.durable.cutFor(className, id, owner) });
+      // Kept after eviction (and if this host closed meanwhile): the object
+      // stays this node's until it is released.
+      engine.owned.set(`${className}/${id}`, { className, id, record });
+      // A claim whose preparation failed earlier is prepared again: the local
+      // copy is only right once its epoch is the record's.
+      if (changed || engine.durable.epochOf(className, id) !== record.epoch) {
+        await engine.durable.prepareObject(className, id, { record, cut: changed ? cut : record.history.at(-1).from, alarmIndex: engine.alarmIndex });
+      }
+      if (this.#closed) return;
+      this.owner = record;
+      this.#open(name);
+      const alarm = this.#database.meta("alarm") ?? this.#database.meta("alarm_running");
+      if (alarm !== null) this.scheduleAlarm(Number(alarm));
+    } catch (error) {
+      // The next call claims it again (its owner may since have gone).
+      this.#closed = true;
+      this.#namespace.release(this);
+      throw error;
+    }
   }
 
   call(method, args) {
@@ -178,7 +243,10 @@ export class ObjectHost {
     clearTimeout(this.#alarmTimer);
     this.#alarmTimer = undefined;
     const running = this.#database.meta("alarm_running");
-    this.#engine.alarmIndex.set(this.#namespace.className, this.id.toString(), at ?? (running === null ? null : Number(running)));
+    const indexed = at ?? (running === null ? null : Number(running));
+    this.#engine.alarmIndex.set(this.#namespace.className, this.id.toString(), indexed);
+    // Mirrored to the bucket, so another node runs it if this one dies.
+    if (this.#engine.cluster) this.#mirrorAlarm(indexed);
     if (at === null) return;
     const delay = Math.max(0, at - Date.now());
     this.#alarmTimer = setTimeout(() => {
@@ -302,6 +370,7 @@ export class ObjectHost {
   close() {
     if (this.#closed) return;
     this.#closed = true;
+    if (!this.#database) return;
     this.#engine.backup?.capture(this);
     this.#engine.durable?.detach(this);
     clearTimeout(this.#alarmTimer);
@@ -373,6 +442,17 @@ export class ObjectHost {
 
   async #pump() {
     if (this.#gates.size > 0 || this.#queue.length === 0) return;
+    if (this.#ready) {
+      const ready = this.#ready;
+      try {
+        await ready;
+      } catch (error) {
+        for (const event of this.#queue.splice(0)) event.reject(crossBoundary(error));
+        return;
+      }
+      if (this.#ready === ready) this.#ready = null;
+      if (this.#gates.size > 0 || this.#queue.length === 0) return;
+    }
     let instance;
     try {
       instance = currentHost.run(this, () => this.#ensureInstance());

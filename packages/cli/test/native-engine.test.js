@@ -201,6 +201,8 @@ test("unsupported Wrangler settings and dev options are refused", async () => {
     threads: 0,
     threadStallSeconds: 30,
     threadMemoryMb: undefined,
+    nodeName: undefined,
+    leaseSeconds: 10,
     idleEvictSeconds: 60,
   });
   assert.throws(() => parseNativeDevArgs(["--inspect"], "/work"), /Unknown option/);
