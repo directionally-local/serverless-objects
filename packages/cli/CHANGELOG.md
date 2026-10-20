@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.0](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.8.0...serverless-objects-v0.9.0) (2026-10-20)
+
+
+### Features
+
+* **cli:** forward Durable Object calls between native-engine nodes (--peer-listen) ([3718994](https://github.com/sinameraji/serverless-objects/commit/3718994c957a6e87913afa0114be0f08a94e4fb2))
+
+
+### Bug Fixes
+
+* **cli:** harden node-to-node forwarding after a second review ([417f763](https://github.com/sinameraji/serverless-objects/commit/417f763db4215befba823ee49551b03b6e71b3b3))
+
 ## [0.8.0](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.7.0...serverless-objects-v0.8.0) (2026-10-20)
 
 
