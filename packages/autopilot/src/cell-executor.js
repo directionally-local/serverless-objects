@@ -21,6 +21,13 @@ const CONTROL_RUNNER =
   `const r = await executeAsterCellControl(process.argv[1]); process.stdout.write(JSON.stringify(r) + "\\n");'`;
 
 const STEPS = ["provision", "install", "bridge", "session", "prompt", "poll"];
+// One step runs at a time: it holds a lease, and every write checks the lease,
+// so an overlapping or stale invocation (an alarm re-run while the first is
+// still awaiting) cannot advance or log.
+const STEP_LEASE_MS = 60_000;
+const INSTALL_LOG = `${CELL_STATE_DIR}/install.log`;
+const INSTALL_EXIT = `${CELL_STATE_DIR}/install.exit`;
+const INSTALL_CHECK_MS = 3_000;
 const POLL_MS = 1_000;
 const MAX_STEP_ATTEMPTS = 6;
 // Polling failures are usually transient (daemon restart, network), so allow ~15 minutes.
@@ -63,11 +70,15 @@ export class CellExecutor {
       abort_sent INTEGER NOT NULL DEFAULT 0,
       open_streams_json TEXT NOT NULL DEFAULT '[]',
       pending_text_json TEXT NOT NULL DEFAULT '{}',
+      lease_token TEXT,
+      lease_until INTEGER,
       last_error TEXT
     )`);
     const columns = new Set(db.exec("SELECT name FROM pragma_table_info('cell_executor')").map((row) => row.name));
     if (!columns.has("open_streams_json")) db.exec("ALTER TABLE cell_executor ADD COLUMN open_streams_json TEXT NOT NULL DEFAULT '[]'");
     if (!columns.has("pending_text_json")) db.exec("ALTER TABLE cell_executor ADD COLUMN pending_text_json TEXT NOT NULL DEFAULT '{}'");
+    if (!columns.has("lease_token")) db.exec("ALTER TABLE cell_executor ADD COLUMN lease_token TEXT");
+    if (!columns.has("lease_until")) db.exec("ALTER TABLE cell_executor ADD COLUMN lease_until INTEGER");
   }
 
   // Queue a run for execution. The work happens on the next alarms.
@@ -100,7 +111,9 @@ export class CellExecutor {
 
   nextAt() {
     const state = this.state();
-    return state && STEPS.includes(state.step) ? state.nextAt : null;
+    if (!state || !STEPS.includes(state.step) || state.nextAt === null) return null;
+    // While a step holds the lease, look again when it would expire.
+    return state.leaseUntil !== null && state.leaseUntil > this.#now() ? Math.max(state.nextAt, state.leaseUntil) : state.nextAt;
   }
 
   // Ask the cell to stop the turn; the run finishes when the cell reports it.
@@ -111,20 +124,28 @@ export class CellExecutor {
       await this.#abort(state);
       return this.state();
     }
-    this.#update({ step: "done", next_at: null });
+    this.#update({ step: "done", next_at: null, lease_token: null, lease_until: null });
     await this.#finish("cancelled", "cancelled_before_prompt");
     return this.state();
   }
 
-  // Run the due step. Called on every alarm.
+  // Run the due step under a lease. Called on every alarm.
   async step() {
-    const state = this.state();
-    if (!state || !STEPS.includes(state.step) || state.nextAt === null || state.nextAt > this.#now()) return;
-    if (this.#run.get()?.status !== "running" && state.step !== "poll") {
-      this.#update({ step: "done", next_at: null });
-      return;
-    }
+    const now = this.#now();
+    const due = this.state();
+    if (!due || !STEPS.includes(due.step) || due.nextAt === null || due.nextAt > now) return;
+    const token = this.#randomId();
+    const leased = this.#db.exec(
+      "UPDATE cell_executor SET lease_token = ?, lease_until = ? WHERE lease_until IS NULL OR lease_until <= ? RETURNING run_id",
+      token, now + STEP_LEASE_MS, now,
+    );
+    if (leased.length === 0) return;
+    const state = { ...this.state(), lease: token };
     try {
+      if (this.#run.get()?.status !== "running" && state.step !== "poll") {
+        this.#update({ step: "done", next_at: null }, state.lease);
+        return;
+      }
       switch (state.step) {
         case "provision": await this.#provision(state); break;
         case "install": await this.#install(state); break;
@@ -134,31 +155,43 @@ export class CellExecutor {
         case "poll": await this.#poll(state); break;
       }
     } catch (error) {
-      await this.#failStep(state, error);
+      if (!(error instanceof StaleStepError)) await this.#failStep(state, error).catch((failure) => {
+        if (!(failure instanceof StaleStepError)) throw failure;
+      });
+    } finally {
+      this.#db.exec("UPDATE cell_executor SET lease_token = NULL, lease_until = NULL WHERE lease_token = ?", token);
     }
   }
 
   async #provision(state) {
     const cell = await this.#connect(undefined, JSON.parse(state.createJson));
-    this.#advance("install", { cell_id: cell.id });
+    this.#advance(state, "install", { cell_id: cell.id });
     this.#log("BackgroundTaskUpdate", { task_id: "cell", label: `cell ${cell.id} created`, state: "done" });
   }
 
+  // npm install runs as a background process in the cell, so no alarm waits on it.
   async #install(state) {
     const cell = await this.#cell(state);
     const version = state.packageSpec.slice("autopilot-ai@".length);
-    let installed;
-    try {
-      installed = JSON.parse(await cell.readFile(`${CELL_RUNTIME_DIR}/package.json`)).version;
-    } catch {
-      // Not installed yet.
+    if ((await installedVersion(cell)) === version) {
+      this.#advance(state, "bridge");
+      this.#log("BackgroundTaskUpdate", { task_id: "runtime", label: `${state.packageSpec} installed`, state: "done" });
+      return;
     }
-    if (installed !== version) {
-      const result = await cell.exec(`mkdir -p /opt/autopilot && npm install --prefix /opt/autopilot --no-audit --no-fund ${state.packageSpec}`);
-      if (result.exitCode !== 0) throw new Error(`npm install failed: ${tail(result.stderr || result.stdout)}`);
+    const exit = await cell.readFile(INSTALL_EXIT).catch(() => null);
+    if (exit !== null) {
+      const log = await cell.readFile(INSTALL_LOG).catch(() => "");
+      await cell.exec(`rm -f ${INSTALL_EXIT}`);
+      throw new Error(`npm install exited ${exit.trim()}: ${tail(log)}`);
     }
-    this.#advance("bridge");
-    this.#log("BackgroundTaskUpdate", { task_id: "runtime", label: `${state.packageSpec} installed`, state: "done" });
+    const processes = await cell.listProcesses().catch(() => []);
+    if (!processes.some((process) => process.status === "running" && process.command.includes("npm install --prefix /opt/autopilot"))) {
+      await cell.mkdir(CELL_STATE_DIR, { parents: true });
+      await cell.startProcess(
+        `sh -c 'mkdir -p /opt/autopilot && npm install --prefix /opt/autopilot --no-audit --no-fund ${state.packageSpec} > ${INSTALL_LOG} 2>&1; echo $? > ${INSTALL_EXIT}'`,
+      );
+    }
+    this.#update({ next_at: this.#now() + INSTALL_CHECK_MS }, state.lease);
   }
 
   async #bridge(state) {
@@ -170,7 +203,7 @@ export class CellExecutor {
     }
     const health = await this.#control(cell, "GET", "/health").catch(() => null);
     if (health?.ok !== true || (health.sessionId && health.initialized !== true)) throw new Error("bridge not ready");
-    this.#advance("session");
+    this.#advance(state, "session");
   }
 
   async #session(state) {
@@ -184,7 +217,7 @@ export class CellExecutor {
         config: { model: state.model },
       });
     }
-    this.#advance("prompt");
+    this.#advance(state, "prompt");
   }
 
   // The bridge remembers turn ids, so resending the prompt after a crash is safe.
@@ -192,7 +225,7 @@ export class CellExecutor {
     const cell = await this.#cell(state);
     const run = this.#run.get();
     await this.#control(cell, "POST", "/rpc", { id: state.turnId, type: "prompt", message: run.task });
-    this.#advance("poll", {}, POLL_MS);
+    this.#advance(state, "poll", {}, POLL_MS);
   }
 
   async #poll(state) {
@@ -207,56 +240,57 @@ export class CellExecutor {
         seen += 1;
         // Events from earlier turns in a reused cell are not this run's.
         if (entry.runId !== null && entry.runId !== state.turnId) continue;
+        this.#assertLease(state);
         const finished = await this.#apply(entry.event, state);
-        this.#update({ cursor });
+        this.#update({ cursor }, state.lease);
         if (finished) return;
       }
-      this.#update({ cursor });
+      this.#update({ cursor }, state.lease);
       if (!page.hasMore) break;
     }
     if (seen > 0) {
-      this.#update({ quiet_polls: 0, attempts: 0, next_at: this.#now() + POLL_MS });
+      this.#update({ quiet_polls: 0, attempts: 0, next_at: this.#now() + POLL_MS }, state.lease);
       return;
     }
     const quiet = state.quietPolls + 1;
     if (quiet >= QUIET_POLLS_BEFORE_STATUS) {
       const status = await this.#control(cell, "GET", "/status").catch(() => null);
       if (status && !status.activeRunId) {
-        this.#update({ step: "done", next_at: null });
+        this.#update({ step: "done", next_at: null }, state.lease);
         this.#log("RuntimeError", { message: "The cell has no active turn and stopped producing events." });
         await this.#finish("failed", "cell_turn_lost");
         return;
       }
-      this.#update({ quiet_polls: 0, attempts: 0, next_at: this.#now() + POLL_MS });
+      this.#update({ quiet_polls: 0, attempts: 0, next_at: this.#now() + POLL_MS }, state.lease);
       return;
     }
-    this.#update({ quiet_polls: quiet, attempts: 0, next_at: this.#now() + POLL_MS });
+    this.#update({ quiet_polls: quiet, attempts: 0, next_at: this.#now() + POLL_MS }, state.lease);
   }
 
   // Returns true once the turn has ended.
   async #apply(event, state) {
     // Keep the log in order: text buffered before a tool call or usage update goes first.
-    if (event?.type !== "message.delta" && event?.type !== "message.reasoning" && event?.type !== "message.end") this.#flushText();
+    if (event?.type !== "message.delta" && event?.type !== "message.reasoning" && event?.type !== "message.end") this.#flushText(undefined, state);
     switch (event?.type) {
       case "message.start":
         if (event.role === "assistant") {
           this.#log("AssistantStreamStarted", { stream_id: event.messageId });
-          this.#update({ open_streams_json: JSON.stringify([...this.#openStreams(), event.messageId]) });
+          this.#update({ open_streams_json: JSON.stringify([...this.#openStreams(), event.messageId]) }, state.lease);
         }
         return false;
       case "message.delta":
-        if (typeof event.text === "string") this.#bufferText("AssistantTokenDelta", event.messageId, event.text);
+        if (typeof event.text === "string") this.#bufferText(state, "AssistantTokenDelta", event.messageId, event.text);
         return false;
       case "message.reasoning":
-        if (typeof event.text === "string") this.#bufferText("AssistantReasoningDelta", event.messageId, event.text);
+        if (typeof event.text === "string") this.#bufferText(state, "AssistantReasoningDelta", event.messageId, event.text);
         return false;
       case "message.end": {
         // Only assistant streams were started; user messages end without a stream.
-        this.#flushText(event.messageId);
+        this.#flushText(event.messageId, state);
         const open = this.#openStreams();
         if (!open.includes(event.messageId)) return false;
         this.#log("AssistantMessageCompleted", { stream_id: event.messageId });
-        this.#update({ open_streams_json: JSON.stringify(open.filter((id) => id !== event.messageId)) });
+        this.#update({ open_streams_json: JSON.stringify(open.filter((id) => id !== event.messageId)) }, state.lease);
         return false;
       }
       case "tool.start":
@@ -305,8 +339,8 @@ export class CellExecutor {
         if (typeof event.message === "string") this.#log("ShowToast", { text: bounded(event.message, 500), kind: "warning" });
         return false;
       case "session.end": {
-        this.#flushText();
-        this.#update({ step: "done", next_at: null });
+        this.#flushText(undefined, state);
+        this.#update({ step: "done", next_at: null }, state.lease);
         if (event.reason === "error") this.#log("RuntimeError", { message: bounded(String(event.error ?? "error"), 500) });
         const status = event.reason === "complete" ? "completed" : event.reason === "aborted" ? "cancelled" : "failed";
         const reason = event.reason === "error" ? bounded(String(event.error ?? "error"), 500) : `cell_session_${event.reason}`;
@@ -327,7 +361,7 @@ export class CellExecutor {
   }
 
   async #abort(state) {
-    if (state.abortSent) return;
+    if (state.abortSent || this.state()?.abortSent) return;
     const cell = await this.#cell(state);
     await this.#control(cell, "POST", "/rpc", { id: this.#randomId(), type: "abort" }).catch(() => null);
     this.#update({ abort_sent: 1 });
@@ -337,28 +371,41 @@ export class CellExecutor {
     const message = String(error?.message ?? error).slice(0, 1000);
     const attempts = state.attempts + 1;
     if (attempts >= (state.step === "poll" ? MAX_POLL_ATTEMPTS : MAX_STEP_ATTEMPTS)) {
-      this.#update({ step: "done", next_at: null, attempts, last_error: message });
+      this.#update({ step: "done", next_at: null, attempts, last_error: message }, state.lease);
       this.#log("RuntimeError", { message: `cell ${state.step} failed: ${bounded(message, 400)}` });
       await this.#finish("failed", `cell_${state.step}_failed`);
       return;
     }
     const delay = Math.min(MAX_RETRY_MS, 1_000 * 2 ** (attempts - 1));
-    this.#update({ attempts, last_error: message, next_at: this.#now() + delay });
+    this.#update({ attempts, last_error: message, next_at: this.#now() + delay }, state.lease);
   }
 
-  #advance(step, fields = {}, delay = 0) {
-    this.#update({ ...fields, step, attempts: 0, last_error: null, next_at: this.#now() + delay });
+  #advance(state, step, fields = {}, delay = 0) {
+    this.#update({ ...fields, step, attempts: 0, last_error: null, next_at: this.#now() + delay }, state.lease);
   }
 
-  #update(fields) {
+  // With a lease, the write applies only while that lease is current; a stale
+  // step stops here.
+  #update(fields, lease) {
     const entries = Object.entries(fields);
     if (entries.length === 0) return;
-    this.#db.exec(`UPDATE cell_executor SET ${entries.map(([key]) => `${key} = ?`).join(", ")}`, ...entries.map(([, value]) => value));
+    const assignments = entries.map(([key]) => `${key} = ?`).join(", ");
+    const values = entries.map(([, value]) => value);
+    if (lease === undefined) {
+      this.#db.exec(`UPDATE cell_executor SET ${assignments}`, ...values);
+      return;
+    }
+    const changed = this.#db.exec(`UPDATE cell_executor SET ${assignments} WHERE lease_token = ? RETURNING run_id`, ...values, lease);
+    if (changed.length === 0) throw new StaleStepError();
+  }
+
+  #assertLease(state) {
+    if (this.#db.exec("SELECT run_id FROM cell_executor WHERE lease_token = ?", state.lease).length === 0) throw new StaleStepError();
   }
 
   // Streamed text is logged a line at a time (a PEM block at once) so that a
   // secret split across deltas is still whole when it is redacted.
-  #bufferText(eventType, streamId, text) {
+  #bufferText(state, eventType, streamId, text) {
     const pending = this.#pendingText();
     const key = `${eventType}:${streamId}`;
     const buffered = (pending[key] ?? "") + text;
@@ -372,10 +419,10 @@ export class CellExecutor {
     if (cut > 0) this.#log(eventType, { stream_id: streamId, token: buffered.slice(0, cut) });
     pending[key] = buffered.slice(Math.max(cut, 0));
     if (!pending[key]) delete pending[key];
-    this.#update({ pending_text_json: JSON.stringify(pending) });
+    this.#update({ pending_text_json: JSON.stringify(pending) }, state.lease);
   }
 
-  #flushText(streamId) {
+  #flushText(streamId, state) {
     const pending = this.#pendingText();
     for (const [key, text] of Object.entries(pending)) {
       const [eventType, id] = [key.slice(0, key.indexOf(":")), key.slice(key.indexOf(":") + 1)];
@@ -383,7 +430,7 @@ export class CellExecutor {
       if (text) this.#log(eventType, { stream_id: id, token: text });
       delete pending[key];
     }
-    this.#update({ pending_text_json: JSON.stringify(pending) });
+    this.#update({ pending_text_json: JSON.stringify(pending) }, state.lease);
   }
 
   #pendingText() {
@@ -417,6 +464,20 @@ export class CellExecutor {
   }
 }
 
+class StaleStepError extends Error {
+  constructor() {
+    super("another invocation took over this step");
+  }
+}
+
+async function installedVersion(cell) {
+  try {
+    return JSON.parse(await cell.readFile(`${CELL_RUNTIME_DIR}/package.json`)).version;
+  } catch {
+    return undefined;
+  }
+}
+
 function rowToState(row) {
   return {
     runId: row.run_id,
@@ -432,6 +493,7 @@ function rowToState(row) {
     attempts: row.attempts,
     quietPolls: row.quiet_polls,
     abortSent: row.abort_sent === 1,
+    leaseUntil: row.lease_until ?? null,
     lastError: row.last_error,
   };
 }
