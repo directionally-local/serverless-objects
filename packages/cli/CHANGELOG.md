@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.3.0](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.2.0...serverless-objects-v0.3.0) (2026-10-20)
+
+
+### Features
+
+* **cli:** add `sobjects build --strict` to check portability to Cloudflare ([6596187](https://github.com/sinameraji/serverless-objects/commit/6596187f3300b8ec54ed2cddf66dd09556578267))
+* **cli:** add the native engine's Durable Object core ([f811516](https://github.com/sinameraji/serverless-objects/commit/f81151689acc4b1b366fdf56e56842b189863ec9))
+* **cli:** add WebSockets and the hibernation API to the native engine ([8d98a71](https://github.com/sinameraji/serverless-objects/commit/8d98a71dbb93d22ff51ec4e2e9f5c1ffc2ab01f3))
+* **cli:** evict idle objects in the native engine ([4fe1365](https://github.com/sinameraji/serverless-objects/commit/4fe1365989421dfa124ffacb38d92213c1b3e970))
+
+
+### Bug Fixes
+
+* **cli:** recognize prefix-only built-ins on every Node version ([077db19](https://github.com/sinameraji/serverless-objects/commit/077db191952c4b9e81ae66b24cb93374090db34c))
+
 ## [0.2.0](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.1.2...serverless-objects-v0.2.0) (2026-10-20)
 
 
