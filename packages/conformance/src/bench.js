@@ -27,6 +27,7 @@ export function parseBenchArgs(args) {
     else if (arg === "--concurrency") options.concurrency = Number(value());
     else if (arg === "--duration") options.durationMs = Number(value());
     else if (arg === "--celld-bin") options.celldBin = value();
+    else if (arg === "--native-threads") options.nativeThreads = Number(value());
     else if (arg === "--json") options.json = true;
     else if (arg === "--help" || arg === "-h") options.help = true;
     else throw new Error(`Unknown option: ${arg}`);
@@ -145,6 +146,7 @@ function usage() {
     "  --concurrency N     In-flight requests for the throughput rows (default 32)",
     "  --duration MS       Length of each throughput row (default 5000)",
     "  --port PORT         Local port for a started target (default 9877)",
+    "  --native-threads N  native: run the engine on N worker threads",
     "  --json              Print JSON instead of a table",
   ].join("\n");
 }

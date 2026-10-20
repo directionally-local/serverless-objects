@@ -197,6 +197,9 @@ test("unsupported Wrangler settings and dev options are refused", async () => {
     persistTo: "/work/app/.sobjects/native",
     backupBucket: undefined,
     backupIntervalSeconds: 10,
+    threads: 0,
+    threadStallSeconds: 30,
+    threadMemoryMb: undefined,
     idleEvictSeconds: 60,
   });
   assert.throws(() => parseNativeDevArgs(["--inspect"], "/work"), /Unknown option/);

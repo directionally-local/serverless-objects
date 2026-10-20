@@ -9,6 +9,7 @@ import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { BucketBackup } from "./backup.js";
 import { AlarmIndex, DurableObjectNamespace } from "./objects.js";
+import { shardOf } from "./ports.js";
 import { readProjectConfig } from "./project.js";
 import { WebSocketPair, WebSocketRequestResponsePair, WorkersWebSocket, connect } from "./websocket.js";
 
@@ -36,7 +37,10 @@ export async function loadProjectConfig(projectDirectory) {
 export class NativeEngine {
   // idleEvictMs: drop an idle object's instance after this long (0 keeps it).
   // backup: { client, prefix, intervalMs } copies objects to an S3 bucket.
-  constructor({ config, persistDirectory, idleEvictMs = 60_000, backup, log = (message) => console.error(message) }) {
+  // shard: { index, count, peer(index) } when this engine is one of several
+  // threads (--threads); it then runs only the objects whose IDs map to it.
+  constructor({ config, persistDirectory, idleEvictMs = 60_000, backup, shard, log = (message) => console.error(message) }) {
+    this.shard = shard;
     this.idleEvictMs = idleEvictMs;
     this.evictions = 0;
     this.config = config;
@@ -57,7 +61,7 @@ export class NativeEngine {
     installWorkersGlobals();
     mkdirSync(this.persistDirectory, { recursive: true });
     this.alarmIndex = new AlarmIndex(join(this.persistDirectory, "alarms.sqlite"));
-    await this.backup?.restore(this.objectsDirectory, this.alarmIndex);
+    await this.backup?.restore(this.objectsDirectory, this.alarmIndex, (id) => this.owns(id));
     const module = await this.#load();
     Object.assign(this.env, this.config.vars ?? {});
     for (const binding of this.config.durable_objects?.bindings ?? []) {
@@ -75,9 +79,18 @@ export class NativeEngine {
     this.backup?.start(() => this.namespaces.flatMap((namespace) => [...namespace.hosts()]));
     // Alarms that were pending when the engine last stopped.
     for (const { class: className, id, at } of this.alarmIndex.pending()) {
+      if (!this.owns(id)) continue;
       const namespace = this.namespaces.find((candidate) => candidate.className === className);
       if (namespace) namespace.host(namespace.idFromString(id)).scheduleAlarm(at);
     }
+  }
+
+  get restoredObjects() {
+    return this.backup?.restored ?? 0;
+  }
+
+  owns(id) {
+    return !this.shard || shardOf(id, this.shard.count) === this.shard.index;
   }
 
   // Handles one request with the Worker's default export.
@@ -151,7 +164,8 @@ export class NativeEngine {
   async #load() {
     const { build } = await import("esbuild");
     const entry = resolve(this.config.directory, this.config.main);
-    const outfile = join(this.config.directory, ".sobjects", "bundle", "worker.mjs");
+    // One bundle per engine thread, so threads starting together don't race on it.
+    const outfile = join(this.config.directory, ".sobjects", "bundle", this.shard ? `worker-${this.shard.index}.mjs` : "worker.mjs");
     mkdirSync(dirname(outfile), { recursive: true });
     await build({
       entryPoints: [entry],
@@ -174,7 +188,7 @@ export class NativeEngine {
 
 }
 
-function toRequest(req, hasBody) {
+export function toRequest(req, hasBody) {
   return new Request(`http://${req.headers.host ?? "localhost"}${req.url}`, {
     method: req.method,
     headers: Object.entries(req.headers).flatMap(([name, value]) => (Array.isArray(value) ? value.map((item) => [name, item]) : [[name, value]])),

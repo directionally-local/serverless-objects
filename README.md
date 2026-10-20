@@ -115,7 +115,7 @@ Serverless Objects doesn't implement the Workers runtime itself. It drives an en
 | Engine | Status | Notes |
 |---|---|---|
 | [celld](https://github.com/denoland/celld) | Supported (0.6.2, pinned) | Runs Wrangler bundles with Durable Objects, KV, D1, R2, Queues, Workflows and Containers. |
-| native | In progress: `sobjects dev --engine native` | Runs the Worker and Durable Objects in Node, with each object in its own SQLite file and full Node APIs inside objects. It passes the full conformance suite (17/17, hibernation and the Agents SDK included), with idle eviction. `sobjects build --strict` checks that an app stays portable to Cloudflare. `--backup-bucket` backs objects up to S3-compatible storage. Isolation and continuous replication come next. For trusted code. See [the native engine](docs/native-engine.md). |
+| native | In progress: `sobjects dev --engine native` | Runs the Worker and Durable Objects in Node, with each object in its own SQLite file and full Node APIs inside objects. It passes the full conformance suite (17/17, hibernation and the Agents SDK included), with idle eviction. `sobjects build --strict` checks that an app stays portable to Cloudflare. `--backup-bucket` backs objects up to S3-compatible storage, and `--threads N` spreads objects over worker threads with stalled or crashed threads replaced. Continuous replication and multi-node come next. For trusted code. See [the native engine](docs/native-engine.md). |
 
 ## Why
 

@@ -37,6 +37,7 @@ export function parseArgs(args) {
     }
     else if (arg === "--restart-after-alarm") options.restartAfterAlarm = true;
     else if (arg === "--keep-deployment") options.keepDeployment = true;
+    else if (arg === "--native-threads") options.nativeThreads = Number(args[++index]);
     else if (arg === "--no-restart-after-alarm") options.restartAfterAlarm = false;
     else if (arg === "--help" || arg === "-h") options.help = true;
     else throw new Error(`Unknown option: ${arg}`);
@@ -75,6 +76,7 @@ function usage() {
     "  --celld-bin PATH      celld executable (or set CELLD_BIN)",
     "  --suite SUITE         core, agents, or all (default: all)",
     "  --keep-deployment     cloudflare: leave the Workers deployed afterwards",
+    "  --native-threads N    native: run the engine on N worker threads",
     "  --restart-after-alarm Restart target while a durable alarm is pending",
     "  --no-restart-after-alarm  Do not restart target during alarm check",
   ].join("\n");
@@ -96,7 +98,7 @@ export function startTarget(target, projectDir, options) {
   } else if (target === "native") {
     command = process.execPath;
     // A short idle eviction lets the hibernation check run, as CELLD_IDLE_EVICT_S does for celld.
-    args = [SOBJECTS_BIN, "dev", projectDir, "--engine", "native", "--host", "127.0.0.1", "--port", String(options.port), "--idle-evict-seconds", "2"];
+    args = [SOBJECTS_BIN, "dev", projectDir, "--engine", "native", "--host", "127.0.0.1", "--port", String(options.port), "--idle-evict-seconds", "2", ...(options.nativeThreads ? ["--threads", String(options.nativeThreads)] : [])];
   } else {
     command = options.celldBin;
     args = ["dev", projectDir, "--host", "127.0.0.1", "--port", String(options.port), "--no-watch"];

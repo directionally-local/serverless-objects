@@ -10,6 +10,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { IdIssuer } from "./ids.js";
+import { decodeRequest, decodeResponse, encodeRequest, encodeResponse, shardOf } from "./ports.js";
 import { DurableObjectStorage, ObjectDatabase } from "./storage.js";
 import { READY_STATE, WebSocketRequestResponsePair, WorkersWebSocket } from "./websocket.js";
 
@@ -60,11 +61,18 @@ export class DurableObjectNamespace {
     return this;
   }
 
+  // The object's host: here, or a relay to the thread that owns it (--threads).
   host(id) {
     const key = id.toString();
+    const shard = this.#engine.shard;
+    if (shard && shardOf(key, shard.count) !== shard.index) return new RemoteHost(this.#engine, this.className, id);
+    return this.localHost(key, id.name);
+  }
+
+  localHost(key, name) {
     let host = this.#hosts.get(key);
     if (!host) {
-      host = new ObjectHost(this.#engine, this, this.idFromString(key), id.name);
+      host = new ObjectHost(this.#engine, this, this.idFromString(key), name);
       this.#hosts.set(key, host);
     }
     return host;
@@ -77,6 +85,43 @@ export class DurableObjectNamespace {
   release(host) {
     if (this.#hosts.get(host.id.toString()) === host) this.#hosts.delete(host.id.toString());
   }
+}
+
+// An object owned by another thread. Arguments, results, errors and bodies
+// cross as they do for any RPC call: structured clones and streams.
+class RemoteHost {
+  #engine;
+  #className;
+
+  constructor(engine, className, id) {
+    this.#engine = engine;
+    this.#className = className;
+    this.id = id;
+  }
+
+  #owner() {
+    return this.#engine.shard.peer(shardOf(this.id.toString(), this.#engine.shard.count));
+  }
+
+  call(method, args) {
+    return this.#owner().request("call", { className: this.#className, id: this.id.toString(), name: this.id.name, method, args });
+  }
+
+  async fetch(request) {
+    const { value, transfer } = encodeRequest(request);
+    const response = await this.#owner().request("fetch", { className: this.#className, id: this.id.toString(), name: this.id.name, request: value }, transfer);
+    return decodeResponse(response);
+  }
+}
+
+// Answers another thread's call or fetch for an object this thread owns.
+export async function servePeerRequest(engine, type, { className, id, name, method, args, request }) {
+  const namespace = engine.namespaces.find((candidate) => candidate.className === className);
+  if (!namespace) throw new Error(`No Durable Object class ${className} in this Worker.`);
+  const host = namespace.localHost(id, name);
+  if (type === "call") return host.call(method, args);
+  if (type === "fetch") return encodeResponse(await host.fetch(decodeRequest(request)));
+  throw new Error(`Unknown request ${type}`);
 }
 
 export class ObjectHost {
@@ -398,7 +443,8 @@ export class AlarmIndex {
 
   constructor(path) {
     this.#db = new DatabaseSync(path);
-    this.#db.exec("PRAGMA journal_mode = WAL; CREATE TABLE IF NOT EXISTS alarms (class TEXT NOT NULL, id TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (class, id)) WITHOUT ROWID");
+    // Every engine thread (--threads) opens this index.
+    this.#db.exec("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; CREATE TABLE IF NOT EXISTS alarms (class TEXT NOT NULL, id TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (class, id)) WITHOUT ROWID");
   }
 
   set(className, id, at) {

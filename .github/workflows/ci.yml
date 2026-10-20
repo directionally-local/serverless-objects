@@ -26,6 +26,7 @@ jobs:
       - run: npm test
       - run: npm run test:wrangler --workspace=sobjects-conformance
       - run: npm run test:native --workspace=sobjects-conformance
+      - run: npm run test:native --workspace=sobjects-conformance -- --native-threads 3
 
   docker:
     name: Docker image (linux/amd64)

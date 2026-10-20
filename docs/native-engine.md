@@ -30,7 +30,8 @@ The app's own code is bundled with esbuild, which handles TypeScript and `define
 | Autopilot in-process | Yes: `serverless-objects/autopilot/native` runs Autopilot's SDK inside an object, with tool budgets enforced before tools run ([details](autopilot.md#running-autopilot-in-process-native-engine)) |
 | `ctx.waitUntil` | Yes: keeps the object in memory until the promise settles |
 | Bucket backups | Yes: `--backup-bucket s3://bucket/prefix` copies each object to an S3-compatible bucket and restores it onto an empty disk ([details](#bucket-backups)) |
-| Worker-thread isolation, continuous replication, multi-node | Planned |
+| Worker threads | Yes: `--threads N` runs objects on N threads, each object on one thread, with stalled or crashed threads replaced ([details](#worker-threads)) |
+| Continuous replication, multi-node | Planned |
 
 ## Bucket backups
 
@@ -48,6 +49,27 @@ What this gives you, and what it doesn't:
 - Each upload sends the whole file, so very large objects cost more per change.
 - One node per prefix. Uploads are conditional on the version this node last saw, so a node that finds a copy another node wrote stops backing that object up and logs it, instead of overwriting it.
 - Restores happen only for objects missing locally. There is no point-in-time restore; enable bucket versioning if you need history.
+
+## Worker threads
+
+```sh
+sobjects dev ./my-worker --engine native --threads 4
+```
+
+With `--threads N`, the main thread serves HTTP and hands each request's Worker `fetch` to the threads in turn. Each Durable Object lives on exactly one thread, chosen from its ID, so its input gate and storage work as in one process. A stub for an object on another thread relays the call there: arguments, results and errors cross as structured clones, as for any RPC call; request and response bodies are streamed across, and WebSockets are relayed. Without `--threads`, everything runs on the main thread as before.
+
+What threads give you:
+
+- **A stuck or crashing object doesn't take the app down.** The main thread pings each thread every second. A thread that doesn't answer for `--thread-stall-seconds` (default 30), throws an uncaught error, or exceeds `--thread-memory-mb` is replaced. Its objects reload from their SQLite files on the next call; calls in flight on that thread fail, and hibernatable WebSockets held by it close. A thread that keeps failing is restarted with a back-off.
+- **More cores for CPU-heavy objects.** A test with 16 objects each hashing for ~10 ms per request went from 89 req/s on one thread to 169 req/s on 4 and 182 on 8 (M1 Pro, load generator on the same machine).
+
+What they don't:
+
+- They are not a security boundary. Every thread runs the same trusted code in one process with full Node APIs.
+- Cheap operations get slower, not faster: a call that crosses threads costs roughly 0.3–0.5 ms more, and the main thread's HTTP handling limits throughput as it does with one thread.
+- A Worker that receives a WebSocket from an object on another thread can return it as a 101 response, but can't add its own event listeners to it.
+
+The conformance suite passes 17/17 on three threads, and CI runs it that way too.
 
 ## Performance
 
