@@ -1,0 +1,12 @@
+{
+  "name": "autopilot-runs",
+  "main": "src/index.js",
+  "compatibility_date": "2026-02-24",
+  "durable_objects": {
+    "bindings": [
+      { "name": "RUNS", "class_name": "Run" },
+      { "name": "RUN_REGISTRY", "class_name": "RunRegistry" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Run", "RunRegistry"] }]
+}

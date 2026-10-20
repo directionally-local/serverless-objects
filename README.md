@@ -89,6 +89,7 @@ State survives `down` and `up` because it lives in the bucket. The [install guid
 - **TLS ingress.** Static certificates or ACME HTTP-01, hostname routing, WebSocket tunnelling, HTTP→HTTPS redirect, a health endpoint and JSON access logs. Client `X-Forwarded-*` and `CF-Connecting-IP` headers are replaced with the real peer address.
 - **A loopback dashboard and admin API.** Node load, the objects in each namespace, a key-value browser and read-only SQL console per object, eviction, logical JSON export, and Prometheus `/metrics`.
 - **A Hotcell `Sandbox` binding** ([`@serverless-objects/hotcell`](packages/hotcell), not yet on npm). It has the Cloudflare Sandbox SDK 0.x call shape and reattaches to its sandbox after the object is evicted. With egress enabled, sandboxes get gateway tokens, never real provider keys.
+- **Autopilot runs as objects** ([`@serverless-objects/autopilot`](packages/autopilot), not yet on npm). One Durable Object per run holds its state machine, budgets, hash-only tool records, durable wake timers and a Camouflage session log that streams from a cursor. A registry per workspace lists and reconciles runs.
 - **A conformance suite** ([`packages/conformance`](packages/conformance)) that runs the same apps under `wrangler dev` and celld, so engine differences show up as failing checks.
 
 ## Compatibility
@@ -103,6 +104,8 @@ Not covered yet: WebSocket hibernation, facets, PartyServer, Agents SDK chat, MC
 |---|---|
 | [`packages/cli`](packages/cli) | The `serverless-objects` npm package (`sobjects` binary). Its README is the CLI reference. |
 | [`packages/hotcell`](packages/hotcell) | `@serverless-objects/hotcell`, the Sandbox binding backed by Hotcell. |
+| [`packages/autopilot`](packages/autopilot) | `@serverless-objects/autopilot`, Autopilot run objects and the per-workspace registry. |
+| [`examples/autopilot-runs`](examples/autopilot-runs) | An HTTP demo of run objects: wake after restart, event streams, reconcile. |
 | [`packages/conformance`](packages/conformance) | Conformance apps and the Wrangler and celld runners. |
 | [`docs/`](docs) | Install, porting and compatibility guides, and recorded conformance results. |
 
@@ -129,7 +132,7 @@ Dates are targets, not promises.
 |---|---|---|
 | **M0 · Compatibility spike** | Done, Oct 2026 | Agents SDK and PartyServer samples on celld; Hotcell sandbox reattachment from an object. [Findings](docs/conformance/m0-celld.md). |
 | **v0.1 · Operating layer** | Released 19 Oct 2026 | `sobjects` CLI and supervisor, TLS ingress with ACME, dashboard and storage inspector, conformance suite with Wrangler and celld runners, install and porting guides. Single host. |
-| **v0.2 · Agent layer** | 7 Nov 2026 | Hotcell `Sandbox` binding (first version merged). Autopilot runs as objects with a registry, alarms and event streams. Showcase: start a run, kill the node, restart, and watch it resume from its event log in Camouflage. |
+| **v0.2 · Agent layer** | 7 Nov 2026 | Hotcell `Sandbox` binding and Autopilot run objects with a registry, alarms and event streams (first versions merged). Next: Autopilot executing inside a Hotcell cell. Showcase: start a run, kill the node, restart, and watch it resume from its event log in Camouflage. |
 | **v0.3 · Native engine, single node** | 21 Nov 2026 | Node-native engine with the Durable Objects API, SQLite storage, durable alarms and WebSocket hibernation. `sobjects build --strict`. Conformance parity with celld on the Durable Objects suite, then a two-week fault-injection soak before beta. |
 | **v0.4 · Multi-node and Teams** | 30 Nov 2026 | Placement and migration through the bucket, owner-aware ingress, rolling deploys, point-in-time recovery. Multiple apps and tenants, SSO, audit logs, air-gapped install, Helm. |
 
