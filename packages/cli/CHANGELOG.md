@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.6.0...serverless-objects-v0.6.1) (2026-10-20)
+
+
+### Bug Fixes
+
+* **cli:** start the native engine when the backup bucket is unreachable ([5cb8c9b](https://github.com/sinameraji/serverless-objects/commit/5cb8c9b39518fe94325fcdd069c9fd3c8a31a6ac))
+
 ## [0.6.0](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.5.0...serverless-objects-v0.6.0) (2026-10-20)
 
 
