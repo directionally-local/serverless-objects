@@ -230,9 +230,14 @@ export class ObjectHost {
     });
   }
 
+  backupSource() {
+    return { className: this.#namespace.className, id: this.id.toString(), database: this.#database };
+  }
+
   close() {
     if (this.#closed) return;
     this.#closed = true;
+    this.#engine.backup?.capture(this);
     clearTimeout(this.#alarmTimer);
     clearTimeout(this.#idleTimer);
     this.#database.close();

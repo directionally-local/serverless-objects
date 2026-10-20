@@ -195,6 +195,8 @@ test("unsupported Wrangler settings and dev options are refused", async () => {
     port: 9,
     host: "127.0.0.1",
     persistTo: "/work/app/.sobjects/native",
+    backupBucket: undefined,
+    backupIntervalSeconds: 10,
     idleEvictSeconds: 60,
   });
   assert.throws(() => parseNativeDevArgs(["--inspect"], "/work"), /Unknown option/);
