@@ -206,6 +206,10 @@ test("native dev parses the cluster options", () => {
   assert.equal(options.leaseSeconds, 5);
   assert.throws(() => parseNativeDevArgs(["--node-name", "n1"], "/tmp"), /needs --backup-bucket with --backup-mode durable/);
   assert.throws(() => parseNativeDevArgs(["--backup-bucket", "s3://b", "--backup-mode", "durable", "--node-name", "n1", "--threads", "2"], "/tmp"), /can't be combined with --threads/);
+  const peers = parseNativeDevArgs(["--backup-bucket", "s3://b", "--backup-mode", "durable", "--node-name", "n1", "--peer-listen", "10.0.0.5:9790", "--peer-advertise", "http://10.0.0.5:9790"], "/tmp");
+  assert.deepEqual(peers.peerListen, { host: "10.0.0.5", port: 9790 });
+  assert.throws(() => parseNativeDevArgs(["--peer-listen", "10.0.0.5:9790"], "/tmp"), /needs --node-name/);
+  assert.throws(() => parseNativeDevArgs(["--backup-bucket", "s3://b", "--backup-mode", "durable", "--node-name", "n1", "--peer-listen", "nope"], "/tmp"), /HOST:PORT/);
 });
 
 // ---- regressions from the adversarial review --------------------------------
