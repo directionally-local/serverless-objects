@@ -58,7 +58,7 @@ The dashboard and admin API are unauthenticated and stay on loopback inside the 
 - **Pinned versions:** the image pins `serverless-objects` with the `SOBJECTS_VERSION` build argument (default `0.1.2`), and that CLI pins celld 0.6.2. To upgrade, change the argument and rebuild.
 - **Graceful stop:** on stop, celld drains and releases its lease. `stop_grace_period` is 60 s; a stop took about 17 s in testing.
 - **Key permissions:** the private key must be readable by uid 999. Prefer `chown 999 tls/privkey.pem && chmod 600 tls/privkey.pem` on Linux hosts.
-- **Platforms:** linux/arm64 and linux/amd64. Both are celld's published Linux targets, but only arm64 (Docker on macOS) has been tested.
+- **Platforms:** linux/arm64 and linux/amd64. The full stack has been tested on arm64 (Docker on macOS). CI builds the amd64 image and checks that `sobjects` and `celld` run in it.
 - **Tested** with `--profile local-s3` on Docker Desktop for macOS (arm64), Compose v5.1.3:
   - deploy from inside the container
   - HTTPS on 443, and a `308` from port 80 to `https://localhost/...`
