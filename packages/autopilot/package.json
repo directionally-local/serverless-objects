@@ -1,0 +1,22 @@
+{
+  "name": "@serverless-objects/autopilot",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Autopilot runs as Durable Objects: one object per run, a registry per workspace",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js",
+    "./core": "./src/run-host.js"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}
