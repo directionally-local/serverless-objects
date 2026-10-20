@@ -238,6 +238,16 @@ function startSockets() {
       const socket = new WebSocket(`${ENGINE.replace("http", "ws")}/echo?name=echo-${index}`);
       const waiting = new Map();
       let timer;
+      // A connection attempt made while the engine restarts can hang in the
+      // client; give up on it so the loop tries again.
+      const connecting = setTimeout(() => {
+        if (socket.readyState === WebSocket.CONNECTING) {
+          log(`socket ${index}: no answer to the connection within 10 s; retrying`);
+          socket.close();
+          setTimeout(connect, 1_000);
+        }
+      }, 10_000);
+      socket.addEventListener("open", () => clearTimeout(connecting));
       socket.addEventListener("message", (event) => {
         const wait = waiting.get(event.data);
         if (!wait) return;
@@ -247,6 +257,7 @@ function startSockets() {
       });
       socket.addEventListener("open", () => {
         report.totals.socketConnects = (report.totals.socketConnects ?? 0) + 1;
+        log(`socket ${index} open`);
         timer = setInterval(() => {
           const token = `${index}-${Date.now()}`;
           waiting.set(token, setTimeout(() => {
@@ -261,8 +272,9 @@ function startSockets() {
           } catch {}
         }, everyMs);
       });
-      socket.addEventListener("close", () => {
+      socket.addEventListener("close", (event) => {
         report.totals.socketCloses = (report.totals.socketCloses ?? 0) + 1;
+        log(`socket ${index} closed (${event.code})`);
         clearInterval(timer);
         for (const wait of waiting.values()) clearTimeout(wait);
         waiting.clear();
