@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.1.1...serverless-objects-v0.1.2) (2026-10-20)
+
+
+### Bug Fixes
+
+* **cli:** read the default sobjects.toml from SOBJECTS_CONFIG ([c4d12ba](https://github.com/sinameraji/serverless-objects/commit/c4d12ba99f1f24e59ea6a5bd91b92184cee65b9b))
+
 ## [0.1.1](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.1.0...serverless-objects-v0.1.1) (2026-10-19)
 
 
