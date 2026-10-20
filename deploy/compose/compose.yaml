@@ -8,8 +8,10 @@ services:
     build:
       context: .
       args:
+        # x-release-please-start-version
         SOBJECTS_VERSION: "0.1.2"
     image: serverless-objects:0.1.2
+    # x-release-please-end
     restart: unless-stopped
     env_file: .env
     # The ingress listens on 443 and 80 inside the container, so HTTP redirects
