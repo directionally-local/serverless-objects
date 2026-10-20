@@ -9,6 +9,7 @@ import { Readable } from "node:stream";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse, printParseErrorCode } from "jsonc-parser";
 import { AlarmIndex, DurableObjectNamespace } from "./objects.js";
+import { WebSocketPair, WebSocketRequestResponsePair, WorkersWebSocket, connect } from "./websocket.js";
 
 const SHIMS = {
   "cloudflare:workers": fileURLToPath(new URL("./workers-shim.js", import.meta.url)),
@@ -58,6 +59,7 @@ export class NativeEngine {
   }
 
   async start() {
+    installWorkersGlobals();
     mkdirSync(this.persistDirectory, { recursive: true });
     this.alarmIndex = new AlarmIndex(join(this.persistDirectory, "alarms.sqlite"));
     const module = await this.#load();
@@ -94,6 +96,7 @@ export class NativeEngine {
 
   listen({ host = "127.0.0.1", port = 8787 } = {}) {
     this.server = createServer((req, res) => void this.#serve(req, res));
+    this.server.on("upgrade", (req, socket, head) => void this.#upgrade(req, socket, head));
     return new Promise((resolveListen, reject) => {
       this.server.once("error", reject);
       this.server.listen(port, host, () => {
@@ -109,17 +112,27 @@ export class NativeEngine {
     this.alarmIndex?.close();
   }
 
+  async #upgrade(req, socket, head) {
+    socket.on("error", () => {});
+    try {
+      const request = toRequest(req, false);
+      const response = await this.fetch(request);
+      if (response?.status === 101 && response.webSocket) return connect(socket, head, request, response);
+      const body = response ? Buffer.from(await response.arrayBuffer()) : Buffer.from("Worker returned no response\n");
+      const status = response?.status ?? 500;
+      socket.end(`HTTP/1.1 ${status} ${response?.statusText || "Error"}\r\ncontent-length: ${body.length}\r\nconnection: close\r\n\r\n${body}`);
+    } catch (error) {
+      this.log(`upgrade failed: ${error?.stack ?? error}`);
+      socket.end("HTTP/1.1 500 Internal Server Error\r\nconnection: close\r\n\r\n");
+    }
+  }
+
   async #serve(req, res) {
     try {
-      const url = `http://${req.headers.host ?? "localhost"}${req.url}`;
-      const hasBody = req.method !== "GET" && req.method !== "HEAD";
-      const request = new Request(url, {
-        method: req.method,
-        headers: Object.entries(req.headers).flatMap(([name, value]) => (Array.isArray(value) ? value.map((item) => [name, item]) : [[name, value]])),
-        ...(hasBody ? { body: Readable.toWeb(req), duplex: "half" } : {}),
-      });
+      const request = toRequest(req, req.method !== "GET" && req.method !== "HEAD");
       const response = await this.fetch(request);
-      if (!(response instanceof Response)) throw new TypeError("The Worker's fetch handler must return a Response.");
+      if (!response || typeof response.status !== "number" || !response.headers) throw new TypeError("The Worker's fetch handler must return a Response.");
+      if (response.status === 101) throw new TypeError("A 101 response needs a WebSocket upgrade request.");
       const headers = {};
       for (const [name, value] of response.headers) if (name !== "set-cookie") headers[name] = value;
       const cookies = response.headers.getSetCookie();
@@ -156,3 +169,60 @@ export class NativeEngine {
     return import(pathToFileURL(outfile).href);
   }
 }
+
+function toRequest(req, hasBody) {
+  return new Request(`http://${req.headers.host ?? "localhost"}${req.url}`, {
+    method: req.method,
+    headers: Object.entries(req.headers).flatMap(([name, value]) => (Array.isArray(value) ? value.map((item) => [name, item]) : [[name, value]])),
+    ...(hasBody ? { body: Readable.toWeb(req), duplex: "half" } : {}),
+  });
+}
+
+// Workers globals Node lacks. Response is wrapped so `new Response(null,
+// { status: 101, webSocket })` works; instanceof and static methods are unchanged.
+function installWorkersGlobals() {
+  globalThis.WebSocketPair ??= WebSocketPair;
+  globalThis.WebSocketRequestResponsePair ??= WebSocketRequestResponsePair;
+  // In Workers the global WebSocket is also the class of WebSocketPair ends,
+  // and libraries call its prototype methods directly. Node's global is the
+  // outbound client, which keeps working; pair ends answer instanceof too.
+  const ClientWebSocket = globalThis.WebSocket;
+  if (ClientWebSocket && !ClientWebSocket[RESPONSE_PATCHED]) {
+    for (const name of ["accept", "serializeAttachment", "deserializeAttachment"]) {
+      Object.defineProperty(ClientWebSocket.prototype, name, {
+        value(...args) {
+          if (!(this instanceof WorkersWebSocket)) throw new TypeError(`${name}() is only available on server-side WebSockets.`);
+          return WorkersWebSocket.prototype[name].apply(this, args);
+        },
+        configurable: true,
+        writable: true,
+      });
+    }
+    const nativeHasInstance = Function.prototype[Symbol.hasInstance];
+    Object.defineProperty(ClientWebSocket, Symbol.hasInstance, {
+      value: (value) => value instanceof WorkersWebSocket || nativeHasInstance.call(ClientWebSocket, value),
+      configurable: true,
+    });
+    Object.defineProperty(ClientWebSocket, RESPONSE_PATCHED, { value: true });
+  }
+  if (globalThis.Response[RESPONSE_PATCHED]) return;
+  const NativeResponse = globalThis.Response;
+  globalThis.Response = new Proxy(NativeResponse, {
+    construct(target, [body, init], newTarget) {
+      const constructor = newTarget === globalThis.Response ? target : newTarget;
+      if (init?.status === 101) {
+        const response = Reflect.construct(target, [null, { ...init, status: 200 }], constructor);
+        Object.defineProperty(response, "status", { value: 101 });
+        Object.defineProperty(response, "webSocket", { value: init.webSocket ?? null });
+        return response;
+      }
+      return Reflect.construct(target, [body, init], constructor);
+    },
+    get(target, property) {
+      if (property === RESPONSE_PATCHED) return true;
+      return Reflect.get(target, property, target);
+    },
+  });
+}
+
+const RESPONSE_PATCHED = Symbol.for("sobjects.native.response101");
