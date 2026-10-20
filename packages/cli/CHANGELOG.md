@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.7.0...serverless-objects-v0.8.0) (2026-10-20)
+
+
+### Features
+
+* **cli:** run the native engine on several nodes sharing a bucket (--node-name) ([152bc28](https://github.com/sinameraji/serverless-objects/commit/152bc288dbd5a9f741eb5e930be6be7b4a14d524))
+
 ## [0.7.0](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.6.2...serverless-objects-v0.7.0) (2026-10-20)
 
 
