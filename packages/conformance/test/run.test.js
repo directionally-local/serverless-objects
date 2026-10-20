@@ -18,7 +18,7 @@ test("celld defaults to checking an alarm across restart", () => {
 });
 
 test("runner options validate target, port, and alarm delay", () => {
-  assert.throws(() => parseArgs(["--target", "bogus"]), /must be wrangler, celld or native/);
+  assert.throws(() => parseArgs(["--target", "bogus"]), /must be wrangler, celld, native or cloudflare/);
   assert.throws(() => parseArgs(["--port", "0"]), /--port/);
   assert.throws(() => parseArgs(["--alarm-delay", "5"]), /--alarm-delay/);
 });
@@ -41,4 +41,11 @@ test("native runs on this checkout's CLI and checks an alarm across restart", ()
   const options = parseArgs(["--target", "native"]);
   assert.equal(options.restartAfterAlarm, true);
   assert.equal(options.alarmDelayMs, 30_000);
+});
+
+test("cloudflare checks an alarm without a restart and refuses one", () => {
+  const options = parseArgs(["--target", "cloudflare"]);
+  assert.equal(options.restartAfterAlarm, false);
+  assert.equal(options.alarmDelayMs, 2_000);
+  assert.throws(() => parseArgs(["--target", "cloudflare", "--restart-after-alarm"]), /not possible on Cloudflare/);
 });
