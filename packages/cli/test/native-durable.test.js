@@ -206,7 +206,16 @@ test("when the bucket stays down, the event fails instead of acknowledging, and 
     bucket.failing = true;
     await assert.rejects(engine.env.LEDGER.getByName("a").append(2), /could not be made durable/);
     bucket.failing = false;
-    // The committed write wasn't lost: it reaches the bucket once it answers.
+    // The committed write wasn't lost: it reaches the bucket once it answers
+    // (after the retry back-off, which can outlast this test's short gate).
+    const [owned] = [...engine.namespaces[0].hosts()].map((host) => host.backupSource());
+    const deadline = Date.now() + 15_000;
+    for (;;) {
+      const progress = engine.durable.progress(owned.className, owned.id);
+      if (progress.captured === progress.shipped) break;
+      assert.ok(Date.now() < deadline, "the failed write shipped once the bucket recovered");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
     await engine.env.LEDGER.getByName("a").append(3);
   } finally {
     await engine.close();
