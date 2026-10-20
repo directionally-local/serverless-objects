@@ -2,17 +2,19 @@
 // this Node process, with each object's storage in its own SQLite file. It is
 // for trusted code; there is no isolate between the app and the engine.
 import { createServer } from "node:http";
+import nodeModule from "node:module";
 import { mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { AlarmIndex, DurableObjectNamespace } from "./objects.js";
 import { readProjectConfig } from "./project.js";
 import { WebSocketPair, WebSocketRequestResponsePair, WorkersWebSocket, connect } from "./websocket.js";
 
+// cloudflare:* modules resolve to these shims, for the app and for packages.
 const SHIMS = {
-  "cloudflare:workers": fileURLToPath(new URL("./workers-shim.js", import.meta.url)),
-  "cloudflare:email": fileURLToPath(new URL("./email-shim.js", import.meta.url)),
+  "cloudflare:workers": new URL("./workers-shim.js", import.meta.url).href,
+  "cloudflare:email": new URL("./email-shim.js", import.meta.url).href,
 };
 // Keys the engine understands; anything else that declares a binding is refused.
 const SUPPORTED_KEYS = new Set([
@@ -46,6 +48,7 @@ export class NativeEngine {
   }
 
   async start() {
+    installModuleHooks();
     installWorkersGlobals();
     mkdirSync(this.persistDirectory, { recursive: true });
     this.alarmIndex = new AlarmIndex(join(this.persistDirectory, "alarms.sqlite"));
@@ -134,27 +137,30 @@ export class NativeEngine {
     }
   }
 
+  // The app's own code is bundled (TypeScript, `define`); its packages load
+  // from node_modules as in any Node program, so native addons work. The
+  // bundle sits in the project so Node finds the project's node_modules.
   async #load() {
     const { build } = await import("esbuild");
     const entry = resolve(this.config.directory, this.config.main);
-    const outfile = join(this.persistDirectory, "bundle", `worker-${Date.now()}.mjs`);
+    const outfile = join(this.config.directory, ".sobjects", "bundle", "worker.mjs");
     mkdirSync(dirname(outfile), { recursive: true });
     await build({
       entryPoints: [entry],
       bundle: true,
+      packages: "external",
+      external: ["cloudflare:*"],
       format: "esm",
       platform: "node",
       target: "node22",
-      conditions: ["workerd", "worker"],
-      alias: SHIMS,
       define: this.config.define ?? {},
       outfile,
       logLevel: "silent",
-      // Packages that ship CommonJS need require() inside an ES module bundle.
       banner: { js: "import { createRequire as __sobjectsCreateRequire } from 'node:module'; const require = __sobjectsCreateRequire(import.meta.url);" },
     });
-    return import(pathToFileURL(outfile).href);
+    return import(`${pathToFileURL(outfile).href}?v=${Date.now()}`);
   }
+
 }
 
 function toRequest(req, hasBody) {
@@ -213,3 +219,17 @@ function installWorkersGlobals() {
 }
 
 const RESPONSE_PATCHED = Symbol.for("sobjects.native.response101");
+
+let hooksInstalled = false;
+
+function installModuleHooks() {
+  if (hooksInstalled) return;
+  if (typeof nodeModule.registerHooks !== "function") throw new Error("The native engine needs Node.js 22.16 or newer.");
+  nodeModule.registerHooks({
+    resolve(specifier, context, nextResolve) {
+      if (Object.hasOwn(SHIMS, specifier)) return { url: SHIMS[specifier], shortCircuit: true };
+      return nextResolve(specifier, context);
+    },
+  });
+  hooksInstalled = true;
+}

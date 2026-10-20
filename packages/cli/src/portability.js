@@ -3,9 +3,9 @@
 // app is either portable (it runs on Cloudflare, celld and the native engine)
 // or native-only. The module lists follow
 // https://developers.cloudflare.com/workers/runtime-apis/nodejs/ (Aug 2026).
-import { realpathSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync } from "node:fs";
 import { builtinModules } from "node:module";
-import { relative, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 
 // Supported or partially supported with nodejs_compat.
 const SUPPORTED = new Set([
@@ -48,6 +48,7 @@ export function classifyImport(specifier, config) {
 export async function analyzeProject(config) {
   const { build } = await import("esbuild");
   const imports = new Map();
+  const packageRoots = new Map();
   // esbuild reports real paths (e.g. /private/var on macOS for /var).
   const root = realpathSync(config.directory);
   const record = {
@@ -60,6 +61,12 @@ export async function analyzeProject(config) {
         if (!imports.has(key)) imports.set(key, { specifier: args.path, importers: new Set() });
         imports.get(key).importers.add(relative(root, args.importer) || args.importer);
         return { path: args.path, external: true };
+      });
+      // Remember which packages the bundle pulls in, to check them for native addons.
+      builder.onLoad({ filter: /node_modules/ }, (args) => {
+        const packageRoot = findPackageRoot(args.path);
+        if (packageRoot && !packageRoots.has(packageRoot)) packageRoots.set(packageRoot, relative(root, args.path));
+        return undefined;
       });
     },
   };
@@ -82,7 +89,39 @@ export async function analyzeProject(config) {
     const verdict = classifyImport(specifier, config);
     findings.push({ module: `node:${module}`, ...verdict, importers: [...importers].sort() });
   }
+  for (const [packageRoot, importer] of packageRoots) {
+    if (!hasNativeAddon(packageRoot)) continue;
+    findings.push({
+      module: relative(root, packageRoot).split(sep).join("/"),
+      portable: false,
+      reason: "this package ships a compiled Node.js addon, which Cloudflare Workers cannot load",
+      importers: [importer],
+    });
+  }
   return { portable: findings.every((finding) => finding.portable), findings };
+}
+
+// The package directory under the last node_modules (scoped packages included).
+function findPackageRoot(file) {
+  const parts = file.split(sep);
+  const index = parts.lastIndexOf("node_modules");
+  if (index === -1 || !parts[index + 1]) return null;
+  return parts.slice(0, parts[index + 1].startsWith("@") ? index + 3 : index + 2).join(sep);
+}
+
+function hasNativeAddon(packageRoot) {
+  if (existsSync(join(packageRoot, "binding.gyp"))) return true;
+  return ["build", "prebuilds"].some((folder) => containsNodeFile(join(packageRoot, folder), 3));
+}
+
+function containsNodeFile(directory, depth) {
+  let entries;
+  try {
+    entries = readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  return entries.some((entry) => (entry.isFile() && entry.name.endsWith(".node")) || (entry.isDirectory() && depth > 0 && containsNodeFile(join(directory, entry.name), depth - 1)));
 }
 
 export function formatReport({ portable, findings }) {
@@ -93,6 +132,6 @@ export function formatReport({ portable, findings }) {
   }
   lines.push(portable
     ? "Portable: every Node.js built-in this app imports works on Cloudflare Workers."
-    : "Native-only: this app imports Node.js built-ins that do not work on Cloudflare Workers. It runs on the native engine.");
+    : "Native-only: this app uses Node.js built-ins or native addons that do not work on Cloudflare Workers. It runs on the native engine.");
   return lines.join("\n");
 }

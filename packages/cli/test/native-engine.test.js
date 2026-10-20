@@ -264,3 +264,22 @@ test("idle objects are evicted and rebuilt with their state; an accept()ed socke
     await engine.close();
   }
 });
+
+test("packages load from node_modules, with their own files and cloudflare:* imports", async () => {
+  const directory = await temporaryDirectory();
+  const pkg = join(directory, "node_modules", "greeter");
+  await mkdir(pkg, { recursive: true });
+  await mkdir(join(directory, "src"));
+  await writeFile(join(pkg, "package.json"), JSON.stringify({ name: "greeter", type: "module", exports: "./index.js" }));
+  await writeFile(join(pkg, "greeting.txt"), "hello from a package file");
+  // Bundling would break this: the file is read relative to the package at run time.
+  await writeFile(join(pkg, "index.js"), 'import { readFileSync } from "node:fs";\nimport { DurableObject } from "cloudflare:workers";\nexport const greeting = () => readFileSync(new URL("./greeting.txt", import.meta.url), "utf8");\nexport class Base extends DurableObject {}\n');
+  await writeFile(join(directory, "src/index.js"), 'import { Base, greeting } from "greeter";\nexport class Greeter extends Base { hi() { return greeting(); } }\nexport default { fetch: async (request, env) => new Response(await env.GREETER.getByName("x").hi()) };\n');
+  await writeFile(join(directory, "wrangler.json"), JSON.stringify({ name: "pkg", main: "src/index.js", durable_objects: { bindings: [{ name: "GREETER", class_name: "Greeter" }] } }));
+  const { engine, base } = await startEngine(directory, join(directory, ".state"));
+  try {
+    assert.equal(await (await fetch(base)).text(), "hello from a package file");
+  } finally {
+    await engine.close();
+  }
+});
