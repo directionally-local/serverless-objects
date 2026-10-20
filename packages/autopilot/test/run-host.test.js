@@ -133,3 +133,60 @@ test("the registry keeps the newest report and lists by status", () => {
   assert.throws(() => registry.list({ status: "nope" }), /Unknown run status/);
   assert.throws(() => registry.upsert({ id: "x", status: "weird" }), /invalid run summary/);
 });
+
+async function waitingForApproval(state, timer = {}) {
+  await state.runHost.create(RUN);
+  await state.runHost.transition("running");
+  const approval = await state.runHost.scheduleTimer({ condition: "approval", ...timer });
+  await state.runHost.transition("waiting", "needs approval");
+  return approval;
+}
+
+test("an approval wakes the run once with the decision", async () => {
+  const state = host();
+  const approval = await waitingForApproval(state);
+  assert.equal(approval.expiresAt, null);
+  assert.equal(state.alarms.at(-1), null);
+  assert.equal(await state.runHost.processDueTimers(), 0);
+
+  const resolved = await state.runHost.approve(approval.id, { decision: "approved", reason: "looks safe" });
+  assert.equal(resolved.status, "completed");
+  assert.deepEqual(state.wakes, [{ runId: "run-1", timerId: approval.id, condition: "approval", decision: "approved", reason: "looks safe" }]);
+  assert.equal(state.runHost.get().status, "running");
+  const recorded = state.runHost.listEvents().find((event) => event.type === "approval");
+  assert.deepEqual(recorded.metadata, { decision: "approved", reason: "looks safe" });
+
+  await assert.rejects(state.runHost.approve(approval.id, { decision: "denied" }), /not waiting/);
+  await state.runHost.transition("waiting");
+  await assert.rejects(state.runHost.approve(approval.id, { decision: "denied" }), /already approved/);
+  await assert.rejects(state.runHost.approve("missing", { decision: "approved" }), /not found/);
+  await assert.rejects(state.runHost.approve(approval.id, { decision: "maybe" }), /approved or denied/);
+});
+
+test("a denied approval is delivered too, and a failing wake retries", async () => {
+  let fail = true;
+  const state = host({ onWake: async () => { if (fail) throw new Error("executor down"); } });
+  const approval = await waitingForApproval(state);
+  const after = await state.runHost.approve(approval.id, { decision: "denied" });
+  assert.equal(after.status, "scheduled");
+  assert.equal(state.runHost.get().status, "waiting");
+  fail = false;
+  state.time.advance(1000);
+  await state.runHost.processDueTimers();
+  assert.equal(state.runHost.listTimers()[0].status, "completed");
+  assert.deepEqual(state.wakes.map((wake) => wake.decision), ["denied", "denied"]);
+});
+
+test("an unanswered approval expires and fails the waiting run", async () => {
+  const state = host();
+  const approval = await waitingForApproval(state, { expiresAt: 1_000_000 + 60_000 });
+  assert.equal(approval.expiresAt, 1_060_000);
+  assert.equal(state.alarms.at(-1), 1_060_000);
+  state.time.advance(60_000);
+  await state.runHost.processDueTimers();
+  assert.equal(state.runHost.listTimers()[0].status, "failed");
+  assert.equal(state.runHost.listTimers()[0].lastError, "approval expired");
+  assert.equal(state.runHost.get().status, "failed");
+  assert.equal(state.wakes.length, 0);
+  await assert.rejects(state.runHost.scheduleTimer({ condition: "approval", wakeAt: 5 }), /expiresAt, not wakeAt/);
+});
