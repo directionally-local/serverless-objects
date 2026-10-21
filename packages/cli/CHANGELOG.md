@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.13.0](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.12.1...serverless-objects-v0.13.0) (2026-10-21)
+
+
+### Features
+
+* **cli:** point-in-time recovery for the native engine in durable mode ([cd8b2ca](https://github.com/sinameraji/serverless-objects/commit/cd8b2ca3b6f9b60f064afe650ff30d587c309678))
+
+
+### Bug Fixes
+
+* **cli:** harden point-in-time recovery after review ([0b42cf6](https://github.com/sinameraji/serverless-objects/commit/0b42cf62f6b9dcf52821f3251cd2f0b107ff5e20))
+* **cli:** point-in-time recovery, second review round ([91cee97](https://github.com/sinameraji/serverless-objects/commit/91cee97d8ff5a7c13a3b8150c7e08bacb9aee7af))
+
 ## [0.12.1](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.12.0...serverless-objects-v0.12.1) (2026-10-21)
 
 
