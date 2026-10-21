@@ -37,7 +37,7 @@ const CONFIG = {
   diskFullSeconds: number("SOAK_DISK_FULL_SECONDS", 180),
 };
 const ENGINE = `http://127.0.0.1:${CONFIG.port}`;
-const S3 = { port: 9000, accessKey: "soak", secretKey: "soak-local-only-secret", bucket: "soak" };
+const S3 = { port: 8333, accessKey: "soak", secretKey: "soak-local-only-secret", bucket: "soak" };
 const FAULTS = [["kill9", 3], ["sigterm", 2], ["crash-thread", 2], ["bucket-outage", 1], ["disk-full", 1], ["wipe-restore", 1]];
 
 for (const directory of [CONFIG.data, CONFIG.state, CONFIG.s3Dir]) mkdirSync(directory, { recursive: true });
@@ -86,32 +86,43 @@ function logStream(name) {
   return createWriteStream(path, { flags: "a" });
 }
 
-// MinIO as the bucket: fast conditional writes, no volume limits to outgrow.
+// SeaweedFS as the bucket. Volumes are sized explicitly: the defaults (8
+// volumes of 64 MB) filled up in the first soak and every upload then got a 500.
 async function startBucket() {
-  const out = logStream("minio.log");
-  weed = spawn("minio", ["server", CONFIG.s3Dir, "--address", `127.0.0.1:${S3.port}`, "--console-address", "127.0.0.1:9001"], {
-    env: { ...env, MINIO_ROOT_USER: S3.accessKey, MINIO_ROOT_PASSWORD: S3.secretKey, MINIO_BROWSER: "off" },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  writeFileSync("/tmp/soak-s3.json", JSON.stringify({ identities: [{ name: "soak", credentials: [{ accessKey: S3.accessKey, secretKey: S3.secretKey }], actions: ["Admin", "Read", "Write", "List", "Tagging"] }] }));
+  const out = logStream("seaweedfs.log");
+  weed = spawn("weed", [
+    "server", `-dir=${CONFIG.s3Dir}`, "-ip=127.0.0.1", "-ip.bind=127.0.0.1",
+    "-s3", `-s3.port=${S3.port}`, "-s3.config=/tmp/soak-s3.json",
+    // At most 50 volumes of 256 MB (12.8 GB); deleted data is vacuumed back.
+    "-master.volumeSizeLimitMB=256", "-volume.max=50", "-master.garbageThreshold=0.2",
+  ], { stdio: ["ignore", "pipe", "pipe"] });
   weed.stdout.pipe(out);
   weed.stderr.pipe(out);
-  weed.on("exit", (code) => !stopping && log(`minio exited ${code}`));
-  const mc = (...args) => new Promise((resolveRun) => {
-    const child = spawn("mc", args, { env: { ...env, MC_CONFIG_DIR: "/tmp/mc" }, stdio: ["ignore", "pipe", "pipe"] });
-    let output = "";
-    child.stdout.on("data", (chunk) => (output += chunk));
-    child.stderr.on("data", (chunk) => (output += chunk));
-    child.on("exit", (code) => resolveRun({ code, output }));
-  });
+  weed.on("exit", (code) => !stopping && log(`seaweedfs exited ${code}`));
   for (let attempt = 0; attempt < 120; attempt += 1) {
-    const alias = await mc("alias", "set", "local", `http://127.0.0.1:${S3.port}`, S3.accessKey, S3.secretKey);
-    if (alias.code === 0) {
-      const made = await mc("mb", "--ignore-existing", `local/${S3.bucket}`);
-      if (made.code === 0) return log("minio ready");
+    const created = await new Promise((resolveShell) => {
+      const shell = spawn("weed", ["shell", "-master=127.0.0.1:9333"], { stdio: ["pipe", "pipe", "pipe"] });
+      let output = "";
+      shell.stdout.on("data", (chunk) => (output += chunk));
+      shell.stdin.end(`s3.bucket.create -name ${S3.bucket}\n`);
+      shell.on("exit", (code) => resolveShell(/already exists/i.test(output) || (code === 0 && !/error|failed|refused/i.test(output))));
+    });
+    if (created) {
+      // The S3 gateway starts after the master; any HTTP answer means it's up.
+      for (let wait = 0; wait < 120; wait += 1) {
+        try {
+          await fetch(`http://127.0.0.1:${S3.port}/`, { signal: AbortSignal.timeout(2_000) });
+          return log("seaweedfs ready");
+        } catch {
+          await sleep(1_000);
+        }
+      }
+      throw new Error("the SeaweedFS S3 gateway did not start");
     }
     await sleep(1_000);
   }
-  throw new Error("MinIO did not start");
+  throw new Error("SeaweedFS did not start");
 }
 
 async function startEngine() {

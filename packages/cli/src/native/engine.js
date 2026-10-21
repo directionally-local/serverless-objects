@@ -10,7 +10,7 @@ import { pathToFileURL } from "node:url";
 import { BucketBackup } from "./backup.js";
 import { Cluster } from "./cluster.js";
 import { PeerClient, PeerServer } from "./peers.js";
-import { DurableLog } from "./durable.js";
+import { DurableLog, UnsafeStore } from "./durable.js";
 import { AlarmIndex, DurableObjectNamespace, servePeer } from "./objects.js";
 import { shardOf } from "./ports.js";
 import { readProjectConfig } from "./project.js";
@@ -97,6 +97,7 @@ export class NativeEngine {
     installWorkersGlobals();
     mkdirSync(this.objectsDirectory, { recursive: true });
     this.alarmIndex = new AlarmIndex(join(this.persistDirectory, "alarms.sqlite"));
+    if (this.durable) await this.#probeStore();
     // With several nodes, objects are restored as they are claimed. Forwarded
     // calls arrive on the peer listener, whose address goes in the lease.
     if (this.cluster) {
@@ -173,6 +174,20 @@ export class NativeEngine {
     this.fenced = reason;
     clearInterval(this.waker);
     for (const namespace of this.namespaces) for (const host of [...namespace.hosts()]) host.close();
+  }
+
+  // Waits for the bucket if it can't be reached; fails at once if it answers
+  // but doesn't honor conditional writes.
+  async #probeStore() {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await this.durable.probeConditionalWrites();
+      } catch (error) {
+        if (error instanceof UnsafeStore) throw error;
+        if (attempt === 0) this.log(`The bucket is unreachable (${error.message}); waiting for it before starting.`);
+        await new Promise((resolveWait) => setTimeout(resolveWait, Math.min(30_000, 1_000 * 2 ** attempt)));
+      }
+    }
   }
 
   // Objects missing locally come back from the bucket. If the bucket can't
