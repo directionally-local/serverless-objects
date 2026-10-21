@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.9.1...serverless-objects-v0.10.0) (2026-10-21)
+
+
+### Features
+
+* **cli:** refuse durable mode on a store that ignores conditional writes ([09ffd1b](https://github.com/sinameraji/serverless-objects/commit/09ffd1bc61473b1fd393a0b88acdf20ba560caac))
+
 ## [0.9.1](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.9.0...serverless-objects-v0.9.1) (2026-10-20)
 
 
