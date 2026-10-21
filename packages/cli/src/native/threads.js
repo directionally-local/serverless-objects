@@ -30,12 +30,15 @@ export class ThreadedEngine {
   #next = 0;
   #closing = false;
   #pinger;
+  // Client requests in progress, and open client WebSockets (for draining).
+  #inflight = 0;
+  #connections = new Set();
   restarts = 0;
 
   // threads: how many; stallMs: replace a thread that hasn't answered a ping
   // for this long; memoryMb: each thread's heap limit; backup: { bucketUri,
   // intervalMs } (credentials come from the environment, as for one thread).
-  constructor({ config, persistDirectory, threads, idleEvictMs = 60_000, backup, stallMs = 30_000, memoryMb, trustForwardedHeaders = false, env = process.env, log = (message) => console.error(message) }) {
+  constructor({ config, persistDirectory, threads, idleEvictMs = 60_000, backup, stallMs = 30_000, memoryMb, trustForwardedHeaders = false, drainMs = 30_000, env = process.env, log = (message) => console.error(message) }) {
     this.env = env;
     if (!Number.isInteger(threads) || threads < 1) throw new Error("threads must be a positive integer.");
     this.config = config;
@@ -43,6 +46,7 @@ export class ThreadedEngine {
     this.threads = threads;
     this.idleEvictMs = idleEvictMs;
     this.trustForwardedHeaders = trustForwardedHeaders;
+    this.drainMs = drainMs;
     this.backup = backup;
     this.stallMs = stallMs;
     this.memoryMb = memoryMb;
@@ -76,6 +80,7 @@ export class ThreadedEngine {
         config: this.config,
         persistDirectory: this.persistDirectory,
         idleEvictMs: this.idleEvictMs,
+        drainMs: this.drainMs,
         backup: this.backup,
         index,
         count: this.threads,
@@ -183,6 +188,8 @@ export class ThreadedEngine {
   }
 
   async #serve(req, res) {
+    this.#inflight += 1;
+    res.once("close", () => { this.#inflight -= 1; });
     try {
       const response = await this.fetchEncoded(toRequest(req, req.method !== "GET" && req.method !== "HEAD", this.trustForwardedHeaders));
       if (response.status === 101) throw new TypeError("A 101 response needs a WebSocket upgrade request.");
@@ -198,6 +205,7 @@ export class ThreadedEngine {
 
   async #upgrade(req, socket, head) {
     socket.on("error", () => {});
+    this.#inflight += 1;
     try {
       const request = toRequest(req, false, this.trustForwardedHeaders);
       const response = await this.fetchEncoded(request);
@@ -207,25 +215,50 @@ export class ThreadedEngine {
           socket.destroy();
           return void end.fail(new Error("connection lost"));
         }
-        return connect(socket, head, request, { headers: new Headers(response.headers), webSocket: end });
+        return connect(socket, head, request, { headers: new Headers(response.headers), webSocket: end }, this.#connections);
       }
       const body = response.body ? Buffer.from(await new Response(response.body).arrayBuffer()) : Buffer.alloc(0);
       socket.end(`HTTP/1.1 ${response.status} ${response.statusText || "Error"}\r\ncontent-length: ${body.length}\r\nconnection: close\r\n\r\n${body}`);
     } catch (error) {
       this.log(`upgrade failed: ${error?.stack ?? error}`);
       socket.end("HTTP/1.1 500 Internal Server Error\r\nconnection: close\r\n\r\n");
+    } finally {
+      this.#inflight -= 1;
     }
   }
 
-  async close() {
+  close() {
+    this.closed ??= this.#close();
+    return this.closed;
+  }
+
+  async #close() {
     this.#closing = true;
     clearInterval(this.#pinger);
-    await new Promise((resolveClose) => (this.server ? this.server.close(() => resolveClose()) : resolveClose()));
+    // Drains as one thread does (NativeEngine.close): requests in progress
+    // finish and clients' WebSockets close with 1001 before threads stop.
+    const deadline = Date.now() + this.drainMs;
+    if (this.server) {
+      this.server.close();
+      this.server.closeIdleConnections();
+    }
+    for (const connection of [...this.#connections]) connection.goAway();
+    const settle = async (done) => {
+      do await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+      while (!done() && Date.now() < deadline);
+    };
+    await settle(() => this.#inflight === 0);
+    for (const connection of [...this.#connections]) connection.goAway();
+    // Closed sockets' last events are relayed to their threads before those
+    // threads are asked to stop.
+    await settle(() => this.#connections.size === 0);
+    await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    this.server?.closeAllConnections();
     // Each thread closes its objects and flushes its backups before it stops.
     await Promise.all(this.#shards.map(async (shard) => {
       if (!shard) return;
       if (shard.ready) {
-        await Promise.race([shard.channel.request("close").catch(() => {}), new Promise((resolve) => setTimeout(resolve, 30_000).unref())]);
+        await Promise.race([shard.channel.request("close").catch(() => {}), new Promise((resolve) => setTimeout(resolve, this.drainMs + 30_000).unref())]);
       }
       await shard.worker.terminate().catch(() => {});
     }));

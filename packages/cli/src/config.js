@@ -4,7 +4,7 @@ import { parse } from "smol-toml";
 import { parseNativeDevArgs } from "./native/dev.js";
 
 const ROOT_KEYS = new Set(["celld", "native", "ingress", "admin"]);
-const NATIVE_KEYS = new Set(["project", "listen", "data_dir", "idle_evict_seconds", "threads", "thread_stall_seconds", "thread_memory_mb", "backup", "cluster"]);
+const NATIVE_KEYS = new Set(["project", "listen", "data_dir", "idle_evict_seconds", "threads", "thread_stall_seconds", "thread_memory_mb", "drain_seconds", "backup", "cluster"]);
 const NATIVE_BACKUP_KEYS = new Set(["bucket", "mode", "interval_seconds", "endpoint", "region"]);
 const NATIVE_CLUSTER_KEYS = new Set(["node_name", "lease_seconds", "peer_listen", "peer_advertise"]);
 const CELLD_KEYS = new Set(["bucket", "endpoint", "region", "listen", "internal_listen"]);
@@ -155,6 +155,7 @@ function parseNative(parsed, sourceName, baseDirectory) {
   option("threads", "--threads");
   option("thread_stall_seconds", "--thread-stall-seconds");
   option("thread_memory_mb", "--thread-memory-mb");
+  option("drain_seconds", "--drain-seconds");
 
   let mode;
   if (native.backup !== undefined) {

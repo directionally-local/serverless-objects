@@ -56,6 +56,10 @@ export class Room extends DurableObject {
     return total;
   }
   fail() { throw new RangeError("room says no"); }
+  async slowAdd(n) {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return this.add(n);
+  }
   async fetch(request) {
     const url = new URL(request.url);
     if (request.headers.get("upgrade") === "websocket") {
@@ -82,6 +86,11 @@ export class Room extends DurableObject {
   webSocketClose(socket, code, reason) {
     this.ctx.storage.kv.put("closed", code + ":" + reason);
   }
+  async chain() {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return this.env.ROOM.getByName("y").back();
+  }
+  back() { return this.env.ROOM.getByName("x").where(); }
   closed() { return this.ctx.storage.kv.get("closed") ?? null; }
   hits() { return this.ctx.storage.kv.get("hits") ?? 0; }
   sockets() { return this.ctx.getWebSockets().length; }
@@ -107,13 +116,14 @@ async function project() {
   return directory;
 }
 
-async function node(directory, bucket, name) {
+async function node(directory, bucket, name, { drainMs } = {}) {
   const config = await loadProjectConfig(directory);
   config.vars = { NODE: name };
   const engine = new NativeEngine({
     config,
     persistDirectory: await temporaryDirectory(),
     idleEvictMs: 0,
+    ...(drainMs === undefined ? {} : { drainMs }),
     backup: { client: bucket.view(), prefix: "p", mode: "durable" },
     cluster: { name, ttlMs: 4_000, wakeMs: 200, peer: { listen: { host: "127.0.0.1", port: 0 }, secret: SECRET } },
     log: () => {},
@@ -399,3 +409,86 @@ async function rawUpgradeNoWait(base, path) {
   socket.write(`GET ${path} HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`);
   return socket;
 }
+
+test("a node that shuts down drains: requests finish, sockets close with 1001, and other nodes' calls move without failing", async () => {
+  const directory = await project();
+  const bucket = new SharedBucket();
+  const a = await node(directory, bucket, "a");
+  const b = await node(directory, bucket, "b");
+  try {
+    assert.equal(await (await fetch(`${a.base}/add?n=1`)).json(), 1);
+    const socket = new WebSocket(`${a.base.replace("http", "ws")}/ws`);
+    await new Promise((resolve, reject) => {
+      socket.addEventListener("open", resolve, { once: true });
+      socket.addEventListener("error", reject, { once: true });
+    });
+    const socketClosed = new Promise((resolve) => socket.addEventListener("close", (event) => resolve(event.code), { once: true }));
+
+    // b keeps calling the room (forwarded to a) while a shuts down.
+    let stop = false;
+    const results = [];
+    const caller = (async () => {
+      const room = b.engine.env.ROOM.getByName("lobby");
+      while (!stop) results.push(await room.add(1).then(() => "ok", (error) => error.message));
+    })();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const slow = fetch(`${a.base}/slowAdd?n=1`).then((response) => response.status);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await a.engine.close();
+    assert.equal(await slow, 200);
+    assert.equal(await socketClosed, 1001);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    stop = true;
+    await caller;
+
+    assert.ok(results.length > 2, `only ${results.length} calls ran`);
+    assert.deepEqual(results.filter((result) => result !== "ok"), []);
+    assert.equal(await (await fetch(`${b.base}/where`)).json(), "b");
+    // Every write made it: the first add, the slow one and each of b's.
+    assert.equal(await (await fetch(`${b.base}/add?n=0`)).json(), 2 + results.length);
+    assert.equal(await (await fetch(`${b.base}/closed`)).json(), "1001:server restarting");
+  } finally {
+    await b.engine.close();
+    await a.engine.close().catch(() => {});
+  }
+});
+
+test("an idle node that drains still delivers its sockets' close to the object", async () => {
+  const directory = await project();
+  const bucket = new SharedBucket();
+  const a = await node(directory, bucket, "a");
+  const b = await node(directory, bucket, "b");
+  try {
+    const socket = new WebSocket(`${a.base.replace("http", "ws")}/ws`);
+    await new Promise((resolve, reject) => {
+      socket.addEventListener("open", resolve, { once: true });
+      socket.addEventListener("error", reject, { once: true });
+    });
+    const code = new Promise((resolve) => socket.addEventListener("close", (event) => resolve(event.code), { once: true }));
+    await a.engine.close();
+    assert.equal(await code, 1001);
+    assert.equal(await (await fetch(`${b.base}/closed`)).json(), "1001:server restarting");
+  } finally {
+    await b.engine.close();
+  }
+});
+
+test("a call back into a draining node from an event it runs is served, not parked", async () => {
+  const directory = await project();
+  const bucket = new SharedBucket();
+  const a = await node(directory, bucket, "a", { drainMs: 5_000 });
+  const b = await node(directory, bucket, "b");
+  try {
+    assert.equal(await (await fetch(`${a.base}/where?room=x`)).json(), "a");
+    assert.equal(await (await fetch(`${b.base}/where?room=y`)).json(), "b");
+    // x (on a) calls y (on b), which calls x back while a drains.
+    const chain = b.engine.env.ROOM.getByName("x").chain();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const started = Date.now();
+    await a.engine.close();
+    assert.ok(Date.now() - started < 2_000, `the drain took ${Date.now() - started} ms`);
+    assert.equal(await chain, "a");
+  } finally {
+    await b.engine.close();
+  }
+});

@@ -7,7 +7,7 @@ import { servePeerRequest } from "./objects.js";
 import { PortChannel, decodeRequest, encodeResponse } from "./ports.js";
 import { S3Client } from "./s3.js";
 
-const { config, persistDirectory, idleEvictMs, backup, index, count } = workerData;
+const { config, persistDirectory, idleEvictMs, drainMs, backup, index, count } = workerData;
 const peers = new Map();
 let engine;
 
@@ -46,6 +46,7 @@ engine = new NativeEngine({
   config,
   persistDirectory,
   idleEvictMs,
+  drainMs,
   backup: backupOptions,
   log: (message) => main.post("log", `[thread ${index}] ${message}`),
   shard: {

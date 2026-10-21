@@ -80,6 +80,7 @@ export class PeerServer {
   #log;
   #nonces = new Map();
   #sockets = new Set();
+  #active = 0;
   // Requests signed before this process started may have been served by an earlier one.
   #startedAt = Date.now();
 
@@ -103,14 +104,17 @@ export class PeerServer {
     });
   }
 
-  close() {
-    return new Promise((resolveClose) => {
-      if (!this.server) return resolveClose();
-      this.server.close(() => resolveClose());
-      // Other nodes keep connections alive between calls; relayed sockets are upgraded ones.
-      this.server.closeAllConnections();
-      for (const socket of this.#sockets) socket.destroy();
-    });
+  // Requests already being answered get up to graceMs to finish.
+  async close({ graceMs = 0 } = {}) {
+    if (!this.server) return;
+    const closed = new Promise((resolveClose) => this.server.close(() => resolveClose()));
+    this.server.closeIdleConnections();
+    const deadline = Date.now() + graceMs;
+    while (this.#active > 0 && Date.now() < deadline) await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+    // Other nodes keep connections alive between calls; relayed sockets are upgraded ones.
+    this.server.closeAllConnections();
+    for (const socket of this.#sockets) socket.destroy();
+    await closed;
   }
 
   // Whether a request's headers are signed (checked before reading its body).
@@ -150,6 +154,8 @@ export class PeerServer {
   }
 
   async #request(req, res) {
+    this.#active += 1;
+    res.once("close", () => { this.#active -= 1; });
     const path = new URL(req.url, "http://peer").pathname;
     const peerError = (status, message, nonce) => {
       if (res.headersSent) return res.destroy();
@@ -486,9 +492,14 @@ class SocketEnd {
 
 // ---- HTTP helpers ---------------------------------------------------------------
 
+// A refused connection never carried the request (notSent), so the caller
+// may route it again: the node stopped, and may have released the object.
 function unreachable(url, error) {
   const reason = error?.code ?? error?.message ?? error;
-  return new Error(`The node at ${url.origin} didn't answer (${reason}); if it stopped, another node takes its objects once its lease runs out.`);
+  return Object.assign(
+    new Error(`The node at ${url.origin} didn't answer (${reason}); if it stopped, another node takes its objects once its lease runs out.`),
+    { notSent: error?.code === "ECONNREFUSED" },
+  );
 }
 
 // A connection to another node that goes quiet this long is given up on, so
