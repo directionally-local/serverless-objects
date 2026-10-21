@@ -19,6 +19,7 @@ async function temporaryDirectory() {
 class MemoryBucket {
   objects = new Map();
   now = () => Date.now();
+  failPut = () => false;
   #version = 0;
 
   async list(prefix) {
@@ -32,6 +33,7 @@ class MemoryBucket {
   }
 
   async put(key, body, { ifMatch, ifNoneMatch } = {}) {
+    if (this.failPut(key)) throw new Error("S3 PUT failed: injected");
     const current = this.objects.get(key);
     if (ifNoneMatch === "*" && current) return null;
     if (ifMatch && current?.etag !== ifMatch) return null;
@@ -65,6 +67,7 @@ export class Doc extends DurableObject {
   getAlarm() { return this.ctx.storage.getAlarm(); }
   clearAlarm() { return this.ctx.storage.deleteAlarm(); }
   alarm() { this.ctx.storage.kv.put("alarmed", true); }
+  alarmed() { return this.ctx.storage.kv.get("alarmed") ?? false; }
 }
 export default { fetch: () => new Response("ok") };
 `;
@@ -77,13 +80,14 @@ async function project() {
   return directory;
 }
 
-async function engine(directory, bucket, persistDirectory, { mode = "durable", retentionMs = 7 * 86_400_000, tuning } = {}) {
+async function engine(directory, bucket, persistDirectory, { mode = "durable", retentionMs = 7 * 86_400_000, tuning, node } = {}) {
   const config = await loadProjectConfig(directory);
   const started = new NativeEngine({
     config,
     persistDirectory,
     idleEvictMs: 0,
     backup: mode ? { client: bucket, prefix: "p", mode, intervalMs: 60_000, retentionMs, tuning } : undefined,
+    cluster: node ? { name: node, ttlMs: 4_000, wakeMs: 200 } : undefined,
     log: () => {},
   });
   await started.start();
@@ -225,5 +229,86 @@ test("bookmarks need durable mode", async () => {
     await assert.rejects(node.env.DOC.getByName("f").bookmark(), /needs --backup-mode durable/);
   } finally {
     await node.close();
+  }
+});
+
+test("a restore whose upload fails leaves the object as it was, and runs once the bucket answers", async () => {
+  const directory = await project();
+  const bucket = new MemoryBucket();
+  const persist = await temporaryDirectory();
+  const options = { tuning: { gateTimeoutMs: 1_000 } };
+  let node = await engine(directory, bucket, persist, options);
+  try {
+    const doc = () => node.env.DOC.getByName("g");
+    await doc().set("v1");
+    const first = await doc().bookmark();
+    await doc().set("v2");
+    const latest = await doc().bookmark();
+    bucket.failPut = (key) => key.includes("/snapshot-");
+    await assert.rejects(doc().restore(first), /restoring/);
+    await assert.rejects(doc().get(), /injected/);
+    // Restarted while the restore is pending; compaction runs before anything opens it.
+    bucket.failPut = () => false;
+    await node.close();
+    node = await engine(directory, bucket, persist, options);
+    await node.durable.compact();
+    assert.equal(await doc().get(), "v1");
+    await assert.rejects(doc().restore(latest), /restoring/);
+    assert.equal(await doc().get(), "v2");
+  } finally {
+    await node.close();
+  }
+});
+
+test("a bookmark whose history the bucket no longer keeps is refused when the restore is asked for", async () => {
+  const directory = await project();
+  const bucket = new MemoryBucket();
+  const node = await engine(directory, bucket, await temporaryDirectory(), { retentionMs: 0, tuning: { snapshotTransactions: 2 } });
+  try {
+    const doc = () => node.env.DOC.getByName("h");
+    await doc().set(1);
+    const old = await doc().bookmark();
+    for (let value = 2; value <= 6; value += 1) await doc().set(value);
+    await node.durable.compact();
+    await assert.rejects(doc().restore(old), /older than the history the bucket keeps/);
+    assert.equal(await doc().get(), 6);
+  } finally {
+    await node.close();
+  }
+});
+
+test("ctx.abort() keeps the object's alarm", async () => {
+  const directory = await project();
+  const node = await engine(directory, new MemoryBucket(), await temporaryDirectory());
+  try {
+    const doc = () => node.env.DOC.getByName("i");
+    await doc().setAlarmIn(300);
+    await assert.rejects(doc().restore(await doc().bookmark()), /restoring/);
+    for (let attempt = 0; attempt < 100 && !(await doc().alarmed()); attempt += 1) await tick();
+    assert.equal(await doc().alarmed(), true);
+  } finally {
+    await node.close();
+  }
+});
+
+test("with several nodes, a restore asked for on one node doesn't undo another node's later writes", async () => {
+  const directory = await project();
+  const bucket = new MemoryBucket();
+  const persistA = await temporaryDirectory();
+  let a = await engine(directory, bucket, persistA, { node: "a" });
+  await a.env.DOC.getByName("x").set(1);
+  const first = await a.env.DOC.getByName("x").bookmark();
+  await a.env.DOC.getByName("x").set(2);
+  // Asked for, but a stops before the object restarts on it.
+  await a.env.DOC.getByName("x").restore(first, false);
+  await a.close();
+  const b = await engine(directory, bucket, await temporaryDirectory(), { node: "b" });
+  await b.env.DOC.getByName("x").set(3);
+  await b.close();
+  a = await engine(directory, bucket, persistA, { node: "a" });
+  try {
+    assert.equal(await a.env.DOC.getByName("x").get(), 3);
+  } finally {
+    await a.close();
   }
 });

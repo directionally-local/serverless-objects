@@ -262,22 +262,7 @@ export class DurableLog {
         usable.push(entry);
         txid = entry.txid;
       }
-      mkdirSync(dirname(path), { recursive: true });
-      const temporary = `${path}.restore`;
-      rmSync(temporary, { force: true });
-      if (snapshot) writeFileSync(temporary, (await this.#client.get(snapshot.key)).body);
-      applyTransactions(temporary, usable);
-      const db = new DatabaseSync(temporary);
-      let alarm = null;
-      try {
-        const integrity = db.prepare("PRAGMA quick_check").get().quick_check;
-        if (integrity !== "ok") throw new Error(`restored ${objectKey} failed its integrity check: ${integrity}`);
-        const meta = (key) => db.prepare("SELECT value FROM _cf_METADATA WHERE key = ?").get(key)?.value ?? null;
-        alarm = meta("alarm") ?? meta("alarm_running");
-      } finally {
-        db.close();
-      }
-      fsyncPath(temporary);
+      const { temporary, alarm } = await this.#build(path, snapshot ? (await this.#client.get(snapshot.key)).body : null, usable, objectKey);
       // Recorded before the file is in place: a crash in between restores again.
       // Numbering continues past everything seen; a snapshot of what was
       // restored then becomes the base for what follows.
@@ -292,10 +277,14 @@ export class DurableLog {
 
   // ---- takeover (--node-name) ------------------------------------------------
 
-  #segmentCache = new Map();
+  // Segments are written once, so what each holds (which transactions of
+  // which objects, and when) is kept after its first download. Pages are
+  // fetched again only for the transactions a rebuild needs.
+  #segmentIndex = new Map();
 
-  // An object's snapshots and logged transactions in the bucket that belong
-  // to its history (owner record), across every writer.
+  // An object's snapshots and logged transactions (index records: txid,
+  // epoch, at, segment) in the bucket that belong to its history (owner
+  // record), across every writer.
   async #objectHistory(className, id, history) {
     const snapshots = [];
     for (const { key, lastModified } of await this.#client.list(`${this.#root}/objects/${className}/${id}/`)) {
@@ -306,23 +295,43 @@ export class DurableLog {
       if (inHistory(history, epoch, txid, { snapshot: true })) snapshots.push({ key, txid, epoch, time: Date.parse(lastModified ?? "") || undefined });
     }
     const entries = new Map();
-    const keys = (await this.#client.list(`${this.#root}/log/`)).map(({ key }) => key).filter((key) => key.endsWith(".seg"));
-    for (const key of [...this.#segmentCache.keys()]) if (!keys.includes(key)) this.#segmentCache.delete(key);
-    for (const key of keys) {
-      let decoded = this.#segmentCache.get(key);
-      if (!decoded) {
+    const listed = (await this.#client.list(`${this.#root}/log/`)).filter(({ key }) => key.endsWith(".seg"));
+    const keys = new Set(listed.map(({ key }) => key));
+    for (const key of [...this.#segmentIndex.keys()]) if (!keys.has(key)) this.#segmentIndex.delete(key);
+    for (const { key, lastModified } of listed) {
+      let index = this.#segmentIndex.get(key);
+      if (!index) {
         const object = await this.#client.get(key);
         if (!object) continue;
-        decoded = decodeSegment(object.body);
-        this.#segmentCache.set(key, decoded);
+        // Entries from before capture times were recorded date from their upload.
+        const uploaded = Date.parse(lastModified ?? "") || undefined;
+        index = decodeSegment(object.body).map((entry) => ({ class: entry.class, id: entry.id, epoch: entry.epoch ?? 0, txid: entry.txid, at: entry.at ?? uploaded, segment: key }));
+        this.#segmentIndex.set(key, index);
       }
-      for (const entry of decoded) {
-        if (entry.class !== className || entry.id !== id || !inHistory(history, entry.epoch ?? 0, entry.txid)) continue;
+      for (const entry of index) {
+        if (entry.class !== className || entry.id !== id || !inHistory(history, entry.epoch, entry.txid)) continue;
         if (!entries.has(entry.txid)) entries.set(entry.txid, entry);
       }
     }
     snapshots.sort((a, b) => b.txid - a.txid);
     return { snapshots, entries };
+  }
+
+  // The full transactions (with pages) for index records, in order.
+  async #withPages(records) {
+    const segments = new Map();
+    for (const record of records) {
+      if (!segments.has(record.segment)) {
+        const object = await this.#client.get(record.segment);
+        if (!object) throw new Error(`log segment ${record.segment} is no longer in the bucket`);
+        segments.set(record.segment, decodeSegment(object.body));
+      }
+    }
+    return records.map((record) => {
+      const entry = segments.get(record.segment).find((candidate) => candidate.class === record.class && candidate.id === record.id && candidate.txid === record.txid && (candidate.epoch ?? 0) === record.epoch);
+      if (!entry) throw new Error(`transaction ${record.txid} is missing from ${record.segment}`);
+      return entry;
+    });
   }
 
   // Where an object's history ends in the bucket: the range a clean release
@@ -349,12 +358,13 @@ export class DurableLog {
       // Nothing local is removed until the bucket's copy is complete.
       const { snapshots, entries } = await this.#objectHistory(className, id, record.history);
       const snapshot = snapshots.find((candidate) => candidate.txid <= cut);
-      const usable = [];
+      const records = [];
       for (let txid = (snapshot?.txid ?? 0) + 1; txid <= cut; txid += 1) {
         const entry = entries.get(txid);
         if (!entry) throw new Error(`${className} ${id}: transaction ${txid} is missing from the bucket; refusing to take the object over.`);
-        usable.push(entry);
+        records.push(entry);
       }
+      const usable = await this.#withPages(records);
       if (snapshot || usable.length > 0) {
         const alarm = await this.#rebuild(path, snapshot ? (await this.#client.get(snapshot.key)).body : null, usable, `${className}/${id}`);
         if (alarm !== null) alarmIndex.set(className, id, Number(alarm));
@@ -363,13 +373,23 @@ export class DurableLog {
       }
       Object.assign(row, { snapshot: snapshot?.txid ?? 0 });
     }
-    Object.assign(row, { captured: cut, shipped: cut, log_bytes: 0, position: reusable ? row.position : null, needs_snapshot: 1, epoch: record.epoch });
+    // A restore requested in an earlier ownership doesn't carry over: other
+    // nodes may have written since.
+    Object.assign(row, { captured: cut, shipped: cut, log_bytes: 0, position: reusable ? row.position : null, needs_snapshot: 1, epoch: record.epoch, restore_to: null });
     this.#save(row);
   }
 
   // Writes snapshot + transactions to a fresh file at path (fsynced, checked)
   // and returns the object's pending alarm, if any.
   async #rebuild(path, snapshotBody, transactions, label) {
+    const { temporary, alarm } = await this.#build(path, snapshotBody, transactions, label);
+    install(path, temporary);
+    return alarm;
+  }
+
+  // Writes snapshot + transactions to a temporary file beside path (fsynced,
+  // checked); returns it and the restored state's pending alarm, if any.
+  async #build(path, snapshotBody, transactions, label) {
     mkdirSync(dirname(path), { recursive: true });
     const temporary = `${path}.restore`;
     rmSync(temporary, { force: true });
@@ -388,11 +408,7 @@ export class DurableLog {
       db.close();
     }
     fsyncPath(temporary);
-    // The old copy's WAL must not be applied to the new file.
-    for (const suffix of ["-wal", "-shm"]) rmSync(`${path}${suffix}`, { force: true });
-    renameSync(temporary, path);
-    fsyncPath(dirname(path));
-    return alarm;
+    return { temporary, alarm };
   }
 
   // The epoch this node's copy of an object belongs to.
@@ -436,9 +452,7 @@ export class DurableLog {
     const current = this.currentBookmark(host);
     if (time >= Date.now()) return current;
     const { snapshots, entries } = await this.#objectHistory(className, id, history);
-    for (const { entry } of [...(this.#inflight?.items ?? []), ...this.#pending]) {
-      if (entry.class === className && entry.id === id && !entries.has(entry.txid)) entries.set(entry.txid, entry);
-    }
+    for (const { entry } of this.#queued(className, id)) if (!entries.has(entry.txid)) entries.set(entry.txid, entry);
     const times = new Map();
     for (const entry of entries.values()) if (entry.at !== undefined) times.set(entry.txid, entry.at);
     for (const snapshot of snapshots) if (snapshot.time !== undefined) times.set(snapshot.txid, Math.min(times.get(snapshot.txid) ?? Infinity, snapshot.time));
@@ -454,15 +468,23 @@ export class DurableLog {
 
   // Records that the object is restored to bookmark when it next opens, and
   // returns the bookmark of its current state (to undo the restore).
-  requestRestore(host, bookmark) {
+  async requestRestore(host, bookmark, history) {
     const { className, id } = host.backupSource();
     const txid = this.#parseBookmark(className, id, bookmark);
     const current = this.currentBookmark(host);
     const row = this.#row(className, id);
     if (txid > row.captured) throw new RangeError("Invalid bookmark: it is newer than the object's latest write.");
+    const { snapshots, entries } = await this.#objectHistory(className, id, history);
+    for (const { entry } of this.#queued(className, id)) if (!entries.has(entry.txid)) entries.set(entry.txid, entry);
+    if (!restorable(txid, snapshots, entries)) throw new RangeError("That bookmark is older than the history the bucket keeps for this object.");
     row.restore_to = txid;
     this.#save(row);
     return current;
+  }
+
+  // An object's transactions captured here and not yet in the bucket.
+  #queued(className, id) {
+    return [...(this.#inflight?.items ?? []), ...this.#pending].filter(({ entry }) => entry.class === className && entry.id === id);
   }
 
   restorePending(className, id) {
@@ -473,39 +495,46 @@ export class DurableLog {
   // Before the object opens: rebuilds it at the requested transaction from
   // the bucket, then uploads that state as a snapshot with a new txid above
   // everything seen, so it becomes the object's latest state everywhere.
+  // Only then does the rebuilt file replace the local copy.
   async restorePoint(className, id, { history, alarmIndex }) {
     const row = this.#row(className, id);
     const target = row.restore_to;
+    // Its queued writes reach the bucket first. (Ones lost in a crash were
+    // never acknowledged.)
     const deadline = Date.now() + this.#tuning.gateTimeoutMs;
-    while (row.shipped < row.captured) {
+    while (this.#queued(className, id).length > 0) {
       if (this.#closed || Date.now() > deadline) throw new Error(`${className} ${id}: its writes did not reach the bucket, so it can't be restored yet.`);
       await this.#ship();
-      if (row.shipped < row.captured) await sleep(100);
+      if (this.#queued(className, id).length > 0) await sleep(100);
     }
     const { snapshots, entries } = await this.#objectHistory(className, id, history);
+    if (!restorable(target, snapshots, entries)) {
+      // Its history left the bucket (retention): the object opens as it is.
+      this.#log(`${className} ${id}: transaction ${target} can no longer be restored from the bucket; the restore is dropped.`);
+      row.restore_to = null;
+      this.#save(row);
+      return;
+    }
     const snapshot = snapshots.find((candidate) => candidate.txid <= target);
-    const usable = [];
-    for (let txid = (snapshot?.txid ?? 0) + 1; txid <= target; txid += 1) {
-      const entry = entries.get(txid);
-      if (!entry) throw new Error(`${className} ${id}: transaction ${txid} is no longer in the bucket; can't restore to that bookmark.`);
-      usable.push(entry);
-    }
+    const records = [];
+    for (let txid = (snapshot?.txid ?? 0) + 1; txid <= target; txid += 1) records.push(entries.get(txid));
     const path = join(this.#objectsDirectory, className, `${id}.sqlite`);
-    let alarm = null;
-    if (snapshot || usable.length > 0) {
-      alarm = await this.#rebuild(path, snapshot ? (await this.#client.get(snapshot.key)).body : null, usable, `${className}/${id}`);
-    } else {
-      mkdirSync(dirname(path), { recursive: true });
-      for (const suffix of ["-wal", "-shm"]) rmSync(`${path}${suffix}`, { force: true });
-      writeFileSync(path, Buffer.alloc(0));
-      fsyncPath(path);
+    const { temporary, alarm } = await this.#build(path, snapshot ? (await this.#client.get(snapshot.key)).body : null, await this.#withPages(records), `${className}/${id}`);
+    let txid = row.captured;
+    for (const candidate of snapshots) txid = Math.max(txid, candidate.txid);
+    for (const candidate of entries.keys()) txid = Math.max(txid, candidate);
+    txid += 1;
+    const body = readFileSync(temporary);
+    try {
+      while (!(await this.#putSnapshot(row, txid, body))) txid += 1;
+    } catch (error) {
+      rmSync(temporary, { force: true });
+      throw error;
     }
-    row.position = null;
-    row.captured = Math.max(row.captured, ...snapshots.map((candidate) => candidate.txid), ...entries.keys()) + 1;
-    const body = readFileSync(path);
-    while (!(await this.#putSnapshot(row, row.captured, body))) row.captured += 1;
+    // In place before it is recorded: a crash in between restores again.
+    install(path, temporary);
     // An empty file gets its schema when it opens: a snapshot follows then.
-    Object.assign(row, { shipped: row.captured, snapshot: row.captured, log_bytes: 0, needs_snapshot: body.length === 0 ? 1 : 0, restore_to: null });
+    Object.assign(row, { captured: txid, shipped: txid, snapshot: txid, log_bytes: 0, position: null, needs_snapshot: body.length === 0 ? 1 : 0, restore_to: null });
     this.#save(row);
     alarmIndex?.set(className, id, alarm === null ? null : Number(alarm));
     this.#log(`${className} ${id}: restored to transaction ${target}.`);
@@ -802,9 +831,11 @@ export class DurableLog {
     // it or a later snapshot, so older snapshots and transactions can go.
     const cutoff = Date.now() - this.#tuning.retentionMs;
     const snapshots = new Map();
+    // Bases of other threads' objects let thread 0 compact segments that
+    // stopped writers left; only an object's own thread deletes its snapshots.
     for (const { key, lastModified } of await this.#client.list(`${this.#root}/objects/`)) {
       const match = SNAPSHOT_RE.exec(key);
-      if (!match || !this.#owns(match[2])) continue;
+      if (!match) continue;
       const objectKey = `${match[1]}/${match[2]}`;
       if (!snapshots.has(objectKey)) snapshots.set(objectKey, []);
       snapshots.get(objectKey).push({ key, txid: Number(match[3]), epoch: Number(match[4] ?? 0), time: Date.parse(lastModified ?? "") || Infinity });
@@ -818,7 +849,7 @@ export class DurableLog {
       if (old.length === 0) continue;
       const base = Math.max(...old.map((snapshot) => snapshot.txid));
       bases.set(objectKey, base);
-      for (const snapshot of list) if (snapshot.txid < base) await this.#client.delete(snapshot.key);
+      if (this.#owns(id)) for (const snapshot of list) if (snapshot.txid < base) await this.#client.delete(snapshot.key);
     }
     const scope = this.#writer === "t0" ? `${this.#root}/log/` : `${this.#root}/log/${this.#writer}/`;
     const live = this.#inflight?.key;
@@ -866,6 +897,14 @@ export class DurableLog {
     for (const waiter of this.#waiters.splice(0)) waiter.reject(new Error("The engine stopped before the write was durable."));
     this.#state.close();
   }
+}
+
+// Puts a rebuilt file in place of path; the old copy's WAL must not be
+// applied to it.
+function install(path, temporary) {
+  for (const suffix of ["-wal", "-shm"]) rmSync(`${path}${suffix}`, { force: true });
+  renameSync(temporary, path);
+  fsyncPath(dirname(path));
 }
 
 // Whether the bucket can rebuild txid: from a snapshot at or before it (or
