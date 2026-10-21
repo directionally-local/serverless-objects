@@ -71,7 +71,7 @@ Limits:
 - Fetches and WebSocket messages an object sends while its writes are pending aren't held back. Cloudflare holds those too.
 - Writes from timers or `waitUntil` outside an event ship within 200 ms, with no gate.
 - A node in durable mode doesn't start until it can reach its bucket.
-- It needs conditional writes (`If-None-Match`). S3, R2, MinIO (since 2025-09) and SeaweedFS support them. Backblaze B2, Garage and DigitalOcean Spaces don't.
+- It needs conditional writes (`If-None-Match`). AWS S3, Cloudflare R2 and SeaweedFS support them, and so does MinIO from RELEASE.2025-09-07 (MinIO no longer publishes free builds or images). Backblaze B2, Garage and DigitalOcean Spaces don't. At start, a node in durable mode checks that the store refuses a conditional write that doesn't hold, and won't run on one that accepts it. SeaweedFS's default volumes (8 of 64 MB) are too small for this workload; size them, for example `-master.volumeSizeLimitMB=256 -volume.max=50`.
 - One node per prefix, unless the nodes are named ([several nodes](#several-nodes)).
 
 ### Several nodes

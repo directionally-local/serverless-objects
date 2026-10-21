@@ -343,3 +343,14 @@ test("after a crash leaves transactions unshipped, no write is acknowledged unti
   assert.equal(restored.last, 5);
   assert.ok(restored.count >= 2, `restored ${restored.count} entries`);
 });
+
+test("durable mode refuses a store that ignores conditional writes", async () => {
+  const directory = await project();
+  const careless = new MemoryBucket();
+  // Accepts every write, conditions or not.
+  careless.put = async function (key, body) {
+    this.objects.set(key, { body: Buffer.from(body), etag: `"${Math.random()}"` });
+    return this.objects.get(key).etag;
+  };
+  await assert.rejects(engineFor(directory, careless), /doesn't honor conditional writes \(If-None-Match: \* replaced an existing key\)/);
+});

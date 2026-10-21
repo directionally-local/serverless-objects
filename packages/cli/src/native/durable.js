@@ -50,6 +50,13 @@ const sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)
 
 // Per-object progress, kept beside the objects (shared by engine threads;
 // each object's row is written only by the thread that owns it).
+export class UnsafeStore extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "UnsafeStore";
+  }
+}
+
 export class LogState {
   #db;
 
@@ -147,7 +154,28 @@ export class DurableLog {
     this.#state.set(row);
   }
 
-  // ---- start: check local copies, restore what's missing --------------------
+  // ---- start: check the store, check local copies, restore what's missing ----
+
+  // Durable mode and several nodes rely on the store refusing a conditional
+  // write that doesn't hold. Some S3-compatible stores ignore the conditions
+  // and accept everything, which would silently break both: refuse to run on them.
+  async probeConditionalWrites() {
+    const key = `${this.#root}/probe/${randomBytes(8).toString("hex")}`;
+    const fail = (what) => {
+      throw new UnsafeStore(`The bucket doesn't honor conditional writes (${what}); --backup-mode durable and --node-name need a store that does, such as AWS S3, Cloudflare R2 or SeaweedFS.`);
+    };
+    try {
+      const first = await this.#client.put(key, "1", { ifNoneMatch: "*" });
+      if (first === null) fail("a create of a new key was refused");
+      if ((await this.#client.put(key, "2", { ifNoneMatch: "*" })) !== null) fail("If-None-Match: * replaced an existing key");
+      const second = await this.#client.put(key, "3", { ifMatch: first });
+      if (second === null) fail("If-Match with the current ETag was refused");
+      if ((await this.#client.put(key, "4", { ifMatch: first })) !== null) fail("If-Match with a stale ETag was accepted");
+    } finally {
+      await this.#client.delete(key).catch(() => {});
+    }
+  }
+
 
   // Restores every object this thread owns that is missing locally, or whose
   // local copy can't be trusted, from its latest snapshot plus the log.

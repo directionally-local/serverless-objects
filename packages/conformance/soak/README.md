@@ -15,7 +15,7 @@ Faults, one every ~45 minutes on average (weights in `soak.js`):
 | `kill9` | SIGKILL the engine, restart it | No acknowledged write lost |
 | `sigterm` | Graceful stop and restart | No acknowledged write lost |
 | `crash-thread` | An uncaught error kills one engine thread | The thread is replaced; the engine stays healthy |
-| `bucket-outage` | MinIO frozen (SIGSTOP) for 5 minutes | Reads keep working; in durable mode writes fail without being acknowledged until the bucket is back, then ship |
+| `bucket-outage` | SeaweedFS frozen (SIGSTOP) for 5 minutes | Reads keep working; in durable mode writes fail without being acknowledged until the bucket is back, then ship |
 | `disk-full` | Fill the data disk, hold 3 minutes, free it | Writes fail while full, without being acknowledged; nothing is corrupted |
 | `wipe-restore` | SIGKILL, delete all local state, restart | Objects are restored from the bucket. Durable mode (the default) may lose nothing acknowledged; interval mode only writes inside the backup window |
 
@@ -23,7 +23,7 @@ Faults, one every ~45 minutes on average (weights in `soak.js`):
 
 ## Running it
 
-Everything runs in one container: the engine, MinIO as the bucket, and the load. The container needs no network (`--network none`) and publishes no ports.
+Everything runs in one container: the engine, SeaweedFS as the bucket, and the load. The container needs no network (`--network none`) and publishes no ports.
 
 ```sh
 docker build --build-arg SOBJECTS_VERSION=0.9.1 -t sobjects-soak packages/conformance/soak
