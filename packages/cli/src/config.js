@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { parse } from "smol-toml";
 import { parseNativeDevArgs } from "./native/dev.js";
@@ -29,7 +29,16 @@ export async function loadSobjectsConfig(filePath) {
     }
     throw new Error(`Could not read ${filePath}: ${error.message}`);
   }
-  return parseSobjectsConfig(source, filePath, { baseDirectory: dirname(filePath) });
+  const config = parseSobjectsConfig(source, filePath, { baseDirectory: dirname(filePath) });
+  if (config.native) {
+    // Checked here so a service unit fails at install, not in a restart loop.
+    try {
+      await access(config.native.project);
+    } catch {
+      throw new Error(`${filePath} [native].project ${config.native.project} does not exist.`);
+    }
+  }
+  return config;
 }
 
 export function parseSobjectsConfig(source, sourceName = "sobjects.toml", { baseDirectory = process.cwd() } = {}) {
@@ -129,7 +138,9 @@ function parseNative(parsed, sourceName, baseDirectory) {
     ? DEFAULT_NATIVE_LISTEN
     : requireString(native.listen, `${table}.listen`);
   validateListenAddress(listen, `${table}.listen`);
-  const args = [project, "--engine", "native", "--host", hostOf(listen), "--port", String(portOf(listen))];
+  // Node may bind "localhost" to ::1, while the ingress and clients use 127.0.0.1.
+  const host = hostOf(listen) === "localhost" ? "127.0.0.1" : hostOf(listen);
+  const args = [project, "--engine", "native", "--host", host, "--port", String(portOf(listen))];
   const env = {};
   const option = (key, flag, source = native, label = table) => {
     if (source[key] === undefined) return;
@@ -202,6 +213,10 @@ function parseNative(parsed, sourceName, baseDirectory) {
   const config = { listen, native: Object.freeze({ project, args: Object.freeze(args), env: Object.freeze(env), dataDirectory }) };
   if (parsed.ingress !== undefined) {
     config.ingress = parseIngress(parsed.ingress, config, sourceName, baseDirectory, "[native].listen");
+    const peerListen = native.cluster?.peer_listen;
+    if (peerListen && [config.ingress.listen, config.ingress.redirectHttp].some((address) => address && portOf(address) === portOf(peerListen) && sameHost(address, peerListen))) {
+      throw new Error(`${table}.cluster.peer_listen must differ from the [ingress] listeners.`);
+    }
   }
   return Object.freeze(config);
 }

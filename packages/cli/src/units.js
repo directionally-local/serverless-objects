@@ -26,14 +26,15 @@ export function renderSystemdUnit({ nodeExecutable, cliScript, configPath, syste
     `EnvironmentFile=-${systemdEscape(join(dirname(configPath), "sobjects.env"))}`,
   );
   for (const [name, value] of Object.entries(env)) lines.push(`Environment=${systemdEscape(`${name}=${value}`)}`);
-  // KillMode=mixed signals only `sobjects up`, which forwards SIGTERM to celld
-  // and exits 143 once celld has stopped.
+  // KillMode=mixed signals only `sobjects up`, which forwards SIGTERM to the
+  // engine and exits once it has stopped.
   lines.push(
     "Restart=on-failure",
     "RestartSec=2",
     "KillMode=mixed",
-    // celld drains for up to CELLD_SHUTDOWN_TOTAL_MS (40 s by default).
-    "TimeoutStopSec=45",
+    // celld drains for up to CELLD_SHUTDOWN_TOTAL_MS (40 s by default); the
+    // native engine drains and uploads for up to a minute.
+    "TimeoutStopSec=65",
     "SuccessExitStatus=143",
     "NoNewPrivileges=true",
   );
