@@ -249,7 +249,12 @@ export class ObjectHost {
     } else if (engine.durable?.restorePending(namespace.className, id.toString())) {
       this.#ready = this.#restoreThenOpen(name);
       this.#ready.catch(() => {});
-    } else this.#open(name);
+    } else {
+      this.#open(name);
+      // A host that reopens an object (after ctx.abort(), say) runs its alarm.
+      const alarm = this.#database.meta("alarm") ?? this.#database.meta("alarm_running");
+      if (alarm !== null) this.scheduleAlarm(Number(alarm));
+    }
   }
 
   async #restoreThenOpen(name, history) {
@@ -628,7 +633,7 @@ export class ObjectHost {
     return {
       current: () => durable.currentBookmark(this),
       forTime: (time) => durable.bookmarkForTime(this, time, history()),
-      restore: (bookmark) => durable.requestRestore(this, bookmark),
+      restore: (bookmark) => durable.requestRestore(this, bookmark, history()),
     };
   }
 
