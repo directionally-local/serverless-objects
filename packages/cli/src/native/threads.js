@@ -35,13 +35,14 @@ export class ThreadedEngine {
   // threads: how many; stallMs: replace a thread that hasn't answered a ping
   // for this long; memoryMb: each thread's heap limit; backup: { bucketUri,
   // intervalMs } (credentials come from the environment, as for one thread).
-  constructor({ config, persistDirectory, threads, idleEvictMs = 60_000, backup, stallMs = 30_000, memoryMb, env = process.env, log = (message) => console.error(message) }) {
+  constructor({ config, persistDirectory, threads, idleEvictMs = 60_000, backup, stallMs = 30_000, memoryMb, trustForwardedHeaders = false, env = process.env, log = (message) => console.error(message) }) {
     this.env = env;
     if (!Number.isInteger(threads) || threads < 1) throw new Error("threads must be a positive integer.");
     this.config = config;
     this.persistDirectory = persistDirectory;
     this.threads = threads;
     this.idleEvictMs = idleEvictMs;
+    this.trustForwardedHeaders = trustForwardedHeaders;
     this.backup = backup;
     this.stallMs = stallMs;
     this.memoryMb = memoryMb;
@@ -183,7 +184,7 @@ export class ThreadedEngine {
 
   async #serve(req, res) {
     try {
-      const response = await this.fetchEncoded(toRequest(req, req.method !== "GET" && req.method !== "HEAD"));
+      const response = await this.fetchEncoded(toRequest(req, req.method !== "GET" && req.method !== "HEAD", this.trustForwardedHeaders));
       if (response.status === 101) throw new TypeError("A 101 response needs a WebSocket upgrade request.");
       res.writeHead(response.status, response.statusText, toNodeHeaders(response.headers));
       if (response.body) Readable.fromWeb(response.body).pipe(res);
@@ -198,7 +199,7 @@ export class ThreadedEngine {
   async #upgrade(req, socket, head) {
     socket.on("error", () => {});
     try {
-      const request = toRequest(req, false);
+      const request = toRequest(req, false, this.trustForwardedHeaders);
       const response = await this.fetchEncoded(request);
       if (response.status === 101 && response.webSocket) {
         const end = new RemoteEnd(response.webSocket);

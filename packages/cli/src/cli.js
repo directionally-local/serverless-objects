@@ -43,7 +43,7 @@ export const helpText = `Serverless Objects — self-hostable Workers infrastruc
 Usage: sobjects <command> [options]
 
 Commands:
-  up [--config PATH] [--detach]  Start celld plus the configured ingress and admin API
+  up [--config PATH] [--detach]  Start celld (or [native]) plus the configured ingress and admin API
   down                           Stop a detached node and its supervisor
   status                         Show detached process status
   logs [--supervisor] [--tail N] Show recent detached celld or supervisor logs
@@ -64,7 +64,8 @@ SOBJECTS_CELLD_BIN to use an existing binary instead.`;
 const upHelpText = `Usage: sobjects up [--config PATH] [--detach]
 
 Read [celld] settings from sobjects.toml, install pinned celld if needed, and
-run the node in the foreground by default. When [ingress] or [admin] is
+run the node in the foreground by default. A [native] table instead runs its
+project on the native engine (see 'sobjects dev --engine native --help'). When [ingress] or [admin] is
 configured, the supervisor (TLS ingress and loopback admin API) starts first.
 Use --detach to run them in the background. The default config path is
 $SOBJECTS_CONFIG, else ./sobjects.toml.`;
@@ -204,38 +205,25 @@ async function runUp(args, io, dependencies) {
     return 2;
   }
 
-  let executable;
+  let node;
   try {
-    executable = await resolveCelld(dependencies);
+    node = config.native ? nativeNode(config, io, dependencies) : await celldNode(config, io, dependencies);
   } catch (error) {
     io.error(error.message);
     return 1;
   }
-
-  const storageArgs = celldStorageArgs(config);
-  const argsForCelld = [...storageArgs, "--listen", config.listen];
-  if (config.internalListen) argsForCelld.push("--internal-listen", config.internalListen);
-  if (config.ingress) {
-    // The ingress replaces X-Forwarded-Host/Proto, so celld can use them for
-    // request.url. Only trust them when nothing but local processes, such as
-    // the ingress, can reach celld; otherwise clients could spoof them.
-    if (isLoopbackAddress(config.listen)) {
-      argsForCelld.push("--trust-forwarded-headers");
-    } else {
-      io.error(
-        `Warning: [celld].listen ${config.listen} is not loopback, so celld will not trust the ingress's forwarded headers and request.url keeps celld's own scheme and host.`,
-      );
-    }
-  }
+  const { executable, storageArgs } = node;
   const stateDirectory = defaultStateDirectory(dependencies.env);
   const needsSupervisor = Boolean(config.ingress || config.admin);
   if (detached) {
     let state;
     try {
       state = await dependencies.startService({
+        name: node.name,
         executable,
-        args: argsForCelld,
-        env: dependencies.env,
+        args: node.args,
+        marker: node.marker,
+        env: node.env ?? dependencies.env,
         cwd: dependencies.cwd,
         stateDirectory,
         spawnProcess: dependencies.spawnProcess,
@@ -244,7 +232,7 @@ async function runUp(args, io, dependencies) {
       io.error(error.message);
       return 1;
     }
-    io.log(`Started celld in the background (pid ${state.pid}).`);
+    io.log(`Started ${node.label} in the background (pid ${state.pid}).`);
     io.log(`Log file: ${state.logPath}`);
     if (!needsSupervisor) return 0;
 
@@ -264,8 +252,8 @@ async function runUp(args, io, dependencies) {
       return 0;
     } catch (error) {
       io.error(error.message);
-      io.error("Stopping celld because the supervisor did not start.");
-      await dependencies.stopService({ stateDirectory }).catch((stopError) => io.error(stopError.message));
+      io.error(`Stopping ${node.label} because the supervisor did not start.`);
+      await dependencies.stopService({ name: node.name, stateDirectory }).catch((stopError) => io.error(stopError.message));
       return 1;
     }
   }
@@ -281,8 +269,8 @@ async function runUp(args, io, dependencies) {
   }
 
   // Service managers (launchd, systemd KillMode=mixed) signal only this
-  // process, so forward SIGTERM to let celld flush and exit cleanly. A
-  // terminal SIGINT already reaches celld through the process group.
+  // process, so forward SIGTERM to let the engine flush and exit cleanly. A
+  // terminal SIGINT already reaches it through the process group.
   let child;
   const unsubscribe = [
     dependencies.onSignal("SIGTERM", () => child?.kill("SIGTERM")),
@@ -294,18 +282,63 @@ async function runUp(args, io, dependencies) {
   try {
     return await runProcess(
       executable,
-      argsForCelld,
+      node.args,
       io,
       dependencies.spawnProcess,
-      undefined,
+      node.env,
       {},
-      "celld",
+      node.name === "celld" ? "celld" : node.label,
       (spawned) => { child = spawned; },
     );
   } finally {
     for (const off of unsubscribe) off();
     await supervisor?.close();
   }
+}
+
+async function celldNode(config, io, dependencies) {
+  const executable = await resolveCelld(dependencies);
+  const storageArgs = celldStorageArgs(config);
+  const args = [...storageArgs, "--listen", config.listen];
+  if (config.internalListen) args.push("--internal-listen", config.internalListen);
+  if (config.ingress) {
+    // The ingress replaces X-Forwarded-Host/Proto, so celld can use them for
+    // request.url. Only trust them when nothing but local processes, such as
+    // the ingress, can reach celld; otherwise clients could spoof them.
+    if (isLoopbackAddress(config.listen)) {
+      args.push("--trust-forwarded-headers");
+    } else {
+      io.error(
+        `Warning: [celld].listen ${config.listen} is not loopback, so celld will not trust the ingress's forwarded headers and request.url keeps celld's own scheme and host.`,
+      );
+    }
+  }
+  return { name: "celld", label: "celld", executable, args, storageArgs };
+}
+
+// The native engine runs as this CLI's own `dev --engine native` in a child
+// process, so `up` supervises it the same way it supervises celld.
+function nativeNode(config, io, { env, nodeExecutable }) {
+  const persistTo = config.native.dataDirectory ?? join(defaultDataDirectory(env), "native");
+  const args = [CLI_SCRIPT, "dev", ...config.native.args, "--persist-to", persistTo];
+  if (config.ingress) {
+    // As for celld: trust the ingress's forwarded headers only on loopback.
+    if (isLoopbackAddress(config.listen)) {
+      args.push("--trust-forwarded-headers");
+    } else {
+      io.error(
+        `Warning: [native].listen ${config.listen} is not loopback, so the native engine will not trust the ingress's forwarded headers and request.url keeps the engine's own scheme and host.`,
+      );
+    }
+  }
+  return {
+    name: "native",
+    label: "the native engine",
+    executable: nodeExecutable,
+    args,
+    marker: CLI_SCRIPT,
+    env: { ...env, ...config.native.env },
+  };
 }
 
 async function runSupervise(args, io, dependencies) {
@@ -572,6 +605,10 @@ function isLoopbackAddress(address) {
   return host === "localhost" || host === "::1" || /^127\./.test(host);
 }
 
+function capitalize(text) {
+  return text[0].toUpperCase() + text.slice(1);
+}
+
 function subscribeToSignal(signal, handler) {
   process.on(signal, handler);
   return () => process.off(signal, handler);
@@ -584,12 +621,15 @@ async function runStatus(args, io, { env, getServiceStatus }) {
   }
   const stateDirectory = defaultStateDirectory(env);
   try {
-    const result = await getServiceStatus({ stateDirectory });
+    // A node runs either celld or the native engine; report whichever has state.
+    const native = await getServiceStatus({ name: "native", stateDirectory });
+    const result = native.running || native.stale ? native : await getServiceStatus({ stateDirectory });
+    const label = result === native ? "the native engine" : "celld";
     if (result.running) {
-      io.log(`celld is running (pid ${result.state.pid}; started ${result.state.startedAt}).`);
+      io.log(`${capitalize(label)} is running (pid ${result.state.pid}; started ${result.state.startedAt}).`);
       io.log(`Log file: ${result.state.logPath}`);
     } else {
-      io.log(result.stale ? "celld is not running (stale state removed)." : "celld is not running.");
+      io.log(result.stale ? `${capitalize(label)} is not running (stale state removed).` : "celld is not running.");
     }
 
     const supervisor = await getServiceStatus({ name: "supervisor", stateDirectory });
@@ -617,8 +657,9 @@ async function runDown(args, io, { env, stopService }) {
   }
   const stateDirectory = defaultStateDirectory(env);
   let exitCode = 0;
+  let engineStopped = false;
   // Stop the supervisor first so clients see a refused connection rather than a 502.
-  for (const name of ["supervisor", "celld"]) {
+  for (const name of ["supervisor", "native", "celld"]) {
     try {
       const options = { name, stateDirectory };
       if (name === "celld") {
@@ -626,11 +667,16 @@ async function runDown(args, io, { env, stopService }) {
         // CELLD_SHUTDOWN_TOTAL_MS; wait a little longer than that bound.
         options.timeoutMs = celldShutdownBoundMs(env) + 5_000;
         options.onWait = () => io.log("Waiting for celld to drain and release its lease...");
+      } else if (name === "native") {
+        // The native engine uploads what's left and releases its objects first.
+        options.timeoutMs = 60_000;
+        options.onWait = () => io.log("Waiting for the native engine to finish uploading and release its objects...");
       }
       const result = await stopService(options);
       if (result.stopped) io.log(`Stopped ${name} (pid ${result.state.pid}).`);
       else if (result.stale) io.log(`${name} was not running (stale state removed).`);
-      else if (name === "celld") io.log("celld is not running.");
+      else if (name === "celld" && !engineStopped) io.log("celld is not running.");
+      if (name === "native" && (result.stopped || result.stale)) engineStopped = true;
     } catch (error) {
       io.error(error.message);
       exitCode = 1;
@@ -646,7 +692,7 @@ async function runLogs(args, io, { env, readServiceLogs }) {
     return 0;
   }
   let lines = 100;
-  let name = "celld";
+  let name;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     let value;
@@ -669,7 +715,15 @@ async function runLogs(args, io, { env, readServiceLogs }) {
     }
   }
   try {
-    const result = await readServiceLogs({ name, stateDirectory: defaultStateDirectory(env), lines });
+    const stateDirectory = defaultStateDirectory(env);
+    let result;
+    if (name) {
+      result = await readServiceLogs({ name, stateDirectory, lines });
+    } else {
+      // The engine log is the native engine's when it has one, else celld's.
+      result = await readServiceLogs({ name: "native", stateDirectory, lines })
+        .catch(() => readServiceLogs({ name: "celld", stateDirectory, lines }));
+    }
     if (result.output) io.log(result.output);
     return 0;
   } catch (error) {
@@ -922,6 +976,9 @@ async function deployArgsFromConfig(args, { cwd, env, loadConfig }) {
   }
 
   const config = await loadConfig(configPath);
+  if (config.native) {
+    throw new Error(`${configPath} configures [native], which runs [native].project directly: restart 'sobjects up' to run new code. 'sobjects deploy' is for celld.`);
+  }
   const result = [...args];
   if (!hasOption(result, "--bucket") && !env.CELLD_BUCKET) {
     result.push("--bucket", config.bucket);

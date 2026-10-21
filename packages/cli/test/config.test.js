@@ -276,3 +276,68 @@ test("keeps the admin API and operator listener on loopback", () => {
     /Unknown config key 'token'/,
   );
 });
+
+test("parses a [native] node into native engine arguments", () => {
+  const config = parseSobjectsConfig(`
+[native]
+project = "app"
+listen = "0.0.0.0:9000"
+data_dir = "/var/lib/so/native"
+threads = 0
+idle_evict_seconds = 30
+
+[native.backup]
+bucket = "s3://fleet/objects"
+endpoint = "https://s3.example.test"
+region = "auto"
+
+[native.cluster]
+node_name = "a"
+lease_seconds = 15
+peer_listen = "10.0.0.5:9790"
+peer_advertise = "http://10.0.0.5:9790"
+`, "sobjects.toml", { baseDirectory: "/srv" });
+  assert.deepEqual(config, {
+    listen: "0.0.0.0:9000",
+    native: {
+      project: "/srv/app",
+      dataDirectory: "/var/lib/so/native",
+      env: { S3_ENDPOINT: "https://s3.example.test", AWS_REGION: "auto" },
+      args: [
+        "/srv/app", "--engine", "native", "--host", "0.0.0.0", "--port", "9000",
+        "--idle-evict-seconds", "30", "--threads", "0",
+        "--backup-bucket", "s3://fleet/objects", "--backup-mode", "durable",
+        "--node-name", "a", "--lease-seconds", "15",
+        "--peer-listen", "10.0.0.5:9790", "--peer-advertise", "http://10.0.0.5:9790",
+      ],
+    },
+  });
+  // The ingress proxies to the native listener by default.
+  const fronted = parseSobjectsConfig(`
+[native]
+project = "."
+[ingress]
+listen = "127.0.0.1:8443"
+[[ingress.routes]]
+hostname = "app.localhost"
+`, "sobjects.toml", { baseDirectory: "/srv" });
+  assert.equal(fronted.ingress.routes[0].upstream, "http://127.0.0.1:8787");
+  assert.equal(fronted.native.dataDirectory, undefined);
+});
+
+test("rejects [native] settings the engine can't run", () => {
+  const reject = (source, pattern) => assert.throws(() => parseSobjectsConfig(source), pattern);
+  reject('[celld]\nbucket = "s3://a/b"\n[native]\nproject = "."', /either \[celld\] or \[native\]/);
+  reject('[native]\nlisten = "127.0.0.1:1"', /\[native\]\.project must be a non-empty string/);
+  reject('[native]\nproject = "."\nport = 1', /Unknown config key 'port'/);
+  reject('[native]\nproject = "."\n[admin]\nlisten = "127.0.0.1:8790"', /\[admin\] is not available with \[native\]/);
+  reject('[native]\nproject = "."\nthreads = "2"', /threads must be a number/);
+  reject('[native]\nproject = "."\nthreads = 999', /--threads must be an integer from 0 to 256/);
+  reject('[native]\nproject = "."\n[native.backup]\nbucket = "gs://a"', /must be an s3:\/\/ URI/);
+  reject('[native]\nproject = "."\n[native.backup]\nbucket = "s3://a"\nmode = "fast"', /mode must be "durable" or "interval"/);
+  reject('[native]\nproject = "."\n[native.cluster]\nnode_name = "a"', /needs \[native.backup\] with mode "durable"/);
+  reject('[native]\nproject = "."\n[native.backup]\nbucket = "s3://a"\nmode = "interval"\n[native.cluster]\nnode_name = "a"', /mode "durable"/);
+  reject('[native]\nproject = "."\nthreads = 2\n[native.backup]\nbucket = "s3://a"\n[native.cluster]\nnode_name = "a"', /can't be combined with \[native\]\.threads/);
+  reject('[native]\nproject = "."\n[native.backup]\nbucket = "s3://a"\n[native.cluster]\nnode_name = "a"\npeer_advertise = "http://x:1"', /peer_advertise needs peer_listen/);
+  reject('[native]\nproject = "."\n[native.backup]\nbucket = "s3://a"\n[native.cluster]\nnode_name = "a"\npeer_listen = "127.0.0.1:8787"', /peer_listen must differ/);
+});

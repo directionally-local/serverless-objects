@@ -1,8 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { parse } from "smol-toml";
+import { parseNativeDevArgs } from "./native/dev.js";
 
-const ROOT_KEYS = new Set(["celld", "ingress", "admin"]);
+const ROOT_KEYS = new Set(["celld", "native", "ingress", "admin"]);
+const NATIVE_KEYS = new Set(["project", "listen", "data_dir", "idle_evict_seconds", "threads", "thread_stall_seconds", "thread_memory_mb", "backup", "cluster"]);
+const NATIVE_BACKUP_KEYS = new Set(["bucket", "mode", "interval_seconds", "endpoint", "region"]);
+const NATIVE_CLUSTER_KEYS = new Set(["node_name", "lease_seconds", "peer_listen", "peer_advertise"]);
 const CELLD_KEYS = new Set(["bucket", "endpoint", "region", "listen", "internal_listen"]);
 const ADMIN_KEYS = new Set(["listen"]);
 const INGRESS_KEYS = new Set(["listen", "redirect_http", "access_log", "tls", "acme", "routes"]);
@@ -10,6 +14,7 @@ const TLS_KEYS = new Set(["cert", "key"]);
 const ACME_KEYS = new Set(["email", "agree_to_terms", "directory_url"]);
 const ROUTE_KEYS = new Set(["hostname", "upstream", "tls"]);
 const DEFAULT_LISTEN = "127.0.0.1:8080";
+const DEFAULT_NATIVE_LISTEN = "127.0.0.1:8787";
 const DEFAULT_ACME_DIRECTORY = "https://acme-v02.api.letsencrypt.org/directory";
 
 export async function loadSobjectsConfig(filePath) {
@@ -37,6 +42,10 @@ export function parseSobjectsConfig(source, sourceName = "sobjects.toml", { base
   if (!isRecord(parsed)) throw new Error(`${sourceName} must contain a [celld] table.`);
 
   rejectUnknownKeys(parsed, ROOT_KEYS, sourceName);
+  if (parsed.native !== undefined) {
+    if (parsed.celld !== undefined) throw new Error(`${sourceName} must contain either [celld] or [native], not both.`);
+    return parseNative(parsed, sourceName, baseDirectory);
+  }
   const celld = parsed.celld;
   if (!isRecord(celld)) throw new Error(`${sourceName} must contain a [celld] table.`);
   rejectUnknownKeys(celld, CELLD_KEYS, `${sourceName} [celld]`);
@@ -103,7 +112,101 @@ export function parseSobjectsConfig(source, sourceName = "sobjects.toml", { base
   return Object.freeze(config);
 }
 
-function parseIngress(ingress, celld, sourceName, baseDirectory) {
+// [native] runs a project on the native engine: `sobjects up` starts it as
+// `sobjects dev <project> --engine native` with the options below, so the
+// flag parser stays the one place that checks them.
+function parseNative(parsed, sourceName, baseDirectory) {
+  const table = `${sourceName} [native]`;
+  const native = parsed.native;
+  if (!isRecord(native)) throw new Error(`${table} must be a table.`);
+  rejectUnknownKeys(native, NATIVE_KEYS, table);
+  if (parsed.admin !== undefined) {
+    throw new Error(`${sourceName} [admin] is not available with [native] yet; it reads celld's operator API.`);
+  }
+
+  const project = resolvePath(requireString(native.project, `${table}.project`), baseDirectory);
+  const listen = native.listen === undefined
+    ? DEFAULT_NATIVE_LISTEN
+    : requireString(native.listen, `${table}.listen`);
+  validateListenAddress(listen, `${table}.listen`);
+  const args = [project, "--engine", "native", "--host", hostOf(listen), "--port", String(portOf(listen))];
+  const env = {};
+  const option = (key, flag, source = native, label = table) => {
+    if (source[key] === undefined) return;
+    if (typeof source[key] !== "number") throw new Error(`${label}.${key} must be a number.`);
+    args.push(flag, String(source[key]));
+  };
+  let dataDirectory;
+  if (native.data_dir !== undefined) {
+    dataDirectory = resolvePath(requireString(native.data_dir, `${table}.data_dir`), baseDirectory);
+  }
+  option("idle_evict_seconds", "--idle-evict-seconds");
+  option("threads", "--threads");
+  option("thread_stall_seconds", "--thread-stall-seconds");
+  option("thread_memory_mb", "--thread-memory-mb");
+
+  let mode;
+  if (native.backup !== undefined) {
+    const label = `${table}.backup`;
+    if (!isRecord(native.backup)) throw new Error(`${label} must be a table.`);
+    rejectUnknownKeys(native.backup, NATIVE_BACKUP_KEYS, label);
+    const bucket = requireString(native.backup.bucket, `${label}.bucket`);
+    if (!/^s3:\/\/[^/\s]+(?:\/[^\s]*)?$/.test(bucket)) throw new Error(`${label}.bucket must be an s3:// URI with a bucket name.`);
+    // A server should not lose acknowledged writes with its disk, so durable is the default here.
+    mode = native.backup.mode === undefined ? "durable" : requireString(native.backup.mode, `${label}.mode`);
+    if (!["interval", "durable"].includes(mode)) throw new Error(`${label}.mode must be "durable" or "interval".`);
+    args.push("--backup-bucket", bucket, "--backup-mode", mode);
+    option("interval_seconds", "--backup-interval-seconds", native.backup, label);
+    if (native.backup.endpoint !== undefined) {
+      const endpoint = requireString(native.backup.endpoint, `${label}.endpoint`);
+      let url;
+      try {
+        url = new URL(endpoint);
+      } catch {
+        throw new Error(`${label}.endpoint must be a valid http(s) URL.`);
+      }
+      if (!["http:", "https:"].includes(url.protocol)) throw new Error(`${label}.endpoint must use http or https.`);
+      env.S3_ENDPOINT = endpoint;
+    }
+    if (native.backup.region !== undefined) env.AWS_REGION = requireString(native.backup.region, `${label}.region`);
+  }
+
+  if (native.cluster !== undefined) {
+    const label = `${table}.cluster`;
+    if (!isRecord(native.cluster)) throw new Error(`${label} must be a table.`);
+    rejectUnknownKeys(native.cluster, NATIVE_CLUSTER_KEYS, label);
+    if (mode !== "durable") throw new Error(`${label} needs [native.backup] with mode "durable".`);
+    if (native.threads) throw new Error(`${label} can't be combined with [native].threads yet.`);
+    args.push("--node-name", requireString(native.cluster.node_name, `${label}.node_name`));
+    option("lease_seconds", "--lease-seconds", native.cluster, label);
+    if (native.cluster.peer_listen !== undefined) {
+      const peerListen = requireString(native.cluster.peer_listen, `${label}.peer_listen`);
+      validateListenAddress(peerListen, `${label}.peer_listen`);
+      if (portOf(peerListen) === portOf(listen) && sameHost(peerListen, listen)) {
+        throw new Error(`${label}.peer_listen must differ from [native].listen.`);
+      }
+      args.push("--peer-listen", peerListen);
+    }
+    if (native.cluster.peer_advertise !== undefined) {
+      if (native.cluster.peer_listen === undefined) throw new Error(`${label}.peer_advertise needs peer_listen.`);
+      args.push("--peer-advertise", requireString(native.cluster.peer_advertise, `${label}.peer_advertise`));
+    }
+  }
+
+  try {
+    parseNativeDevArgs(args, baseDirectory);
+  } catch (error) {
+    throw new Error(`${table}: ${error.message}`);
+  }
+
+  const config = { listen, native: Object.freeze({ project, args: Object.freeze(args), env: Object.freeze(env), dataDirectory }) };
+  if (parsed.ingress !== undefined) {
+    config.ingress = parseIngress(parsed.ingress, config, sourceName, baseDirectory, "[native].listen");
+  }
+  return Object.freeze(config);
+}
+
+function parseIngress(ingress, celld, sourceName, baseDirectory, upstreamName = "[celld].listen") {
   const table = `${sourceName} [ingress]`;
   if (!isRecord(ingress)) throw new Error(`${table} must be a table.`);
   rejectUnknownKeys(ingress, INGRESS_KEYS, table);
@@ -111,7 +214,7 @@ function parseIngress(ingress, celld, sourceName, baseDirectory) {
   const listen = requireString(ingress.listen, `${table}.listen`);
   validateListenAddress(listen, `${table}.listen`);
   if (portOf(listen) === portOf(celld.listen) && sameHost(listen, celld.listen)) {
-    throw new Error(`${table}.listen must differ from [celld].listen; the ingress proxies to celld.`);
+    throw new Error(`${table}.listen must differ from ${upstreamName}; the ingress proxies to it.`);
   }
 
   const tls = ingress.tls === undefined
