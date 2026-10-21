@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.1](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.13.0...serverless-objects-v0.13.1) (2026-10-21)
+
+
+### Bug Fixes
+
+* **cli:** keep a durable object's local copy after a clean close ([646c6f1](https://github.com/sinameraji/serverless-objects/commit/646c6f15744f469df8e29fc9520e3eff97ca09a1))
+
 ## [0.13.0](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.12.1...serverless-objects-v0.13.0) (2026-10-21)
 
 
