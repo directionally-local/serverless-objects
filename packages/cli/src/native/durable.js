@@ -197,6 +197,15 @@ export class DurableLog {
       if (!owns(row.id) || !row.position) continue;
       const path = local(row.class, row.id);
       if (!existsSync(path) || walReaches(`${path}-wal`, JSON.parse(row.position))) continue;
+      // A database closed cleanly (as when a crashed engine thread is torn
+      // down) has its WAL checkpointed into the file and removed: the file
+      // holds everything it committed, including writes the log may not have
+      // captured, so it is kept and snapshotted before anything is acknowledged.
+      if (closedCleanly(path)) {
+        Object.assign(this.#row(row.class, row.id), { position: null, needs_snapshot: 1 });
+        this.#save(this.#row(row.class, row.id));
+        continue;
+      }
       this.#log(`${row.class} ${row.id}: the local copy lost transactions it had written; restoring it from the bucket.`);
       for (const suffix of ["", "-wal", "-shm"]) rmSync(`${path}${suffix}`, { force: true });
     }
@@ -930,6 +939,13 @@ function restorable(txid, snapshots, entries) {
   const base = snapshots.filter((snapshot) => snapshot.txid <= txid).reduce((best, snapshot) => Math.max(best, snapshot.txid), 0);
   for (let next = base + 1; next <= txid; next += 1) if (!entries.has(next)) return false;
   return true;
+}
+
+// SQLite removes a database's WAL and shared-memory files only when its last
+// connection closes after a full checkpoint (it syncs the directory when it
+// creates them, so a power loss doesn't remove them).
+function closedCleanly(path) {
+  return existsSync(path) && !existsSync(`${path}-wal`) && !existsSync(`${path}-shm`);
 }
 
 // Whether a WAL file still holds everything up to a recorded position.

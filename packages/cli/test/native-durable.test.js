@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
-import { readdirSync, rmSync } from "node:fs";
+import { readdirSync, rmSync, truncateSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -242,8 +243,8 @@ test("power loss: a WAL that lost acknowledged transactions is replaced by the b
   const persist = await temporaryDirectory();
   const bucketFile = join(await temporaryDirectory(), "bucket.json");
   assert.deepEqual(runNode(directory, persist, bucketFile, "append", ["a", 1, 5]).read, { count: 5, last: 5 });
-  // The machine lost power: the object's WAL never reached the disk.
-  for (const name of readdirSync(join(persist, "objects", "Ledger"))) if (/-(wal|shm)$/.test(name)) rmSync(join(persist, "objects", "Ledger", name));
+  // The machine lost power: the end of the object's WAL never reached the disk.
+  for (const name of readdirSync(join(persist, "objects", "Ledger"))) if (/-wal$/.test(name)) truncateSync(join(persist, "objects", "Ledger", name), 32);
   const after = runNode(directory, persist, bucketFile, "append", ["a", 6, 6]);
   assert.deepEqual(after.read, { count: 6, last: 6 });
   assert.ok(after.logs.some((line) => line.includes("lost transactions")));
@@ -398,4 +399,23 @@ test("writes made while a snapshot uploads stay covered by the log, through comp
   } finally {
     await second.close();
   }
+});
+
+test("a copy closed cleanly behind the engine's back (a crashed thread) is kept, and snapshotted with writes the log missed", async () => {
+  const directory = await project();
+  const persist = await temporaryDirectory();
+  const bucketFile = join(await temporaryDirectory(), "bucket.json");
+  assert.deepEqual(runNode(directory, persist, bucketFile, "append", ["a", 1, 5]).read, { count: 5, last: 5 });
+  // A thread's teardown closes the database: SQLite checkpoints the WAL into
+  // the file and removes it. A write committed just before was never captured.
+  const [file] = readdirSync(join(persist, "objects", "Ledger")).filter((name) => name.endsWith(".sqlite"));
+  const db = new DatabaseSync(join(persist, "objects", "Ledger", file));
+  db.exec("INSERT INTO entries VALUES (6, 'uncaptured')");
+  db.close();
+  assert.deepEqual(readdirSync(join(persist, "objects", "Ledger")).filter((name) => /-(wal|shm)$/.test(name)), []);
+  const after = runNode(directory, persist, bucketFile, "append", ["a", 7, 7]);
+  assert.equal(after.read.count, 7);
+  assert.ok(!after.logs.some((line) => line.includes("lost transactions")), after.logs.join("\n"));
+  // The bucket alone rebuilds it, including the write the log never saw.
+  assert.deepEqual(runNode(directory, await temporaryDirectory(), bucketFile, "read", ["a"]).read, { count: 7, last: 7 });
 });
