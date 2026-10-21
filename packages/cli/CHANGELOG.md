@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.11.0](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.10.0...serverless-objects-v0.11.0) (2026-10-21)
+
+
+### Features
+
+* **cli:** run the native engine under sobjects up with a [native] table ([87e20cd](https://github.com/sinameraji/serverless-objects/commit/87e20cd622e3de990a9ee12d04d14472ec3876e3))
+
+
+### Bug Fixes
+
+* **cli:** tell celld and native nodes apart in up, status and logs ([a27fa63](https://github.com/sinameraji/serverless-objects/commit/a27fa6348da8bf655394d31293582d4875aba924))
+
 ## [0.10.0](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.9.1...serverless-objects-v0.10.0) (2026-10-21)
 
 
