@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.1](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.12.0...serverless-objects-v0.12.1) (2026-10-21)
+
+
+### Bug Fixes
+
+* **cli:** a durable snapshot covers only the transaction it was taken at ([c7bfffa](https://github.com/sinameraji/serverless-objects/commit/c7bfffac12b304db4465c9e3a835c22092c01e4e))
+
 ## [0.12.0](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.11.0...serverless-objects-v0.12.0) (2026-10-21)
 
 
