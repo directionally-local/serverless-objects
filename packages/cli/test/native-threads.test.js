@@ -23,7 +23,16 @@ export class Box extends DurableObject {
   spin() { for (;;) {} }
   crash() { setTimeout(() => { throw new Error("boom"); }); return "ok"; }
   fail() { throw new RangeError("nope"); }
+  async slow() {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return this.add(1);
+  }
   async fetch(request) {
+    if (request.headers.get("upgrade") === "websocket") {
+      const [client, server] = Object.values(new WebSocketPair());
+      this.ctx.acceptWebSocket(server);
+      return new Response(null, { status: 101, webSocket: client });
+    }
     return new Response(JSON.stringify({ thread: threadId, body: await request.text() }), { headers: { "x-box": "1" } });
   }
 }
@@ -31,6 +40,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const box = env.BOX.getByName(url.searchParams.get("id") ?? "a");
+    if (url.pathname === "/ws") return box.fetch(request);
     if (url.pathname === "/proxy") return box.fetch(new Request("http://box/", { method: "POST", body: "hello" }));
     try {
       return Response.json({ worker: threadId, result: await box[url.pathname.slice(1)](Number(url.searchParams.get("n") ?? 0)) });
@@ -55,7 +65,7 @@ async function startEngine(options = {}) {
     const response = await fetch(`http://127.0.0.1:${port}${path}`);
     return { status: response.status, headers: response.headers, body: await response.json() };
   };
-  return { engine, get, logs };
+  return { engine, get, logs, port };
 }
 
 async function until(check, timeoutMs = 15_000) {
@@ -143,4 +153,21 @@ test("native dev parses the thread options", () => {
   assert.equal(options.threadMemoryMb, 256);
   assert.throws(() => parseNativeDevArgs(["--threads", "-1"], "/tmp"), /--threads must be/);
   assert.throws(() => parseNativeDevArgs(["--thread-memory-mb", "1"], "/tmp"), /16 or more/);
+});
+
+test("closing drains: a request in progress finishes and clients' WebSockets close with 1001", async () => {
+  const { engine, port } = await startEngine();
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  await new Promise((resolve, reject) => {
+    socket.addEventListener("open", resolve, { once: true });
+    socket.addEventListener("error", reject, { once: true });
+  });
+  const closed = new Promise((resolve) => socket.addEventListener("close", (event) => resolve(event.code), { once: true }));
+  const slow = fetch(`http://127.0.0.1:${port}/slow`).then((response) => response.json());
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const started = Date.now();
+  await engine.close();
+  assert.ok(Date.now() - started < 10_000);
+  assert.equal((await slow).result, 1);
+  assert.equal(await closed, 1001);
 });

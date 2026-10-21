@@ -185,7 +185,9 @@ export function socketGone(socket) {
   return socket.destroyed || socket.readableEnded;
 }
 
-export function connect(socket, head, request, response) {
+// With connections, the socket registers a goAway() there that a draining
+// engine calls: the client gets 1001, and the object sees the socket close.
+export function connect(socket, head, request, response, connections) {
   const end = response.webSocket;
   if (socketGone(socket)) {
     socket.destroy();
@@ -205,6 +207,7 @@ export function connect(socket, head, request, response) {
   socket.setNoDelay(true);
 
   let closing = false;
+  let sentClose = false;
   let closeTimer;
   const finish = () => {
     clearTimeout(closeTimer);
@@ -217,8 +220,11 @@ export function connect(socket, head, request, response) {
       if (!socket.destroyed) socket.write(encodeFrame(typeof event.data === "string" ? 0x1 : 0x2, Buffer.from(typeof event.data === "string" ? event.data : new Uint8Array(event.data))));
     } else if (event.type === "close") {
       if (socket.destroyed) return;
-      socket.write(encodeClose(event.code, event.reason));
+      // After goAway() the client already has our close frame.
+      if (!sentClose) socket.write(encodeClose(event.code, event.reason));
+      sentClose = true;
       if (event.echo) return finish();
+      if (closing) return;
       closing = true;
       closeTimer = setTimeout(finish, CLOSE_TIMEOUT_MS);
     }
@@ -240,6 +246,20 @@ export function connect(socket, head, request, response) {
     end.fail(error);
     finish();
   });
+  if (connections) {
+    const connection = {
+      goAway() {
+        if (closing || socket.destroyed) return;
+        closing = true;
+        sentClose = true;
+        socket.write(encodeClose(1001, "server restarting"));
+        closeTimer = setTimeout(finish, CLOSE_TIMEOUT_MS);
+        end.close(1001, "server restarting");
+      },
+    };
+    connections.add(connection);
+    socket.once("close", () => connections.delete(connection));
+  }
   if (head?.length) parser.push(head);
   socket.on("data", (chunk) => parser.push(chunk));
   socket.on("error", () => {});

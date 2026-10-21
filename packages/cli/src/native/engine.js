@@ -46,12 +46,14 @@ export class NativeEngine {
   // threads (--threads); it then runs only the objects whose IDs map to it.
   // cluster: { name, ttlMs, onFence } makes this node one of several sharing
   // the bucket (durable mode only); objects are claimed as they are used.
-  constructor({ config, persistDirectory, idleEvictMs = 60_000, backup, shard, cluster, trustForwardedHeaders = false, log = (message) => console.error(message) }) {
+  // drainMs: how long close() waits for requests and events in progress.
+  constructor({ config, persistDirectory, idleEvictMs = 60_000, backup, shard, cluster, trustForwardedHeaders = false, drainMs = 30_000, log = (message) => console.error(message) }) {
     this.shard = shard;
     if (cluster && backup?.mode !== "durable") throw new Error("Running several nodes needs --backup-mode durable.");
     if (cluster && shard) throw new Error("--node-name can't be combined with --threads yet.");
     this.idleEvictMs = idleEvictMs;
     this.trustForwardedHeaders = trustForwardedHeaders;
+    this.drainMs = drainMs;
     this.evictions = 0;
     this.config = config;
     this.scriptName = config.name ?? "worker";
@@ -152,6 +154,9 @@ export class NativeEngine {
   }
 
   #wakeSkip = new Map();
+  // Client requests in progress, and open client WebSockets (for draining).
+  #inflight = 0;
+  #connections = new Set();
 
   async #wake() {
     if (this.fenced) return;
@@ -244,11 +249,37 @@ export class NativeEngine {
     });
   }
 
-  async close() {
+  // Drains, then stops: no new connections; requests in progress finish
+  // (up to drainMs); clients' WebSockets close with 1001; objects finish their
+  // events, upload their writes and, with several nodes, are released, while
+  // calls other nodes forward meanwhile wait and then go to another node.
+  close() {
+    this.closing ??= this.#close();
+    return this.closing;
+  }
+
+  async #close() {
     clearInterval(this.waker);
-    await this.peerServer?.close();
-    await new Promise((resolveClose) => (this.server ? this.server.close(() => resolveClose()) : resolveClose()));
-    for (const namespace of this.namespaces) for (const host of namespace.hosts()) host.close();
+    const deadline = Date.now() + this.drainMs;
+    // Events such as a socket's close reach objects a macrotask later, so
+    // each check waits for at least one.
+    const settle = async (done) => {
+      do await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+      while (!done() && Date.now() < deadline);
+    };
+    const serverClosed = this.server ? new Promise((resolveClose) => this.server.close(() => resolveClose())) : Promise.resolve();
+    this.server?.closeIdleConnections();
+    for (const connection of [...this.#connections]) connection.goAway();
+    await settle(() => this.#inflight === 0);
+    // Including any that finished their handshake meanwhile.
+    for (const connection of [...this.#connections]) connection.goAway();
+    await settle(() => this.#connections.size === 0);
+    this.server?.closeAllConnections();
+    let handedOff;
+    this.handoff = new Promise((resolveHandoff) => { handedOff = resolveHandoff; });
+    const hosts = () => this.namespaces.flatMap((namespace) => [...namespace.hosts()]);
+    await settle(() => !hosts().some((host) => host.busy()));
+    for (const host of hosts()) host.close();
     await this.backup?.close();
     await this.durable?.close();
     if (this.cluster) {
@@ -265,13 +296,18 @@ export class NativeEngine {
         }
         await this.cluster.release(className, id, record, cut).catch((error) => this.log(`releasing ${className} ${id} failed: ${error.message}`));
       }
-      await this.cluster.stop();
     }
+    // Forwarded calls that waited now hear that the objects moved.
+    handedOff();
+    await this.peerServer?.close({ graceMs: 2_000 });
+    await this.cluster?.stop();
+    await Promise.race([serverClosed, new Promise((resolveWait) => setTimeout(resolveWait, 1_000))]);
     this.alarmIndex?.close();
   }
 
   async #upgrade(req, socket, head) {
     socket.on("error", () => {});
+    this.#inflight += 1;
     try {
       const request = toRequest(req, false, this.trustForwardedHeaders);
       const response = await this.fetch(request);
@@ -281,7 +317,7 @@ export class NativeEngine {
           socket.destroy();
           return void response.webSocket.fail?.(new Error("connection lost"));
         }
-        return connect(socket, head, request, response);
+        return connect(socket, head, request, response, this.#connections);
       }
       const body = response ? Buffer.from(await response.arrayBuffer()) : Buffer.from("Worker returned no response\n");
       const status = response?.status ?? 500;
@@ -289,10 +325,14 @@ export class NativeEngine {
     } catch (error) {
       this.log(`upgrade failed: ${error?.stack ?? error}`);
       socket.end("HTTP/1.1 500 Internal Server Error\r\nconnection: close\r\n\r\n");
+    } finally {
+      this.#inflight -= 1;
     }
   }
 
   async #serve(req, res) {
+    this.#inflight += 1;
+    res.once("close", () => { this.#inflight -= 1; });
     try {
       const request = toRequest(req, req.method !== "GET" && req.method !== "HEAD", this.trustForwardedHeaders);
       const response = await this.fetch(request);

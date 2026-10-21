@@ -5,7 +5,7 @@ export const nativeDevHelp = `Usage: sobjects dev [project] --engine native [--p
        [--backup-bucket s3://BUCKET/PREFIX] [--backup-mode interval|durable] [--backup-interval-seconds N]
        [--threads N] [--thread-stall-seconds N] [--thread-memory-mb N]
        [--node-name NAME] [--lease-seconds N] [--peer-listen HOST:PORT] [--peer-advertise URL]
-       [--trust-forwarded-headers]
+       [--trust-forwarded-headers] [--drain-seconds N]
 
 Run a Wrangler project's Worker and Durable Objects in this Node process, with
 each object's storage in a SQLite file under --persist-to (default:
@@ -51,6 +51,12 @@ address). Peer requests are signed with SOBJECTS_CLUSTER_SECRET (32 or more
 characters, the same on every node) but not encrypted: keep peer listeners on
 a private network. Without --peer-listen, such calls fail with the owner's name.
 
+On SIGINT or SIGTERM the engine drains: it stops taking connections, lets
+requests in progress finish for up to --drain-seconds (default 30), closes
+clients' WebSockets with 1001, lets objects finish their events, uploads
+what's left and, with several nodes, releases its objects. Calls other nodes
+forward meanwhile wait, then go to the node that takes the object over.
+
 --trust-forwarded-headers takes request.url's scheme and host from
 X-Forwarded-Proto and X-Forwarded-Host, as set by the sobjects ingress. Use it
 only when nothing but the ingress can reach the listener.`;
@@ -60,7 +66,7 @@ export function wantsNativeEngine(args) {
 }
 
 export function parseNativeDevArgs(args, cwd) {
-  const options = { project: ".", port: 8787, host: "127.0.0.1", persistTo: undefined, idleEvictSeconds: 60, backupBucket: undefined, backupMode: "interval", backupIntervalSeconds: 10, threads: 0, threadStallSeconds: 30, threadMemoryMb: undefined, nodeName: undefined, leaseSeconds: 10, peerListen: undefined, peerAdvertise: undefined, trustForwardedHeaders: false };
+  const options = { project: ".", port: 8787, host: "127.0.0.1", persistTo: undefined, idleEvictSeconds: 60, backupBucket: undefined, backupMode: "interval", backupIntervalSeconds: 10, threads: 0, threadStallSeconds: 30, threadMemoryMb: undefined, nodeName: undefined, leaseSeconds: 10, peerListen: undefined, peerAdvertise: undefined, trustForwardedHeaders: false, drainSeconds: 30 };
   let sawProject = false;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
@@ -85,6 +91,7 @@ export function parseNativeDevArgs(args, cwd) {
     else if (argument === "--peer-listen") options.peerListen = value();
     else if (argument === "--peer-advertise") options.peerAdvertise = value();
     else if (argument === "--trust-forwarded-headers") options.trustForwardedHeaders = true;
+    else if (argument === "--drain-seconds") options.drainSeconds = Number(value());
     else if (argument === "--thread-stall-seconds") options.threadStallSeconds = Number(value());
     else if (argument === "--thread-memory-mb") options.threadMemoryMb = Number(value());
     else if (!argument.startsWith("-") && !sawProject) {
@@ -99,6 +106,7 @@ export function parseNativeDevArgs(args, cwd) {
   if (!Number.isInteger(options.threads) || options.threads < 0 || options.threads > 256) throw new Error("--threads must be an integer from 0 to 256.");
   if (!Number.isFinite(options.threadStallSeconds) || options.threadStallSeconds < 1) throw new Error("--thread-stall-seconds must be 1 or more.");
   if (options.threadMemoryMb !== undefined && (!Number.isInteger(options.threadMemoryMb) || options.threadMemoryMb < 16)) throw new Error("--thread-memory-mb must be an integer of 16 or more.");
+  if (!Number.isFinite(options.drainSeconds) || options.drainSeconds < 0 || options.drainSeconds > 600) throw new Error("--drain-seconds must be from 0 to 600.");
   if (!Number.isFinite(options.leaseSeconds) || options.leaseSeconds < 3) throw new Error("--lease-seconds must be 3 or more.");
   if (options.nodeName !== undefined && (options.backupMode !== "durable" || !options.backupBucket)) throw new Error("--node-name needs --backup-bucket with --backup-mode durable.");
   if (options.nodeName !== undefined && options.threads > 0) throw new Error("--node-name can't be combined with --threads yet.");
@@ -126,7 +134,7 @@ export async function runNativeDev(args, io, { cwd, onSignal, env = process.env 
     const { NativeEngine, loadProjectConfig } = await import("./engine.js");
     const config = await loadProjectConfig(options.project);
     const log = (message) => io.error(message);
-    const common = { config, persistDirectory: options.persistTo, idleEvictMs: options.idleEvictSeconds * 1000, trustForwardedHeaders: options.trustForwardedHeaders, log };
+    const common = { config, persistDirectory: options.persistTo, idleEvictMs: options.idleEvictSeconds * 1000, trustForwardedHeaders: options.trustForwardedHeaders, drainMs: options.drainSeconds * 1000, log };
     if (options.threads > 0) {
       const { ThreadedEngine } = await import("./threads.js");
       if (options.backupBucket) {
@@ -173,7 +181,11 @@ export async function runNativeDev(args, io, { cwd, onSignal, env = process.env 
   return new Promise((resolveExit) => {
     let stopping = false;
     const stop = async () => {
-      if (stopping) return;
+      // A second signal skips the rest of the drain.
+      if (stopping) {
+        io.error("Stopping now, without waiting for the drain to finish.");
+        process.exit(130);
+      }
       stopping = true;
       await engine.close();
       resolveExit(0);

@@ -168,7 +168,7 @@ class RoutedHost {
         return await remote(route, target);
       } catch (error) {
         engine.routes.delete(key);
-        if (error instanceof NotOwner && retryable && attempt === 0) continue;
+        if ((error instanceof NotOwner || error.notSent) && retryable && attempt === 0) continue;
         throw error;
       }
     }
@@ -180,6 +180,15 @@ class RoutedHost {
 export async function servePeer(engine, { className, id, name }, run) {
   const namespace = engine.namespaces.find((candidate) => candidate.className === className);
   if (!namespace) throw new Error(`No Durable Object class ${className} in this Worker.`);
+  // A draining node hands its objects off: once they are released, the
+  // caller routes the request again and another node claims the object.
+  // An object still busy here keeps serving, since the call may be part of
+  // an event it is running (a call back into it, or a chain through it).
+  const open = [...namespace.hosts()].find((candidate) => candidate.id.toString() === id);
+  if (engine.handoff && !open?.busy()) {
+    await engine.handoff;
+    throw Object.assign(new NotOwner("This node is shutting down and has released its objects."), { beforeRun: true });
+  }
   const host = namespace.localHost(id, name);
   try {
     await host.whenReady();
@@ -223,6 +232,7 @@ export class ObjectHost {
   #alarmActive = false;
 
   #ready = null;
+  #claiming = false;
 
   constructor(engine, namespace, id, name) {
     this.#engine = engine;
@@ -274,6 +284,7 @@ export class ObjectHost {
     const engine = this.#engine;
     const className = this.#namespace.className;
     const id = this.id.toString();
+    this.#claiming = true;
     try {
       const { record, cut, changed } = await engine.cluster.acquire(className, id, { cutFor: (owner) => engine.durable.cutFor(className, id, owner) });
       // Kept after eviction (and if this host closed meanwhile): the object
@@ -294,6 +305,8 @@ export class ObjectHost {
       this.#closed = true;
       this.#namespace.release(this);
       throw error;
+    } finally {
+      this.#claiming = false;
     }
   }
 
@@ -373,8 +386,11 @@ export class ObjectHost {
       }
     } finally {
       this.#alarmActive = false;
-      const next = this.#database.meta("alarm");
-      this.scheduleAlarm(next === null ? null : Number(next));
+      // A handler still running when the engine stopped finds its database closed.
+      if (!this.#closed) {
+        const next = this.#database.meta("alarm");
+        this.scheduleAlarm(next === null ? null : Number(next));
+      }
     }
   }
 
@@ -437,6 +453,11 @@ export class ObjectHost {
       this.#gates.delete(gate);
       this.#schedule();
     });
+  }
+
+  // Whether an event is queued or running, or the object asked to stay up.
+  busy() {
+    return this.#claiming || this.#running > 0 || this.#queue.length > 0 || this.#gates.size > 0 || this.#lifetimes.size > 0 || this.#alarmActive;
   }
 
   backupSource() {
