@@ -133,6 +133,7 @@ export async function run(
   const [command, ...args] = argv;
   if (command === "up") {
     return runUp(args, io, {
+      getServiceStatus,
       spawnProcess,
       env,
       cwd,
@@ -171,7 +172,7 @@ export async function run(
   }
   if (command === "down") return runDown(args, io, { env, stopService });
   if (command === "status") return runStatus(args, io, { env, getServiceStatus });
-  if (command === "logs") return runLogs(args, io, { env, readServiceLogs });
+  if (command === "logs") return runLogs(args, io, { env, readServiceLogs, getServiceStatus });
   if (command === "build") {
     return runBuild(args, io, { cwd });
   }
@@ -216,6 +217,17 @@ async function runUp(args, io, dependencies) {
   const stateDirectory = defaultStateDirectory(dependencies.env);
   const needsSupervisor = Boolean(config.ingress || config.admin);
   if (detached) {
+    const other = node.name === "native" ? "celld" : "native";
+    try {
+      const running = await dependencies.getServiceStatus({ name: other, stateDirectory });
+      if (running.running) {
+        io.error(`${capitalize(engineLabel(other))} is already running (pid ${running.state.pid}); stop it with 'sobjects down' first.`);
+        return 1;
+      }
+    } catch (error) {
+      io.error(error.message);
+      return 1;
+    }
     let state;
     try {
       state = await dependencies.startService({
@@ -253,7 +265,7 @@ async function runUp(args, io, dependencies) {
     } catch (error) {
       io.error(error.message);
       io.error(`Stopping ${node.label} because the supervisor did not start.`);
-      await dependencies.stopService({ name: node.name, stateDirectory }).catch((stopError) => io.error(stopError.message));
+      await dependencies.stopService({ name: node.name, stateDirectory, timeoutMs: engineStopMs(node.name, dependencies.env) }).catch((stopError) => io.error(stopError.message));
       return 1;
     }
   }
@@ -605,8 +617,20 @@ function isLoopbackAddress(address) {
   return host === "localhost" || host === "::1" || /^127\./.test(host);
 }
 
+function engineLabel(name) {
+  return name === "native" ? "the native engine" : "celld";
+}
+
+// How long to wait for an engine after SIGTERM. celld drains cells and
+// releases its lease, bounded by CELLD_SHUTDOWN_TOTAL_MS; the native engine
+// drains requests, uploads what's left and releases its objects.
+function engineStopMs(name, env) {
+  return name === "native" ? 60_000 : celldShutdownBoundMs(env) + 5_000;
+}
+
+// "celld" stays lowercase at the start of a sentence, as elsewhere.
 function capitalize(text) {
-  return text[0].toUpperCase() + text.slice(1);
+  return text === "celld" ? text : text[0].toUpperCase() + text.slice(1);
 }
 
 function subscribeToSignal(signal, handler) {
@@ -621,16 +645,20 @@ async function runStatus(args, io, { env, getServiceStatus }) {
   }
   const stateDirectory = defaultStateDirectory(env);
   try {
-    // A node runs either celld or the native engine; report whichever has state.
+    // A node runs celld or the native engine: report each that has state.
     const native = await getServiceStatus({ name: "native", stateDirectory });
-    const result = native.running || native.stale ? native : await getServiceStatus({ stateDirectory });
-    const label = result === native ? "the native engine" : "celld";
-    if (result.running) {
-      io.log(`${capitalize(label)} is running (pid ${result.state.pid}; started ${result.state.startedAt}).`);
-      io.log(`Log file: ${result.state.logPath}`);
-    } else {
-      io.log(result.stale ? `${capitalize(label)} is not running (stale state removed).` : "celld is not running.");
+    const celld = await getServiceStatus({ stateDirectory });
+    for (const [name, status] of [["native", native], ["celld", celld]]) {
+      const label = capitalize(engineLabel(name));
+      if (status.running) {
+        io.log(`${label} is running (pid ${status.state.pid}; started ${status.state.startedAt}).`);
+        io.log(`Log file: ${status.state.logPath}`);
+      } else if (status.stale) {
+        io.log(`${label} is not running (stale state removed).`);
+      }
     }
+    if (!native.running && !native.stale && !celld.running && !celld.stale) io.log("celld is not running.");
+    const result = { running: native.running || celld.running };
 
     const supervisor = await getServiceStatus({ name: "supervisor", stateDirectory });
     if (supervisor.running) {
@@ -663,13 +691,10 @@ async function runDown(args, io, { env, stopService }) {
     try {
       const options = { name, stateDirectory };
       if (name === "celld") {
-        // celld drains cells and releases its lease before exiting, bounded by
-        // CELLD_SHUTDOWN_TOTAL_MS; wait a little longer than that bound.
-        options.timeoutMs = celldShutdownBoundMs(env) + 5_000;
+        options.timeoutMs = engineStopMs(name, env);
         options.onWait = () => io.log("Waiting for celld to drain and release its lease...");
       } else if (name === "native") {
-        // The native engine uploads what's left and releases its objects first.
-        options.timeoutMs = 60_000;
+        options.timeoutMs = engineStopMs(name, env);
         options.onWait = () => io.log("Waiting for the native engine to finish uploading and release its objects...");
       }
       const result = await stopService(options);
@@ -685,7 +710,22 @@ async function runDown(args, io, { env, stopService }) {
   return exitCode;
 }
 
-async function runLogs(args, io, { env, readServiceLogs }) {
+// The running engine's log; with neither running, the one written last.
+async function engineForLogs(stateDirectory, getServiceStatus) {
+  for (const name of ["native", "celld"]) {
+    if ((await getServiceStatus({ name, stateDirectory })).running) return name;
+  }
+  const modified = (file) => {
+    try {
+      return statSync(join(stateDirectory, file)).mtimeMs;
+    } catch {
+      return -1;
+    }
+  };
+  return modified("native.log") > modified("celld.log") ? "native" : "celld";
+}
+
+async function runLogs(args, io, { env, readServiceLogs, getServiceStatus }) {
   const usage = "Usage: sobjects logs [--supervisor] [--tail N]";
   if (args.length === 1 && ["--help", "-h"].includes(args[0])) {
     io.log(usage);
@@ -720,9 +760,7 @@ async function runLogs(args, io, { env, readServiceLogs }) {
     if (name) {
       result = await readServiceLogs({ name, stateDirectory, lines });
     } else {
-      // The engine log is the native engine's when it has one, else celld's.
-      result = await readServiceLogs({ name: "native", stateDirectory, lines })
-        .catch(() => readServiceLogs({ name: "celld", stateDirectory, lines }));
+      result = await readServiceLogs({ name: await engineForLogs(stateDirectory, getServiceStatus), stateDirectory, lines });
     }
     if (result.output) io.log(result.output);
     return 0;

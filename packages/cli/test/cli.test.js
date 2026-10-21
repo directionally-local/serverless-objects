@@ -420,7 +420,7 @@ test("up --detach starts celld and a detached supervisor, rolling back celld on 
   started.length = 0;
   const failed = capture();
   assert.equal(await run(["up", "--detach"], failed.io, dependencies(true)), 1);
-  assert.deepEqual(stopped, [{ name: "celld", stateDirectory: "/tmp/state" }]);
+  assert.deepEqual(stopped, [{ name: "celld", stateDirectory: "/tmp/state", timeoutMs: 45_000 }]);
   assert.match(failed.stderr.join("\n"), /Stopping celld/);
 });
 
