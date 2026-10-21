@@ -92,7 +92,8 @@ export class S3Client {
       const xml = await response.text();
       for (const [, entry] of xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)) {
         const field = (name) => unescapeXml(new RegExp(`<${name}>([^<]*)</${name}>`).exec(entry)?.[1] ?? "");
-        objects.push({ key: field("Key"), etag: field("ETag"), size: Number(field("Size")) });
+        const lastModified = field("LastModified");
+        objects.push({ key: field("Key"), etag: field("ETag"), size: Number(field("Size")), ...(lastModified ? { lastModified } : {}) });
       }
       token = /<IsTruncated>true<\/IsTruncated>/.test(xml) ? unescapeXml(/<NextContinuationToken>([^<]*)</.exec(xml)?.[1] ?? "") : undefined;
     } while (token);

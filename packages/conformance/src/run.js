@@ -301,6 +301,11 @@ async function runAgentsScheduleCheck(baseUrl) {
   throw new Error(`Schedule did not fire before timeout: ${JSON.stringify(status)}`);
 }
 
+async function runPitrCheck(baseUrl) {
+  const response = await fetch(new URL("/pitr", baseUrl));
+  return validateCaseResult("point-in-time-recovery", response, await response.json());
+}
+
 // Deploys a suite's app to the Cloudflare account Wrangler is logged in to
 // and returns its workers.dev URL.
 async function deployToCloudflare(projectDir) {
@@ -354,6 +359,8 @@ async function runSuite(suite, options, scratchDir) {
       await record("alarm-durability", () => runAlarmCheck(baseUrl, options.alarmDelayMs, options.restartAfterAlarm, restart));
       await record("websockets", () => runWebSocketCheck(baseUrl));
       if (options.target !== "wrangler") await record("websocket-hibernation", () => runHibernationCheck(baseUrl));
+      // Point-in-time recovery needs the native engine's durable mode (a bucket).
+      if (options.target === "native" && (options.nativeArgs ?? []).includes("durable")) await record("point-in-time-recovery", () => runPitrCheck(baseUrl));
     } else {
       await record("client-protocol", () => runAgentsClientCheck(baseUrl));
       await record("schedule-fires", () => runAgentsScheduleCheck(baseUrl));
@@ -383,6 +390,7 @@ async function runCloudflareSuite(suite, options, projectDir) {
       await record("alarm-durability", () => runAlarmCheck(baseUrl, options.alarmDelayMs, false));
       await record("websockets", () => runWebSocketCheck(baseUrl));
       await record("websocket-hibernation", () => runHibernationCheck(baseUrl, 30_000));
+      await record("point-in-time-recovery", () => runPitrCheck(baseUrl));
     } else {
       await record("client-protocol", () => runAgentsClientCheck(baseUrl));
       await record("schedule-fires", () => runAgentsScheduleCheck(baseUrl));

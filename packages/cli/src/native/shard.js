@@ -40,7 +40,7 @@ const main = new PortChannel(parentPort, async (type, payload) => {
 let backupOptions;
 if (backup) {
   const { client, prefix } = S3Client.fromEnvironment({ bucketUri: backup.bucketUri });
-  backupOptions = { client, prefix, intervalMs: backup.intervalMs, mode: backup.mode };
+  backupOptions = { client, prefix, intervalMs: backup.intervalMs, mode: backup.mode, retentionMs: backup.retentionMs };
 }
 engine = new NativeEngine({
   config,

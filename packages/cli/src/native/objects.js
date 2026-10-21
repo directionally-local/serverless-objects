@@ -240,11 +240,34 @@ export class ObjectHost {
     this.id = id;
     // With several nodes the object is claimed (and, if its owner changed,
     // restored from the bucket) before it opens; events wait for that.
+    // An object asked to restore a bookmark (onNextSessionRestoreBookmark)
+    // is rebuilt first, too.
     if (engine.cluster) {
       this.#ready = this.#claim(name);
       // Events see the error; nothing else waits on it.
       this.#ready.catch(() => {});
+    } else if (engine.durable?.restorePending(namespace.className, id.toString())) {
+      this.#ready = this.#restoreThenOpen(name);
+      this.#ready.catch(() => {});
     } else this.#open(name);
+  }
+
+  async #restoreThenOpen(name, history) {
+    this.#claiming = true;
+    try {
+      await this.#engine.durable.restorePoint(this.#namespace.className, this.id.toString(), { history, alarmIndex: this.#engine.alarmIndex });
+      if (this.#closed) return;
+      this.#open(name);
+      const alarm = this.#database.meta("alarm") ?? this.#database.meta("alarm_running");
+      this.scheduleAlarm(alarm === null ? null : Number(alarm));
+    } catch (error) {
+      // The next call tries again.
+      this.#closed = true;
+      this.#namespace.release(this);
+      throw error;
+    } finally {
+      this.#claiming = false;
+    }
   }
 
   #open(name) {
@@ -297,6 +320,10 @@ export class ObjectHost {
       }
       if (this.#closed) return;
       this.owner = record;
+      if (engine.durable.restorePending(className, id)) {
+        await engine.durable.restorePoint(className, id, { history: record.history, alarmIndex: engine.alarmIndex });
+        if (this.#closed) return;
+      }
       this.#open(name);
       const alarm = this.#database.meta("alarm") ?? this.#database.meta("alarm_running");
       if (alarm !== null) this.scheduleAlarm(Number(alarm));
@@ -590,11 +617,48 @@ export class ObjectHost {
     }
   }
 
+  // Point-in-time recovery, which needs the bucket's log (durable mode).
+  #bookmarks() {
+    const durable = this.#engine.durable;
+    const unavailable = () => {
+      throw new Error("Point-in-time recovery needs --backup-mode durable: bookmarks name transactions in the bucket's log.");
+    };
+    if (!durable) return { current: unavailable, forTime: unavailable, restore: unavailable };
+    const history = () => this.#engine.owned?.get(`${this.#namespace.className}/${this.id}`)?.record.history;
+    return {
+      current: () => durable.currentBookmark(this),
+      forTime: (time) => durable.bookmarkForTime(this, time, history()),
+      restore: (bookmark) => durable.requestRestore(this, bookmark),
+    };
+  }
+
+  // ctx.abort(): the instance is reset. Queued events and the caller fail
+  // with the reason; the next event starts a new instance (and applies a
+  // bookmark restore, if one was requested).
+  abort(reason) {
+    const error = reason instanceof Error ? reason : new Error(reason === undefined ? "The Durable Object was aborted." : String(reason));
+    if (!this.#closed) {
+      for (const event of this.#queue.splice(0)) event.reject(error);
+      for (const socket of this.#sockets.keys()) {
+        try {
+          socket.close(1011, "Durable Object reset");
+        } catch {}
+      }
+      this.#sockets.clear();
+      this.#instance = undefined;
+      this.#state = undefined;
+      this.close();
+      this.#namespace.release(this);
+    }
+    throw error;
+  }
+
   #ensureInstance() {
     if (this.#instance) return this.#instance;
     const storage = new DurableObjectStorage(this.#database, {
       onAlarmChange: (at) => this.scheduleAlarm(at),
       holdInputGate: (promise) => this.holdInputGate(promise),
+      bookmarks: this.#bookmarks(),
     });
     this.#state = new DurableObjectState(this, this.id, storage, this.#engine.exports);
     this.#instance = new this.#namespace.objectClass(this.#state, this.#engine.env);
@@ -620,6 +684,10 @@ export class DurableObjectState {
 
   waitUntil(promise) {
     this.#host.keepAlive(promise);
+  }
+
+  abort(reason) {
+    this.#host.abort(reason);
   }
 
   acceptWebSocket(socket, tags) {

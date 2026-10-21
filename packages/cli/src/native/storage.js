@@ -67,7 +67,8 @@ export class DurableObjectStorage {
   #hooks;
   #savepoints = 0;
 
-  // hooks: { onAlarmChange(timestamp | null), holdInputGate(promise) }
+  // hooks: { onAlarmChange(timestamp | null), holdInputGate(promise),
+  //   bookmarks: { current(), forTime(ms), restore(bookmark) } }
   constructor(database, hooks) {
     this.#db = database;
     this.#hooks = hooks;
@@ -198,6 +199,21 @@ export class DurableObjectStorage {
 
   // Writes are committed as they happen, so there is nothing to wait for.
   async sync() {}
+
+  // Point-in-time recovery (SQLite-backed objects on Cloudflare).
+  async getCurrentBookmark() {
+    return this.#hooks.bookmarks.current();
+  }
+
+  async getBookmarkForTime(timestamp) {
+    const time = timestamp instanceof Date ? timestamp.getTime() : Number(timestamp);
+    if (!Number.isFinite(time)) throw new TypeError("getBookmarkForTime() takes a Date or a number of milliseconds.");
+    return this.#hooks.bookmarks.forTime(time);
+  }
+
+  async onNextSessionRestoreBookmark(bookmark) {
+    return this.#hooks.bookmarks.restore(bookmark);
+  }
 
   #read(key) {
     const row = this.#db.db.prepare("SELECT value FROM _cf_KV WHERE key = ?").get(checkKey(key));

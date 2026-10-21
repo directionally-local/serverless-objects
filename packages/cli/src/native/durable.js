@@ -20,7 +20,13 @@
 // - Object databases run with synchronous = FULL, so a transaction that was
 //   captured is on disk; at start, a WAL that no longer reaches the recorded
 //   position marks the local copy as untrusted, and it is restored from the bucket.
-// - A segment is deleted only once every transaction in it is covered by a snapshot.
+// - A segment is deleted only once every transaction in it is covered by a
+//   snapshot that is older than the retention window (tuning.retentionMs), and
+//   a snapshot only once a newer one of the same epoch is; inside the window,
+//   any transaction can be restored (point-in-time recovery).
+// - Restoring an object to an earlier transaction rebuilds it and uploads it
+//   as a snapshot under a new, higher txid: later history is superseded, not
+//   deleted, so it can be restored in turn.
 // Single node only for now: a second node writing the same prefix is not
 // detected yet (docs/design/multi-node.md).
 import { createHash, randomBytes } from "node:crypto";
@@ -44,6 +50,8 @@ const DEFAULTS = {
   compactIntervalMs: 10 * 60_000,
   // How long close() waits for the bucket before leaving writes to the next start.
   closeTimeoutMs: 30_000,
+  // How far back point-in-time recovery reaches (0: only the latest state is kept).
+  retentionMs: 0,
 };
 const pad = (value) => String(value).padStart(12, "0");
 const sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
@@ -72,6 +80,8 @@ export class LogState {
         PRIMARY KEY (class, id)) WITHOUT ROWID`);
     const columns = this.#db.prepare("PRAGMA table_info(objects)").all().map((column) => column.name);
     if (!columns.includes("epoch")) this.#db.exec("ALTER TABLE objects ADD COLUMN epoch INTEGER NOT NULL DEFAULT 0");
+    // A transaction to restore the object to when it next opens (onNextSessionRestoreBookmark).
+    if (!columns.includes("restore_to")) this.#db.exec("ALTER TABLE objects ADD COLUMN restore_to INTEGER");
   }
 
   get(className, id) {
@@ -79,10 +89,10 @@ export class LogState {
   }
 
   set(row) {
-    this.#db.prepare(`INSERT INTO objects (class, id, captured, shipped, snapshot, log_bytes, position, needs_snapshot, epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    this.#db.prepare(`INSERT INTO objects (class, id, captured, shipped, snapshot, log_bytes, position, needs_snapshot, epoch, restore_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (class, id) DO UPDATE SET captured = excluded.captured, shipped = excluded.shipped, snapshot = excluded.snapshot,
-      log_bytes = excluded.log_bytes, position = excluded.position, needs_snapshot = excluded.needs_snapshot, epoch = excluded.epoch`)
-      .run(row.class, row.id, row.captured, row.shipped, row.snapshot, row.log_bytes, row.position, row.needs_snapshot ? 1 : 0, row.epoch ?? 0);
+      log_bytes = excluded.log_bytes, position = excluded.position, needs_snapshot = excluded.needs_snapshot, epoch = excluded.epoch, restore_to = excluded.restore_to`)
+      .run(row.class, row.id, row.captured, row.shipped, row.snapshot, row.log_bytes, row.position, row.needs_snapshot ? 1 : 0, row.epoch ?? 0, row.restore_to ?? null);
   }
 
   all() {
@@ -144,7 +154,7 @@ export class DurableLog {
     const key = `${className}/${id}`;
     let row = this.#rows.get(key);
     if (!row) {
-      row = this.#state.get(className, id) ?? { class: className, id, captured: 0, shipped: 0, snapshot: 0, log_bytes: 0, position: null, needs_snapshot: 0, epoch: 0 };
+      row = this.#state.get(className, id) ?? { class: className, id, captured: 0, shipped: 0, snapshot: 0, log_bytes: 0, position: null, needs_snapshot: 0, epoch: 0, restore_to: null };
       this.#rows.set(key, row);
     }
     return row;
@@ -288,12 +298,12 @@ export class DurableLog {
   // to its history (owner record), across every writer.
   async #objectHistory(className, id, history) {
     const snapshots = [];
-    for (const { key } of await this.#client.list(`${this.#root}/objects/${className}/${id}/`)) {
+    for (const { key, lastModified } of await this.#client.list(`${this.#root}/objects/${className}/${id}/`)) {
       const match = SNAPSHOT_RE.exec(key);
       if (!match) continue;
       const txid = Number(match[3]);
       const epoch = Number(match[4] ?? 0);
-      if (inHistory(history, epoch, txid, { snapshot: true })) snapshots.push({ key, txid, epoch });
+      if (inHistory(history, epoch, txid, { snapshot: true })) snapshots.push({ key, txid, epoch, time: Date.parse(lastModified ?? "") || undefined });
     }
     const entries = new Map();
     const keys = (await this.#client.list(`${this.#root}/log/`)).map(({ key }) => key).filter((key) => key.endsWith(".seg"));
@@ -370,7 +380,9 @@ export class DurableLog {
     try {
       const integrity = db.prepare("PRAGMA quick_check").get().quick_check;
       if (integrity !== "ok") throw new Error(`restored ${label} failed its integrity check: ${integrity}`);
-      const meta = (key) => db.prepare("SELECT value FROM _cf_METADATA WHERE key = ?").get(key)?.value ?? null;
+      // An empty database (restored to before its first write) has no metadata yet.
+      const hasMeta = db.prepare("SELECT 1 FROM sqlite_master WHERE name = '_cf_METADATA'").get() !== undefined;
+      const meta = (key) => (hasMeta ? db.prepare("SELECT value FROM _cf_METADATA WHERE key = ?").get(key)?.value ?? null : null);
       alarm = meta("alarm") ?? meta("alarm_running");
     } finally {
       db.close();
@@ -392,6 +404,116 @@ export class DurableLog {
   progress(className, id) {
     const row = this.#rows.get(`${className}/${id}`);
     return row ? { captured: row.captured, shipped: row.shipped } : null;
+  }
+
+  // ---- point-in-time recovery ---------------------------------------------
+
+  // A bookmark names a transaction of one object: its txid (16 hex digits,
+  // so bookmarks sort by time) and a digest of the object.
+  #bookmark(className, id, txid) {
+    return `${txid.toString(16).padStart(16, "0")}-${createHash("sha256").update(`${className}/${id}`).digest("hex").slice(0, 16)}`;
+  }
+
+  #parseBookmark(className, id, bookmark) {
+    const match = /^([0-9a-f]{16})-([0-9a-f]{16})$/.exec(String(bookmark));
+    if (!match || this.#bookmark(className, id, 0).slice(17) !== match[2]) throw new TypeError("Invalid bookmark: it isn't one of this object's.");
+    return Number.parseInt(match[1], 16);
+  }
+
+  // The bookmark of the object's latest write, including writes made so far
+  // in the current event.
+  currentBookmark(host) {
+    const object = this.#objects.get(host);
+    if (object) this.#capture(object);
+    const { className, id } = host.backupSource();
+    return this.#bookmark(className, id, this.#row(className, id).captured);
+  }
+
+  // The bookmark of the object's state at time (ms): its last transaction
+  // captured at or before then. history: the owner record's (several nodes).
+  async bookmarkForTime(host, time, history) {
+    const { className, id } = host.backupSource();
+    const current = this.currentBookmark(host);
+    if (time >= Date.now()) return current;
+    const { snapshots, entries } = await this.#objectHistory(className, id, history);
+    for (const { entry } of [...(this.#inflight?.items ?? []), ...this.#pending]) {
+      if (entry.class === className && entry.id === id && !entries.has(entry.txid)) entries.set(entry.txid, entry);
+    }
+    const times = new Map();
+    for (const entry of entries.values()) if (entry.at !== undefined) times.set(entry.txid, entry.at);
+    for (const snapshot of snapshots) if (snapshot.time !== undefined) times.set(snapshot.txid, Math.min(times.get(snapshot.txid) ?? Infinity, snapshot.time));
+    let target = -1;
+    for (const [txid, at] of times) if (at <= time && txid > target) target = txid;
+    // Before its first transaction, the object was empty.
+    if (target === -1 && entries.has(1) && (entries.get(1).at ?? Infinity) > time) target = 0;
+    if (target === -1 || !restorable(target, snapshots, entries)) {
+      throw new RangeError(`No bookmark for ${new Date(time).toISOString()}: that is older than the history the bucket keeps for this object.`);
+    }
+    return this.#bookmark(className, id, target);
+  }
+
+  // Records that the object is restored to bookmark when it next opens, and
+  // returns the bookmark of its current state (to undo the restore).
+  requestRestore(host, bookmark) {
+    const { className, id } = host.backupSource();
+    const txid = this.#parseBookmark(className, id, bookmark);
+    const current = this.currentBookmark(host);
+    const row = this.#row(className, id);
+    if (txid > row.captured) throw new RangeError("Invalid bookmark: it is newer than the object's latest write.");
+    row.restore_to = txid;
+    this.#save(row);
+    return current;
+  }
+
+  restorePending(className, id) {
+    const restoreTo = this.#row(className, id).restore_to;
+    return restoreTo !== null && restoreTo !== undefined;
+  }
+
+  // Before the object opens: rebuilds it at the requested transaction from
+  // the bucket, then uploads that state as a snapshot with a new txid above
+  // everything seen, so it becomes the object's latest state everywhere.
+  async restorePoint(className, id, { history, alarmIndex }) {
+    const row = this.#row(className, id);
+    const target = row.restore_to;
+    const deadline = Date.now() + this.#tuning.gateTimeoutMs;
+    while (row.shipped < row.captured) {
+      if (this.#closed || Date.now() > deadline) throw new Error(`${className} ${id}: its writes did not reach the bucket, so it can't be restored yet.`);
+      await this.#ship();
+      if (row.shipped < row.captured) await sleep(100);
+    }
+    const { snapshots, entries } = await this.#objectHistory(className, id, history);
+    const snapshot = snapshots.find((candidate) => candidate.txid <= target);
+    const usable = [];
+    for (let txid = (snapshot?.txid ?? 0) + 1; txid <= target; txid += 1) {
+      const entry = entries.get(txid);
+      if (!entry) throw new Error(`${className} ${id}: transaction ${txid} is no longer in the bucket; can't restore to that bookmark.`);
+      usable.push(entry);
+    }
+    const path = join(this.#objectsDirectory, className, `${id}.sqlite`);
+    let alarm = null;
+    if (snapshot || usable.length > 0) {
+      alarm = await this.#rebuild(path, snapshot ? (await this.#client.get(snapshot.key)).body : null, usable, `${className}/${id}`);
+    } else {
+      mkdirSync(dirname(path), { recursive: true });
+      for (const suffix of ["-wal", "-shm"]) rmSync(`${path}${suffix}`, { force: true });
+      writeFileSync(path, Buffer.alloc(0));
+      fsyncPath(path);
+    }
+    row.position = null;
+    row.captured = Math.max(row.captured, ...snapshots.map((candidate) => candidate.txid), ...entries.keys()) + 1;
+    const body = readFileSync(path);
+    while (!(await this.#putSnapshot(row, row.captured, body))) row.captured += 1;
+    // An empty file gets its schema when it opens: a snapshot follows then.
+    Object.assign(row, { shipped: row.captured, snapshot: row.captured, log_bytes: 0, needs_snapshot: body.length === 0 ? 1 : 0, restore_to: null });
+    this.#save(row);
+    alarmIndex?.set(className, id, alarm === null ? null : Number(alarm));
+    this.#log(`${className} ${id}: restored to transaction ${target}.`);
+  }
+
+  // Objects whose restore was requested before the engine stopped.
+  pendingRestores() {
+    return this.#state.all().filter((row) => row.restore_to !== null && row.restore_to !== undefined && this.#owns(row.id)).map((row) => ({ className: row.class, id: row.id }));
   }
 
   // ---- objects -------------------------------------------------------------
@@ -472,7 +594,7 @@ export class DurableLog {
     const { row } = object;
     for (const transaction of transactions) {
       row.captured += 1;
-      this.#pending.push({ row, entry: { class: row.class, id: row.id, epoch: row.epoch ?? 0, txid: row.captured, ...transaction } });
+      this.#pending.push({ row, entry: { class: row.class, id: row.id, epoch: row.epoch ?? 0, txid: row.captured, at: Date.now(), ...transaction } });
     }
     row.position = JSON.stringify(object.reader.position);
     this.#save(row);
@@ -675,6 +797,29 @@ export class DurableLog {
       if (open) await this.#snapshotNow(open);
       else await this.#snapshotClosed(this.#row(row.class, row.id));
     }
+    // Each object's base: its newest snapshot of this node's epoch that is
+    // older than the retention window. Restores inside the window start from
+    // it or a later snapshot, so older snapshots and transactions can go.
+    const cutoff = Date.now() - this.#tuning.retentionMs;
+    const snapshots = new Map();
+    for (const { key, lastModified } of await this.#client.list(`${this.#root}/objects/`)) {
+      const match = SNAPSHOT_RE.exec(key);
+      if (!match || !this.#owns(match[2])) continue;
+      const objectKey = `${match[1]}/${match[2]}`;
+      if (!snapshots.has(objectKey)) snapshots.set(objectKey, []);
+      snapshots.get(objectKey).push({ key, txid: Number(match[3]), epoch: Number(match[4] ?? 0), time: Date.parse(lastModified ?? "") || Infinity });
+    }
+    const bases = new Map();
+    for (const [objectKey, list] of snapshots) {
+      const [className, id] = objectKey.split("/");
+      const row = this.#state.get(className, id);
+      if (row === null || !this.#mayCompact(row)) continue;
+      const old = list.filter((snapshot) => snapshot.epoch === (row.epoch ?? 0) && snapshot.txid <= row.snapshot && (this.#tuning.retentionMs === 0 || snapshot.time <= cutoff));
+      if (old.length === 0) continue;
+      const base = Math.max(...old.map((snapshot) => snapshot.txid));
+      bases.set(objectKey, base);
+      for (const snapshot of list) if (snapshot.txid < base) await this.#client.delete(snapshot.key);
+    }
     const scope = this.#writer === "t0" ? `${this.#root}/log/` : `${this.#root}/log/${this.#writer}/`;
     const live = this.#inflight?.key;
     for (const { key } of await this.#client.list(scope)) {
@@ -683,7 +828,7 @@ export class DurableLog {
       if (!object) continue;
       const covered = decodeSegment(object.body).every((entry) => {
         const row = this.#state.get(entry.class, entry.id);
-        return row !== null && this.#mayCompact(row) && row.snapshot >= entry.txid;
+        return row !== null && this.#mayCompact(row) && (bases.get(`${entry.class}/${entry.id}`) ?? -1) >= entry.txid;
       });
       if (covered) await this.#client.delete(key);
     }
@@ -721,6 +866,15 @@ export class DurableLog {
     for (const waiter of this.#waiters.splice(0)) waiter.reject(new Error("The engine stopped before the write was durable."));
     this.#state.close();
   }
+}
+
+// Whether the bucket can rebuild txid: from a snapshot at or before it (or
+// from empty) through every transaction after that snapshot.
+function restorable(txid, snapshots, entries) {
+  if (txid === 0) return true;
+  const base = snapshots.filter((snapshot) => snapshot.txid <= txid).reduce((best, snapshot) => Math.max(best, snapshot.txid), 0);
+  for (let next = base + 1; next <= txid; next += 1) if (!entries.has(next)) return false;
+  return true;
 }
 
 // Whether a WAL file still holds everything up to a recorded position.
@@ -766,6 +920,8 @@ function encodeSegment(entries) {
       // Absent in segments from before epochs: read as 0.
       epoch: entry.epoch ?? 0,
       txid: entry.txid,
+      // When the transaction was captured (absent before point-in-time recovery).
+      ...(entry.at === undefined ? {} : { at: entry.at }),
       pageSize: entry.pageSize,
       databasePages: entry.databasePages,
       pages: entry.pages.map(([pageNumber, page]) => {
