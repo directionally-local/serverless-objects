@@ -354,3 +354,48 @@ test("durable mode refuses a store that ignores conditional writes", async () =>
   };
   await assert.rejects(engineFor(directory, careless), /doesn't honor conditional writes \(If-None-Match: \* replaced an existing key\)/);
 });
+
+test("writes made while a snapshot uploads stay covered by the log, through compaction and a lost disk", async () => {
+  const directory = await project();
+  const bucket = new MemoryBucket();
+  // Snapshot uploads wait at a gate; segments go straight in.
+  let openGate;
+  let gate = new Promise((resolve) => (openGate = resolve));
+  let held = 0;
+  const put = bucket.put.bind(bucket);
+  bucket.put = async (key, body, options) => {
+    if (key.includes("/snapshot-") && gate) {
+      held += 1;
+      await gate;
+    }
+    return put(key, body, options);
+  };
+  const first = await engineFor(directory, bucket, { tuning: { snapshotTransactions: 3 } });
+  const ledger = () => first.env.LEDGER.getByName("hot");
+  // The first write's snapshot (a new object starts from one) uploads freely.
+  gate = null;
+  await ledger().append(1);
+  gate = new Promise((resolve) => (openGate = resolve));
+  // The third write starts a snapshot, which waits at the gate.
+  for (let seq = 2; seq <= 3; seq += 1) await ledger().append(seq);
+  for (let attempt = 0; attempt < 100 && held === 0; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(held > 0, "a snapshot is uploading");
+  // Written (and captured) while the snapshot is still on its way.
+  const later = [4, 5, 6, 7, 8, 9].map((seq) => ledger().append(seq));
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  gate = null;
+  openGate();
+  await Promise.all(later);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  // Compaction runs again later, once everything has shipped.
+  await first.durable.compact();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  await first.durable.compact();
+  // The node dies without closing anything; its disk is gone.
+  const second = await engineFor(directory, bucket);
+  try {
+    assert.deepEqual(await second.env.LEDGER.getByName("hot").read(), { count: 9, last: 9 });
+  } finally {
+    await second.close();
+  }
+});

@@ -623,14 +623,23 @@ export class DurableLog {
   async #snapshotOpen(object) {
     if (!this.#checkpoint(object)) return;
     const { row } = object;
+    // The file is the state at txid. The object keeps writing while the
+    // snapshot uploads, so row.captured moves on: the snapshot covers txid only.
     const body = readFileSync(object.database.path);
+    let txid = row.captured;
     // A snapshot key already taken with other content (a history this node
-    // doesn't know) is never overwritten: the snapshot takes the next txid.
-    while (!(await this.#putSnapshot(row, row.captured, body))) {
+    // doesn't know) is never overwritten: the snapshot takes the next txid,
+    // if nothing was captured meanwhile; otherwise a later snapshot covers it.
+    while (!(await this.#putSnapshot(row, txid, body))) {
+      if (row.captured !== txid) {
+        row.needs_snapshot = 1;
+        this.#save(row);
+        return;
+      }
       row.captured += 1;
+      txid = row.captured;
       this.#save(row);
     }
-    const txid = row.captured;
     // Everything up to txid is now in the bucket, whatever the log holds.
     row.shipped = Math.max(row.shipped, txid);
     row.snapshot = Math.max(row.snapshot, txid);
@@ -684,12 +693,15 @@ export class DurableLog {
     const path = join(this.#objectsDirectory, row.class, `${row.id}.sqlite`);
     if (!existsSync(path) || existsSync(`${path}-wal`) || row.captured !== row.shipped) return;
     const body = readFileSync(path);
-    while (!(await this.#putSnapshot(row, row.captured, body))) {
+    let txid = row.captured;
+    while (!(await this.#putSnapshot(row, txid, body))) {
+      // The object opened and wrote meanwhile: its own snapshots cover it.
+      if (row.captured !== txid) return;
       row.captured += 1;
       row.shipped = row.captured;
+      txid = row.captured;
       this.#save(row);
     }
-    const txid = row.captured;
     row.snapshot = Math.max(row.snapshot, txid);
     if (row.captured === txid) row.log_bytes = 0;
     this.#save(row);
