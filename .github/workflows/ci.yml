@@ -30,6 +30,9 @@ jobs:
 
   docker:
     name: Docker image (linux/amd64)
+    # A release PR pins a version that is published only once it merges; the
+    # push to main checks the image then.
+    if: ${{ !startsWith(github.head_ref, 'release-please--') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
