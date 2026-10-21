@@ -373,7 +373,7 @@ export class ObjectHost {
     this.#alarmTimer = setTimeout(() => {
       this.#alarmTimer = undefined;
       if (delay > MAX_TIMER_MS) this.scheduleAlarm(at);
-      else void this.#runAlarm();
+      else void this.#runAlarm().catch((error) => this.#engine.log(`alarm for ${this.#namespace.className} ${this.id} failed: ${error?.stack ?? error}`));
     }, Math.min(delay, MAX_TIMER_MS));
     this.#alarmTimer.unref?.();
   }
@@ -402,10 +402,14 @@ export class ObjectHost {
         if (typeof instance.alarm !== "function") throw new TypeError("This Durable Object class has no alarm handler.");
         await instance.alarm({ retryCount, isRetry: retryCount > 0 || interrupted !== null });
       });
+      if (this.#closed) return;
       this.#alarmRetries = 0;
       this.#database.setMeta("alarm_running", null);
     } catch (error) {
       this.#engine.log(`alarm for ${this.#namespace.className} ${this.id} failed: ${error?.stack ?? error}`);
+      // Reset or stopped meanwhile (ctx.abort()): the alarm stays marked
+      // running, so the next host runs it again.
+      if (this.#closed) return;
       if (retryCount + 1 > ALARM_RETRY_LIMIT) {
         this.#alarmRetries = 0;
         this.#database.setMeta("alarm_running", null);
@@ -643,6 +647,7 @@ export class ObjectHost {
   abort(reason) {
     const error = reason instanceof Error ? reason : new Error(reason === undefined ? "The Durable Object was aborted." : String(reason));
     if (!this.#closed) {
+      const alarm = this.#database ? this.#database.meta("alarm") ?? this.#database.meta("alarm_running") : null;
       for (const event of this.#queue.splice(0)) event.reject(error);
       for (const socket of this.#sockets.keys()) {
         try {
@@ -654,6 +659,8 @@ export class ObjectHost {
       this.#state = undefined;
       this.close();
       this.#namespace.release(this);
+      // A pending alarm opens the object again, so it still runs.
+      if (alarm !== null) setImmediate(() => !this.#engine.closing && this.#namespace.localHost(this.id.toString(), this.id.name));
     }
     throw error;
   }

@@ -20,6 +20,8 @@ class MemoryBucket {
   objects = new Map();
   now = () => Date.now();
   failPut = () => false;
+  // Stored, but the response is lost.
+  ghostPut = () => false;
   #version = 0;
 
   async list(prefix) {
@@ -39,6 +41,7 @@ class MemoryBucket {
     if (ifMatch && current?.etag !== ifMatch) return null;
     const etag = `"${(this.#version += 1)}"`;
     this.objects.set(key, { body: Buffer.from(body), etag, modified: this.now() });
+    if (this.ghostPut(key)) throw new Error("S3 PUT timed out");
     return etag;
   }
 
@@ -66,7 +69,17 @@ export class Doc extends DurableObject {
   setAlarmIn(ms) { return this.ctx.storage.setAlarm(Date.now() + ms); }
   getAlarm() { return this.ctx.storage.getAlarm(); }
   clearAlarm() { return this.ctx.storage.deleteAlarm(); }
-  alarm() { this.ctx.storage.kv.put("alarmed", true); }
+  alarm() {
+    if (this.ctx.storage.kv.get("abortInAlarm")) {
+      this.ctx.storage.kv.delete("abortInAlarm");
+      this.ctx.abort("reset from the alarm");
+    }
+    this.ctx.storage.kv.put("alarmed", true);
+  }
+  abortInAlarm(ms) {
+    this.ctx.storage.kv.put("abortInAlarm", true);
+    return this.ctx.storage.setAlarm(Date.now() + ms);
+  }
   alarmed() { return this.ctx.storage.kv.get("alarmed") ?? false; }
 }
 export default { fetch: () => new Response("ok") };
@@ -310,5 +323,50 @@ test("with several nodes, a restore asked for on one node doesn't undo another n
     assert.equal(await a.env.DOC.getByName("x").get(), 3);
   } finally {
     await a.close();
+  }
+});
+
+test("a restore snapshot left behind by a failed attempt never shadows later writes", async () => {
+  const directory = await project();
+  const bucket = new MemoryBucket();
+  const persist = await temporaryDirectory();
+  const node = await engine(directory, bucket, persist, { retentionMs: 0, tuning: { gateTimeoutMs: 1_000, snapshotTransactions: 2 } });
+  try {
+    const doc = () => node.env.DOC.getByName("j");
+    await doc().set("v1");
+    const first = await doc().bookmark();
+    await doc().set("v2");
+    await doc().set("v3");
+    // The restore's snapshot lands, but its response is lost.
+    bucket.ghostPut = (key) => key.includes("/snapshot-");
+    await assert.rejects(doc().restore(first), /restoring/);
+    await assert.rejects(doc().get(), /timed out/);
+    bucket.ghostPut = () => false;
+    // Compaction removes the bookmark's history, so the retry drops the restore.
+    await node.durable.compact();
+    assert.equal(await doc().get(), "v3");
+    await doc().set("v4");
+  } finally {
+    await node.close();
+  }
+  // A lost disk rebuilds the object with the acknowledged write.
+  const rebuilt = await engine(directory, bucket, await temporaryDirectory());
+  try {
+    assert.equal(await rebuilt.env.DOC.getByName("j").get(), "v4");
+  } finally {
+    await rebuilt.close();
+  }
+});
+
+test("ctx.abort() inside an alarm handler resets the object, and the alarm runs again", async () => {
+  const directory = await project();
+  const node = await engine(directory, new MemoryBucket(), await temporaryDirectory());
+  try {
+    const doc = () => node.env.DOC.getByName("k");
+    await doc().abortInAlarm(50);
+    for (let attempt = 0; attempt < 200 && !(await doc().alarmed()); attempt += 1) await tick();
+    assert.equal(await doc().alarmed(), true);
+  } finally {
+    await node.close();
   }
 });
