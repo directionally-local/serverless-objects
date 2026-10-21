@@ -1,4 +1,11 @@
-# Single-node celld settings for `sobjects up`.
+# Single-node celld settings for `sobjects up`. To run the native engine
+# instead, replace [celld] with a [native] table (see docs/native-engine.md):
+# [native]
+# project = "./my-worker"
+# listen = "127.0.0.1:8787"
+# [native.backup]
+# bucket = "s3://replace-with-your-bucket/app"
+
 # Keep the listener on loopback unless a TLS-terminating ingress is in front.
 [celld]
 bucket = "s3://replace-with-your-bucket/serverless-objects"

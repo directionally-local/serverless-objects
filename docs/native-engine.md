@@ -31,7 +31,8 @@ The app's own code is bundled with esbuild, which handles TypeScript and `define
 | `ctx.waitUntil` | Yes: keeps the object in memory until the promise settles |
 | Bucket backups | Yes: `--backup-bucket s3://bucket/prefix` copies each object to an S3-compatible bucket and restores it onto an empty disk ([details](#bucket-backups)). With `--backup-mode durable`, every write is in the bucket before it is acknowledged ([details](#durable-mode)) |
 | Worker threads | Yes: `--threads N` runs objects on N threads, each object on one thread, with stalled or crashed threads replaced ([details](#worker-threads)) |
-| Continuous replication, multi-node | Planned |
+| Several nodes | Yes: `--node-name` shares one bucket prefix between nodes, with leases, takeover and call forwarding ([details](#several-nodes)) |
+| Running as a service | Yes: a `[native]` table in `sobjects.toml` makes `sobjects up` run the engine, with `--detach`, `status`, `logs`, `down` and `service install` ([details](#running-as-a-service)) |
 
 ## Bucket backups
 
@@ -99,6 +100,40 @@ Not yet:
 - **No TLS between nodes.**
 - **No threads:** `--node-name` can't be combined with `--threads`.
 - **No cross-node compaction:** compaction only deletes segments that every object they touch has snapshotted on this node. Segments of objects that moved away are kept.
+
+## Running as a service
+
+`sobjects up` runs the native engine when `sobjects.toml` has a `[native]` table instead of `[celld]`:
+
+```toml
+[native]
+project = "./my-worker"          # the Wrangler project to run; relative to this file
+listen = "127.0.0.1:8787"        # default
+# data_dir = "/var/lib/serverless-objects/native"  # default: $SOBJECTS_DATA_DIR/native
+# idle_evict_seconds = 60
+# threads = 2
+
+[native.backup]
+bucket = "s3://my-bucket/app"
+mode = "durable"                 # default here; "interval" is the other choice
+# endpoint = "https://<account>.r2.cloudflarestorage.com"
+# region = "auto"
+
+# [native.cluster]
+# node_name = "node-a"
+# lease_seconds = 10
+# peer_listen = "10.0.0.5:9790"
+# peer_advertise = "http://10.0.0.5:9790"
+```
+
+Each key matches a `sobjects dev --engine native` flag, and `up` runs the engine as that command in a child process. Bucket credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`) and `SOBJECTS_CLUSTER_SECRET` come from the environment, never the file; for a systemd unit, put them in `sobjects.env` beside the config. The rest works as with celld:
+
+- `sobjects up --detach`, `sobjects status`, `sobjects logs` and `sobjects down` manage a background node. `down` waits up to a minute for the engine to upload what's left and release its objects.
+- `sobjects service install` writes a systemd or launchd unit that restarts the node if it exits, including after it stops for losing its lease.
+- `[ingress]` puts the TLS ingress in front of the engine and routes to `[native].listen` by default. With a loopback listener, the engine trusts the ingress's `X-Forwarded-Proto` and `X-Forwarded-Host`, so `request.url` has the scheme and host the client used.
+- `[admin]` and the dashboard aren't available with `[native]` yet, and `sobjects deploy` is for celld: to run new code, restart the node.
+
+Without `[native.backup]`, the node's objects exist only in `data_dir`.
 
 ## Worker threads
 

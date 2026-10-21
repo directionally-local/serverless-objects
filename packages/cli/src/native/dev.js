@@ -5,6 +5,7 @@ export const nativeDevHelp = `Usage: sobjects dev [project] --engine native [--p
        [--backup-bucket s3://BUCKET/PREFIX] [--backup-mode interval|durable] [--backup-interval-seconds N]
        [--threads N] [--thread-stall-seconds N] [--thread-memory-mb N]
        [--node-name NAME] [--lease-seconds N] [--peer-listen HOST:PORT] [--peer-advertise URL]
+       [--trust-forwarded-headers]
 
 Run a Wrangler project's Worker and Durable Objects in this Node process, with
 each object's storage in a SQLite file under --persist-to (default:
@@ -48,14 +49,18 @@ With --peer-listen, a call for an object another node runs is forwarded to
 that node's peer listener (advertised as --peer-advertise, default the listen
 address). Peer requests are signed with SOBJECTS_CLUSTER_SECRET (32 or more
 characters, the same on every node) but not encrypted: keep peer listeners on
-a private network. Without --peer-listen, such calls fail with the owner's name.`;
+a private network. Without --peer-listen, such calls fail with the owner's name.
+
+--trust-forwarded-headers takes request.url's scheme and host from
+X-Forwarded-Proto and X-Forwarded-Host, as set by the sobjects ingress. Use it
+only when nothing but the ingress can reach the listener.`;
 
 export function wantsNativeEngine(args) {
   return args.some((argument, index) => argument === "--engine=native" || (argument === "--engine" && args[index + 1] === "native"));
 }
 
 export function parseNativeDevArgs(args, cwd) {
-  const options = { project: ".", port: 8787, host: "127.0.0.1", persistTo: undefined, idleEvictSeconds: 60, backupBucket: undefined, backupMode: "interval", backupIntervalSeconds: 10, threads: 0, threadStallSeconds: 30, threadMemoryMb: undefined, nodeName: undefined, leaseSeconds: 10, peerListen: undefined, peerAdvertise: undefined };
+  const options = { project: ".", port: 8787, host: "127.0.0.1", persistTo: undefined, idleEvictSeconds: 60, backupBucket: undefined, backupMode: "interval", backupIntervalSeconds: 10, threads: 0, threadStallSeconds: 30, threadMemoryMb: undefined, nodeName: undefined, leaseSeconds: 10, peerListen: undefined, peerAdvertise: undefined, trustForwardedHeaders: false };
   let sawProject = false;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
@@ -79,6 +84,7 @@ export function parseNativeDevArgs(args, cwd) {
     else if (argument === "--lease-seconds") options.leaseSeconds = Number(value());
     else if (argument === "--peer-listen") options.peerListen = value();
     else if (argument === "--peer-advertise") options.peerAdvertise = value();
+    else if (argument === "--trust-forwarded-headers") options.trustForwardedHeaders = true;
     else if (argument === "--thread-stall-seconds") options.threadStallSeconds = Number(value());
     else if (argument === "--thread-memory-mb") options.threadMemoryMb = Number(value());
     else if (!argument.startsWith("-") && !sawProject) {
@@ -120,7 +126,7 @@ export async function runNativeDev(args, io, { cwd, onSignal, env = process.env 
     const { NativeEngine, loadProjectConfig } = await import("./engine.js");
     const config = await loadProjectConfig(options.project);
     const log = (message) => io.error(message);
-    const common = { config, persistDirectory: options.persistTo, idleEvictMs: options.idleEvictSeconds * 1000, log };
+    const common = { config, persistDirectory: options.persistTo, idleEvictMs: options.idleEvictSeconds * 1000, trustForwardedHeaders: options.trustForwardedHeaders, log };
     if (options.threads > 0) {
       const { ThreadedEngine } = await import("./threads.js");
       if (options.backupBucket) {

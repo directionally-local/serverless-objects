@@ -46,11 +46,12 @@ export class NativeEngine {
   // threads (--threads); it then runs only the objects whose IDs map to it.
   // cluster: { name, ttlMs, onFence } makes this node one of several sharing
   // the bucket (durable mode only); objects are claimed as they are used.
-  constructor({ config, persistDirectory, idleEvictMs = 60_000, backup, shard, cluster, log = (message) => console.error(message) }) {
+  constructor({ config, persistDirectory, idleEvictMs = 60_000, backup, shard, cluster, trustForwardedHeaders = false, log = (message) => console.error(message) }) {
     this.shard = shard;
     if (cluster && backup?.mode !== "durable") throw new Error("Running several nodes needs --backup-mode durable.");
     if (cluster && shard) throw new Error("--node-name can't be combined with --threads yet.");
     this.idleEvictMs = idleEvictMs;
+    this.trustForwardedHeaders = trustForwardedHeaders;
     this.evictions = 0;
     this.config = config;
     this.scriptName = config.name ?? "worker";
@@ -272,7 +273,7 @@ export class NativeEngine {
   async #upgrade(req, socket, head) {
     socket.on("error", () => {});
     try {
-      const request = toRequest(req, false);
+      const request = toRequest(req, false, this.trustForwardedHeaders);
       const response = await this.fetch(request);
       if (response?.status === 101 && response.webSocket) {
         // The client left while the object was accepting: the object sees a lost connection.
@@ -293,7 +294,7 @@ export class NativeEngine {
 
   async #serve(req, res) {
     try {
-      const request = toRequest(req, req.method !== "GET" && req.method !== "HEAD");
+      const request = toRequest(req, req.method !== "GET" && req.method !== "HEAD", this.trustForwardedHeaders);
       const response = await this.fetch(request);
       if (!response || typeof response.status !== "number" || !response.headers) throw new TypeError("The Worker's fetch handler must return a Response.");
       if (response.status === 101) throw new TypeError("A 101 response needs a WebSocket upgrade request.");
@@ -341,8 +342,18 @@ export class NativeEngine {
 
 }
 
-export function toRequest(req, hasBody) {
-  return new Request(`http://${req.headers.host ?? "localhost"}${req.url}`, {
+// With trustForwarded (only when nothing but a local ingress can reach this
+// listener), request.url takes the scheme and host the client used.
+export function toRequest(req, hasBody, trustForwarded = false) {
+  let scheme = "http";
+  let host = req.headers.host ?? "localhost";
+  if (trustForwarded) {
+    const proto = String(req.headers["x-forwarded-proto"] ?? "").toLowerCase();
+    if (proto === "https" || proto === "http") scheme = proto;
+    const forwardedHost = req.headers["x-forwarded-host"];
+    if (typeof forwardedHost === "string" && /^[A-Za-z0-9.:[\]-]+$/.test(forwardedHost)) host = forwardedHost;
+  }
+  return new Request(`${scheme}://${host}${req.url}`, {
     method: req.method,
     headers: Object.entries(req.headers).flatMap(([name, value]) => (Array.isArray(value) ? value.map((item) => [name, item]) : [[name, value]])),
     ...(hasBody ? { body: Readable.toWeb(req), duplex: "half" } : {}),
