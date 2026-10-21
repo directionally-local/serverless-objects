@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.11.0...serverless-objects-v0.12.0) (2026-10-21)
+
+
+### Features
+
+* **cli:** drain the native engine on shutdown, handing objects to other nodes ([fb8e728](https://github.com/sinameraji/serverless-objects/commit/fb8e7280183a8f6dc98c6ef49b7534a76be53418))
+
 ## [0.11.0](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.10.0...serverless-objects-v0.11.0) (2026-10-21)
 
 
