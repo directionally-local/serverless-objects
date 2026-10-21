@@ -151,3 +151,72 @@ test("up passes --trust-forwarded-headers to a loopback [native] node behind the
   assert.deepEqual(invocation.args.slice(1), ["dev", "/srv/app", "--engine", "native", "--persist-to", "/data/native", "--trust-forwarded-headers"]);
   assert.equal(invocation.env.S3_ENDPOINT, "http://s3");
 });
+
+test("a [native] localhost listener binds 127.0.0.1, and the project must exist", async () => {
+  const { parseSobjectsConfig, loadSobjectsConfig } = await import("../src/config.js");
+  const config = parseSobjectsConfig('[native]\nproject = "."\nlisten = "localhost:9000"', "sobjects.toml", { baseDirectory: "/srv" });
+  assert.deepEqual(config.native.args.slice(3, 7), ["--host", "127.0.0.1", "--port", "9000"]);
+  assert.throws(() => parseSobjectsConfig(`[native]
+project = "."
+[native.backup]
+bucket = "s3://a"
+[native.cluster]
+node_name = "a"
+peer_listen = "127.0.0.1:8443"
+[ingress]
+listen = "127.0.0.1:8443"
+[[ingress.routes]]
+hostname = "a.localhost"
+`), /peer_listen must differ from the \[ingress\] listeners/);
+  const directory = await mkdtemp(join(tmpdir(), "sobjects-native-config-"));
+  try {
+    await writeFile(join(directory, "sobjects.toml"), '[native]\nproject = "missing"\n');
+    await assert.rejects(loadSobjectsConfig(join(directory, "sobjects.toml")), /\[native\]\.project .*missing does not exist/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("status, logs and up --detach tell the two engines apart", async () => {
+  const { run: runCli } = await import("../src/cli.js");
+  const directory = await mkdtemp(join(tmpdir(), "sobjects-native-state-"));
+  const output = () => {
+    const lines = { out: [], err: [] };
+    return { lines, io: { log: (message) => lines.out.push(message), error: (message) => lines.err.push(message) } };
+  };
+  try {
+    const env = { SOBJECTS_STATE_DIR: directory };
+    // A stale native state file doesn't hide a running celld.
+    const status = output();
+    assert.equal(await runCli(["status"], status.io, {
+      env,
+      getServiceStatus: async ({ name = "celld" }) => (name === "native"
+        ? { running: false, stale: true, state: {} }
+        : name === "celld" ? { running: true, state: { pid: 7, startedAt: "now", logPath: "/l" } } : { running: false }),
+    }), 0);
+    assert.match(status.lines.out.join("\n"), /native engine is not running \(stale state removed\)[\s\S]*celld is running \(pid 7/);
+
+    // With neither running, logs come from the engine that wrote last.
+    await writeFile(join(directory, "native.log"), "old native\n");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await writeFile(join(directory, "celld.log"), "new celld\n");
+    const logs = output();
+    assert.equal(await runCli(["logs"], logs.io, { env }), 0);
+    assert.deepEqual(logs.lines.out, ["new celld"]);
+
+    // up --detach refuses to start one engine while the other runs.
+    const up = output();
+    let started = false;
+    assert.equal(await runCli(["up", "--detach"], up.io, {
+      env,
+      cwd: directory,
+      loadConfig: async () => ({ listen: "127.0.0.1:8787", native: { project: directory, args: [directory, "--engine", "native"], env: {} } }),
+      getServiceStatus: async ({ name }) => (name === "celld" ? { running: true, state: { pid: 9 } } : { running: false }),
+      startService: async () => { started = true; return { pid: 1, logPath: "/l" }; },
+    }), 1);
+    assert.equal(started, false);
+    assert.match(up.lines.err.join("\n"), /celld is already running \(pid 9\)/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
