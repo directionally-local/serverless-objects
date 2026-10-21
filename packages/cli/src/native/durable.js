@@ -212,19 +212,23 @@ export class DurableLog {
       seen(objectKey, txid);
       if (!snapshots.has(objectKey) || snapshots.get(objectKey).txid < txid) snapshots.set(objectKey, { key, txid });
     }
+    // The log is read only if an object may need it: one missing locally,
+    // unknown to this node, or with a snapshot newer than what it recorded.
+    // With a retention window, the log holds days of history.
+    const rows = new Map(this.#state.all().filter((row) => owns(row.id)).map((row) => [`${row.class}/${row.id}`, row]));
+    const needsLog = [...snapshots.keys()].some((objectKey) => !rows.has(objectKey))
+      || [...rows].some(([objectKey, row]) => !existsSync(local(row.class, row.id)) || (highest.get(objectKey) ?? 0) > row.captured);
     const entries = new Map();
-    for (const { key } of await this.#client.list(`${this.#root}/log/`)) {
-      if (!key.endsWith(".seg")) continue;
-      const object = await this.#client.get(key);
-      if (!object) continue;
-      for (const entry of decodeSegment(object.body)) {
-        if (!owns(entry.id)) continue;
-        const objectKey = `${entry.class}/${entry.id}`;
-        seen(objectKey, entry.txid);
-        if (!entries.has(objectKey)) entries.set(objectKey, new Map());
-        const existing = entries.get(objectKey).get(entry.txid);
-        if (existing && digest(existing) !== digest(entry)) this.#log(`restore of ${objectKey}: transaction ${entry.txid} appears twice with different content (segments ${existing.segment} and ${key}).`);
-        if (!existing) entries.get(objectKey).set(entry.txid, { ...entry, segment: key });
+    if (needsLog) {
+      for (const { key, lastModified } of await this.#client.list(`${this.#root}/log/`)) {
+        if (!key.endsWith(".seg")) continue;
+        for (const entry of await this.#indexSegment(key, lastModified)) {
+          if (!owns(entry.id)) continue;
+          const objectKey = `${entry.class}/${entry.id}`;
+          seen(objectKey, entry.txid);
+          if (!entries.has(objectKey)) entries.set(objectKey, new Map());
+          if (!entries.get(objectKey).has(entry.txid)) entries.get(objectKey).set(entry.txid, entry);
+        }
       }
     }
 
@@ -262,7 +266,7 @@ export class DurableLog {
         usable.push(entry);
         txid = entry.txid;
       }
-      const { temporary, alarm } = await this.#build(path, snapshot ? (await this.#client.get(snapshot.key)).body : null, usable, objectKey);
+      const { temporary, alarm } = await this.#build(path, snapshot ? (await this.#client.get(snapshot.key)).body : null, await this.#withPages(usable), objectKey);
       // Recorded before the file is in place: a crash in between restores again.
       // Numbering continues past everything seen; a snapshot of what was
       // restored then becomes the base for what follows.
@@ -299,22 +303,27 @@ export class DurableLog {
     const keys = new Set(listed.map(({ key }) => key));
     for (const key of [...this.#segmentIndex.keys()]) if (!keys.has(key)) this.#segmentIndex.delete(key);
     for (const { key, lastModified } of listed) {
-      let index = this.#segmentIndex.get(key);
-      if (!index) {
-        const object = await this.#client.get(key);
-        if (!object) continue;
-        // Entries from before capture times were recorded date from their upload.
-        const uploaded = Date.parse(lastModified ?? "") || undefined;
-        index = decodeSegment(object.body).map((entry) => ({ class: entry.class, id: entry.id, epoch: entry.epoch ?? 0, txid: entry.txid, at: entry.at ?? uploaded, segment: key }));
-        this.#segmentIndex.set(key, index);
-      }
-      for (const entry of index) {
+      for (const entry of await this.#indexSegment(key, lastModified)) {
         if (entry.class !== className || entry.id !== id || !inHistory(history, entry.epoch, entry.txid)) continue;
         if (!entries.has(entry.txid)) entries.set(entry.txid, entry);
       }
     }
     snapshots.sort((a, b) => b.txid - a.txid);
     return { snapshots, entries };
+  }
+
+  // What a segment holds, without its pages (empty if it is gone).
+  async #indexSegment(key, lastModified) {
+    let index = this.#segmentIndex.get(key);
+    if (!index) {
+      const object = await this.#client.get(key);
+      if (!object) return [];
+      // Entries from before capture times were recorded date from their upload.
+      const uploaded = Date.parse(lastModified ?? "") || undefined;
+      index = decodeSegment(object.body).map((entry) => ({ class: entry.class, id: entry.id, epoch: entry.epoch ?? 0, txid: entry.txid, at: entry.at ?? uploaded, segment: key }));
+      this.#segmentIndex.set(key, index);
+    }
+    return index;
   }
 
   // The full transactions (with pages) for index records, in order.
@@ -373,9 +382,10 @@ export class DurableLog {
       }
       Object.assign(row, { snapshot: snapshot?.txid ?? 0 });
     }
-    // A restore requested in an earlier ownership doesn't carry over: other
-    // nodes may have written since.
-    Object.assign(row, { captured: cut, shipped: cut, log_bytes: 0, position: reusable ? row.position : null, needs_snapshot: 1, epoch: record.epoch, restore_to: null });
+    // A restore requested in an earlier ownership carries over only if no
+    // other node wrote since (the history ends where this node's did).
+    const keepRestore = previous && row.epoch === previous.epoch && cut <= row.captured;
+    Object.assign(row, { captured: cut, shipped: cut, log_bytes: 0, position: reusable ? row.position : null, needs_snapshot: 1, epoch: record.epoch, restore_to: keepRestore ? row.restore_to : null });
     this.#save(row);
   }
 
@@ -510,7 +520,13 @@ export class DurableLog {
     const { snapshots, entries } = await this.#objectHistory(className, id, history);
     if (!restorable(target, snapshots, entries)) {
       // Its history left the bucket (retention): the object opens as it is.
+      // An earlier attempt may have left its snapshot above the object's
+      // latest transaction: numbering continues past it, and a snapshot of
+      // the current state comes first.
       this.#log(`${className} ${id}: transaction ${target} can no longer be restored from the bucket; the restore is dropped.`);
+      let top = row.captured;
+      for (const candidate of snapshots) top = Math.max(top, candidate.txid);
+      if (top > row.captured) Object.assign(row, { captured: top, needs_snapshot: 1 });
       row.restore_to = null;
       this.#save(row);
       return;
@@ -847,7 +863,7 @@ export class DurableLog {
       if (row === null || !this.#mayCompact(row)) continue;
       const old = list.filter((snapshot) => snapshot.epoch === (row.epoch ?? 0) && snapshot.txid <= row.snapshot && (this.#tuning.retentionMs === 0 || snapshot.time <= cutoff));
       if (old.length === 0) continue;
-      const base = Math.max(...old.map((snapshot) => snapshot.txid));
+      const base = old.reduce((best, snapshot) => Math.max(best, snapshot.txid), 0);
       bases.set(objectKey, base);
       if (this.#owns(id)) for (const snapshot of list) if (snapshot.txid < base) await this.#client.delete(snapshot.key);
     }
@@ -940,12 +956,6 @@ function fsyncPath(path) {
   } finally {
     closeSync(fd);
   }
-}
-
-function digest(entry) {
-  const hash = createHash("sha256").update(`${entry.databasePages}:${entry.pageSize}`);
-  for (const [pageNumber, page] of entry.pages) hash.update(`${pageNumber}`).update(page);
-  return hash.digest("hex");
 }
 
 // [4-byte header length][header JSON][page bytes], gzipped.
