@@ -30,7 +30,7 @@ This table distinguishes behavior exercised by the project from functionality de
 | Workers AI, Vectorize, Hyperdrive, Browser Rendering, Email Workers | Not provided by celld 0.6.2 | Serverless Objects does not implement replacements. |
 | Single-host `sobjects up` | Implemented and smoke-tested | The current product is a single-host operating layer. Keep operator/admin listeners on loopback. |
 | Multi-node product operations, tenancy, SSO, audit log | Not provided by this pre-alpha | celld's own multi-node capabilities do not imply these Serverless Objects control-plane features. |
-| Point-in-time restore | Not available with celld 0.6 | The dashboard can show retained epochs and export logical JSON, but there is no supported restore command in this release. |
+| Point-in-time restore | celld 0.6: no. Native engine: yes, in durable mode | celld: the dashboard can show retained epochs and export logical JSON, but there is no supported restore command in this release. Native engine with `--backup-mode durable`: Cloudflare's API (`getCurrentBookmark`, `getBookmarkForTime`, `onNextSessionRestoreBookmark`, `ctx.abort()`), back `--backup-retention-days` (default 7). |
 
 ## Test record
 

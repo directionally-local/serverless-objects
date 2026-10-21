@@ -2,7 +2,7 @@
 import { resolve } from "node:path";
 
 export const nativeDevHelp = `Usage: sobjects dev [project] --engine native [--port PORT] [--host HOST] [--persist-to DIR] [--idle-evict-seconds N]
-       [--backup-bucket s3://BUCKET/PREFIX] [--backup-mode interval|durable] [--backup-interval-seconds N]
+       [--backup-bucket s3://BUCKET/PREFIX] [--backup-mode interval|durable] [--backup-interval-seconds N] [--backup-retention-days N]
        [--threads N] [--thread-stall-seconds N] [--thread-memory-mb N]
        [--node-name NAME] [--lease-seconds N] [--peer-listen HOST:PORT] [--peer-advertise URL]
        [--trust-forwarded-headers] [--drain-seconds N]
@@ -28,7 +28,11 @@ copy stops backing that object up.
 made are in the bucket (an output gate, as on Cloudflare), so losing the disk
 loses nothing that was acknowledged. Writes from all objects are uploaded
 together, one bucket PUT per flush; each write waits for one. The store must
-support conditional writes (If-None-Match), as S3, R2 and MinIO do.
+support conditional writes (If-None-Match), as S3, R2 and SeaweedFS do.
+Objects can then restore earlier states with the point-in-time recovery API
+(ctx.storage.getBookmarkForTime, onNextSessionRestoreBookmark) for
+--backup-retention-days (default 7; Cloudflare keeps 30); older history is
+deleted as snapshots replace it.
 
 With --threads N, the Worker and its objects run on N worker threads: each
 object lives on one thread (chosen by its ID), and requests are spread across
@@ -66,7 +70,7 @@ export function wantsNativeEngine(args) {
 }
 
 export function parseNativeDevArgs(args, cwd) {
-  const options = { project: ".", port: 8787, host: "127.0.0.1", persistTo: undefined, idleEvictSeconds: 60, backupBucket: undefined, backupMode: "interval", backupIntervalSeconds: 10, threads: 0, threadStallSeconds: 30, threadMemoryMb: undefined, nodeName: undefined, leaseSeconds: 10, peerListen: undefined, peerAdvertise: undefined, trustForwardedHeaders: false, drainSeconds: 30 };
+  const options = { project: ".", port: 8787, host: "127.0.0.1", persistTo: undefined, idleEvictSeconds: 60, backupBucket: undefined, backupMode: "interval", backupIntervalSeconds: 10, threads: 0, threadStallSeconds: 30, threadMemoryMb: undefined, nodeName: undefined, leaseSeconds: 10, peerListen: undefined, peerAdvertise: undefined, trustForwardedHeaders: false, drainSeconds: 30, backupRetentionDays: 7 };
   let sawProject = false;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
@@ -85,6 +89,7 @@ export function parseNativeDevArgs(args, cwd) {
     else if (argument === "--backup-bucket") options.backupBucket = value();
     else if (argument === "--backup-interval-seconds") options.backupIntervalSeconds = Number(value());
     else if (argument === "--backup-mode") options.backupMode = value();
+    else if (argument === "--backup-retention-days") options.backupRetentionDays = Number(value());
     else if (argument === "--threads") options.threads = Number(value());
     else if (argument === "--node-name") options.nodeName = value();
     else if (argument === "--lease-seconds") options.leaseSeconds = Number(value());
@@ -102,6 +107,7 @@ export function parseNativeDevArgs(args, cwd) {
   if (!Number.isInteger(options.port) || options.port < 0 || options.port > 65_535) throw new Error("--port must be an integer from 0 to 65535.");
   if (!Number.isFinite(options.idleEvictSeconds) || options.idleEvictSeconds < 0) throw new Error("--idle-evict-seconds must be 0 or more.");
   if (!Number.isFinite(options.backupIntervalSeconds) || options.backupIntervalSeconds < 1) throw new Error("--backup-interval-seconds must be 1 or more.");
+  if (!Number.isFinite(options.backupRetentionDays) || options.backupRetentionDays < 0 || options.backupRetentionDays > 365) throw new Error("--backup-retention-days must be from 0 to 365.");
   if (!["interval", "durable"].includes(options.backupMode)) throw new Error("--backup-mode must be interval or durable.");
   if (!Number.isInteger(options.threads) || options.threads < 0 || options.threads > 256) throw new Error("--threads must be an integer from 0 to 256.");
   if (!Number.isFinite(options.threadStallSeconds) || options.threadStallSeconds < 1) throw new Error("--thread-stall-seconds must be 1 or more.");
@@ -148,14 +154,14 @@ export async function runNativeDev(args, io, { cwd, onSignal, env = process.env 
         env,
         stallMs: options.threadStallSeconds * 1000,
         memoryMb: options.threadMemoryMb,
-        backup: options.backupBucket ? { bucketUri: options.backupBucket, intervalMs: options.backupIntervalSeconds * 1000, mode: options.backupMode } : undefined,
+        backup: options.backupBucket ? { bucketUri: options.backupBucket, intervalMs: options.backupIntervalSeconds * 1000, mode: options.backupMode, retentionMs: options.backupRetentionDays * 86_400_000 } : undefined,
       });
     } else {
       let backup;
       if (options.backupBucket) {
         const { S3Client } = await import("./s3.js");
         const { client, prefix } = S3Client.fromEnvironment({ bucketUri: options.backupBucket, env });
-        backup = { client, prefix, intervalMs: options.backupIntervalSeconds * 1000, mode: options.backupMode };
+        backup = { client, prefix, intervalMs: options.backupIntervalSeconds * 1000, mode: options.backupMode, retentionMs: options.backupRetentionDays * 86_400_000 };
       }
       let peer;
       if (options.peerListen) {

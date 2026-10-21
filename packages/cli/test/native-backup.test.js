@@ -200,7 +200,7 @@ test("the S3 client signs requests, sends conditions and parses listings", async
   const fetchImpl = async (url, init) => {
     requests.push({ url: String(url), ...init });
     if (init.method === "PUT") return new Response(null, { status: init.headers["if-none-match"] ? 412 : 200, headers: { etag: '"e1"' } });
-    return new Response(`<ListBucketResult><Contents><Key>p/a&amp;b.sqlite</Key><ETag>&quot;e1&quot;</ETag><Size>3</Size></Contents><IsTruncated>false</IsTruncated></ListBucketResult>`);
+    return new Response(`<ListBucketResult><Contents><Key>p/a&amp;b.sqlite</Key><ETag>&quot;e1&quot;</ETag><Size>3</Size><LastModified>2026-10-20T01:02:03.000Z</LastModified></Contents><IsTruncated>false</IsTruncated></ListBucketResult>`);
   };
   const { client, prefix } = S3Client.fromEnvironment({
     bucketUri: "s3://my-bucket/p",
@@ -211,7 +211,7 @@ test("the S3 client signs requests, sends conditions and parses listings", async
   assert.equal(prefix, "p");
   assert.equal(await client.put("p/x y.sqlite", "abc", { ifNoneMatch: "*" }), null);
   assert.equal(await client.put("p/x y.sqlite", "abc", { ifMatch: '"e0"' }), '"e1"');
-  assert.deepEqual(await client.list("p/"), [{ key: "p/a&b.sqlite", etag: '"e1"', size: 3 }]);
+  assert.deepEqual(await client.list("p/"), [{ key: "p/a&b.sqlite", etag: '"e1"', size: 3, lastModified: "2026-10-20T01:02:03.000Z" }]);
   // Numeric character references (SeaweedFS quotes ETags as &#34;).
   const numeric = S3Client.fromEnvironment({
     bucketUri: "s3://my-bucket/p",

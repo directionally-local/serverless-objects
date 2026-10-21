@@ -39,9 +39,9 @@ export async function loadProjectConfig(projectDirectory) {
 
 export class NativeEngine {
   // idleEvictMs: drop an idle object's instance after this long (0 keeps it).
-  // backup: { client, prefix, intervalMs, mode } puts objects in an S3
-  // bucket: copies every interval ("interval"), or every write before it is
-  // acknowledged ("durable").
+  // backup: { client, prefix, intervalMs, mode, retentionMs } puts objects in
+  // an S3 bucket: copies every interval ("interval"), or every write before it
+  // is acknowledged ("durable", restorable to any point within retentionMs).
   // shard: { index, count, peer(index) } when this engine is one of several
   // threads (--threads); it then runs only the objects whose IDs map to it.
   // cluster: { name, ttlMs, onFence } makes this node one of several sharing
@@ -75,7 +75,7 @@ export class NativeEngine {
         alive: () => !this.cluster || this.cluster.alive(),
         // With several nodes, only objects this node owns now, in their current epoch.
         mayCompact: (row) => !this.cluster || (this.cluster.alive() && this.owned.get(`${row.class}/${row.id}`)?.record.epoch === row.epoch),
-        tuning: backup.tuning,
+        tuning: { ...(backup.retentionMs === undefined ? {} : { retentionMs: backup.retentionMs }), ...backup.tuning },
         log,
       });
     } else if (backup) {
@@ -136,12 +136,19 @@ export class NativeEngine {
     this.handler = module.default;
     if (!this.handler) throw new Error("The Worker has no default export.");
     this.backup?.start(() => this.namespaces.flatMap((namespace) => [...namespace.hosts()]));
+    // Restores requested before the engine stopped run as those objects open.
+    const restoring = new Set(this.cluster ? [] : (this.durable?.pendingRestores() ?? []).map(({ className, id }) => `${className}/${id}`));
     this.durable?.start();
     // Alarms that were pending when the engine last stopped.
     for (const { class: className, id, at } of this.alarmIndex.pending()) {
       if (!this.owns(id)) continue;
       const namespace = this.namespaces.find((candidate) => candidate.className === className);
       if (!namespace) continue;
+      // Opening it restores it, then schedules the restored state's alarm.
+      if (restoring.has(`${className}/${id}`)) {
+        namespace.host(namespace.idFromString(id));
+        continue;
+      }
       // A claimed object schedules its own alarm once it opens.
       if (this.cluster) namespace.localHost(id);
       else namespace.host(namespace.idFromString(id)).scheduleAlarm(at);

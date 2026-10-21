@@ -63,7 +63,8 @@ In durable mode, nothing the engine acknowledges is lost if the disk is:
 - **Output gate:** after each event (an RPC call, fetch, alarm or socket message), the engine reads the transactions the object committed from its SQLite WAL, and holds the event's result until they are in the bucket. A later event's result waits too, since it may show those writes. Reads don't wait when nothing is pending.
 - **Batching:** transactions from every object on a thread go up together, one gzipped segment per flush. A flush starts as soon as the previous one ends, so under load many writes share one PUT. On a local MinIO, throughput stayed at 1,200–1,600 writes/s whether one object or 32 were writing ([benchmarks](benchmarks.md)).
 - **Power loss:** object databases run with `synchronous = FULL` in this mode, so a captured transaction is on disk. At start, a copy whose WAL no longer holds what the engine recorded is dropped and restored from the bucket.
-- **Snapshots:** each object gets an exact copy of its database file every 2,000 transactions or 16 MB of log. A lost disk is rebuilt from the latest snapshot plus the transactions logged after it. Compaction then deletes segments whose transactions are all covered by snapshots.
+- **Snapshots:** each object gets an exact copy of its database file every 2,000 transactions or 16 MB of log. A lost disk is rebuilt from the latest snapshot plus the transactions logged after it. Compaction (every 10 minutes) deletes snapshots and segments once a newer snapshot older than the retention window covers them.
+- **Point-in-time recovery:** objects can go back to any moment in the last `--backup-retention-days` (default 7; Cloudflare keeps 30) with Cloudflare's API, unchanged ([details](#point-in-time-recovery)).
 - **If the bucket stays down** for 30 seconds, the waiting events fail instead of being acknowledged. Their writes are committed locally and ship once the bucket answers, so a failed write may still appear later, as on Cloudflare.
 
 Limits:
@@ -74,6 +75,23 @@ Limits:
 - A node in durable mode doesn't start until it can reach its bucket.
 - It needs conditional writes (`If-None-Match`). AWS S3, Cloudflare R2 and SeaweedFS support them, and so does MinIO from RELEASE.2025-09-07 (MinIO no longer publishes free builds or images). Backblaze B2, Garage and DigitalOcean Spaces don't. At start, a node in durable mode checks that the store refuses a conditional write that doesn't hold, and won't run on one that accepts it. SeaweedFS's default volumes (8 of 64 MB) are too small for this workload; size them, for example `-master.volumeSizeLimitMB=256 -volume.max=50`.
 - One node per prefix, unless the nodes are named ([several nodes](#several-nodes)).
+
+### Point-in-time recovery
+
+In durable mode, `ctx.storage` has Cloudflare's point-in-time recovery API, and `ctx.abort()` resets an object:
+
+```js
+const bookmark = await this.ctx.storage.getBookmarkForTime(Date.now() - 60 * 60 * 1000);
+const undo = await this.ctx.storage.onNextSessionRestoreBookmark(bookmark);
+this.ctx.abort(); // the next request sees the object as it was an hour ago
+```
+
+- `getCurrentBookmark()` names the object's latest write, and `getBookmarkForTime(time)` names its last write at or before `time`. Bookmarks are strings that sort by time; one object's bookmarks don't work for another.
+- `onNextSessionRestoreBookmark(bookmark)` restores the bookmark the next time the object starts: after `ctx.abort()`, idle eviction or a restart. It returns a bookmark of the current state, which undoes the restore.
+- A restore rebuilds the object from the bucket and uploads the result as its newest snapshot, so the restored state survives a lost disk. Later history isn't deleted, and a bookmark into it still works until the retention window passes it. The object's alarm comes back as it was at the bookmark.
+- `ctx.abort(reason)` fails the call that made it and any queued ones with `reason`, closes the object's WebSockets with 1011, and drops the instance; the next event starts a new one.
+- History reaches back `--backup-retention-days` (`[native.backup].retention_days`). A longer window keeps more of the log in the bucket; 0 keeps only what the latest state needs. Asking for a time before the kept history throws a `RangeError`.
+- Without durable mode, these methods throw. The [conformance check](conformance/results.md) runs the same code on Cloudflare and on the native engine in durable mode.
 
 ### Several nodes
 
@@ -118,6 +136,7 @@ listen = "127.0.0.1:8787"        # default
 [native.backup]
 bucket = "s3://my-bucket/app"
 mode = "durable"                 # default here; "interval" is the other choice
+# retention_days = 7             # point-in-time recovery window (durable mode)
 # endpoint = "https://<account>.r2.cloudflarestorage.com"
 # region = "auto"
 

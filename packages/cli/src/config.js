@@ -5,7 +5,7 @@ import { parseNativeDevArgs } from "./native/dev.js";
 
 const ROOT_KEYS = new Set(["celld", "native", "ingress", "admin"]);
 const NATIVE_KEYS = new Set(["project", "listen", "data_dir", "idle_evict_seconds", "threads", "thread_stall_seconds", "thread_memory_mb", "drain_seconds", "backup", "cluster"]);
-const NATIVE_BACKUP_KEYS = new Set(["bucket", "mode", "interval_seconds", "endpoint", "region"]);
+const NATIVE_BACKUP_KEYS = new Set(["bucket", "mode", "interval_seconds", "retention_days", "endpoint", "region"]);
 const NATIVE_CLUSTER_KEYS = new Set(["node_name", "lease_seconds", "peer_listen", "peer_advertise"]);
 const CELLD_KEYS = new Set(["bucket", "endpoint", "region", "listen", "internal_listen"]);
 const ADMIN_KEYS = new Set(["listen"]);
@@ -169,6 +169,7 @@ function parseNative(parsed, sourceName, baseDirectory) {
     if (!["interval", "durable"].includes(mode)) throw new Error(`${label}.mode must be "durable" or "interval".`);
     args.push("--backup-bucket", bucket, "--backup-mode", mode);
     option("interval_seconds", "--backup-interval-seconds", native.backup, label);
+    option("retention_days", "--backup-retention-days", native.backup, label);
     if (native.backup.endpoint !== undefined) {
       const endpoint = requireString(native.backup.endpoint, `${label}.endpoint`);
       let url;

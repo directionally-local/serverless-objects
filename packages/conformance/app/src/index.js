@@ -10,6 +10,24 @@ function check(name, condition, detail) {
 }
 
 export class Storage extends DurableObject {
+  // Point-in-time recovery (run only where supported: see /pitr).
+  pitrSet(value) {
+    this.ctx.storage.kv.put("pitr", value);
+  }
+
+  pitrGet() {
+    return this.ctx.storage.kv.get("pitr") ?? null;
+  }
+
+  pitrBookmark(time) {
+    return time === undefined ? this.ctx.storage.getCurrentBookmark() : this.ctx.storage.getBookmarkForTime(time);
+  }
+
+  async pitrRestore(bookmark) {
+    await this.ctx.storage.onNextSessionRestoreBookmark(bookmark);
+    this.ctx.abort("restoring a bookmark");
+  }
+
   async kv() {
     const storage = this.ctx.storage;
     await storage.deleteAll();
@@ -238,6 +256,35 @@ const CASES = {
   "alarm-api": (env) => alarms(env, "api").deleteAlarm(),
 };
 
+// A bookmark from getCurrentBookmark() and one from getBookmarkForTime()
+// each restore the state they name, after ctx.abort(). A fresh stub per call:
+// an aborted object's stub is broken.
+async function pointInTimeRecovery(env) {
+  const name = `pitr-${crypto.randomUUID()}`;
+  const object = () => stub(env, name);
+  const pause = () => new Promise((resolve) => setTimeout(resolve, 1_500));
+  const restore = async (bookmark) => {
+    await object().pitrRestore(bookmark).then(() => {
+      throw new Error("abort() did not reject the call");
+    }, () => {});
+  };
+  await object().pitrSet(1);
+  const first = await object().pitrBookmark();
+  await pause();
+  await object().pitrSet(2);
+  await pause();
+  const second = Date.now();
+  await pause();
+  await object().pitrSet(3);
+  check("bookmarks sort", typeof first === "string" && first < (await object().pitrBookmark()), first);
+  await restore(first);
+  check("restored current bookmark", (await object().pitrGet()) === 1, await object().pitrGet());
+  await object().pitrSet(4);
+  await restore(await object().pitrBookmark(second));
+  check("restored bookmark for time", (await object().pitrGet()) === 2, await object().pitrGet());
+  return "getCurrentBookmark, getBookmarkForTime, onNextSessionRestoreBookmark and abort()";
+}
+
 function stub(env, name = "conformance") {
   return env.STORAGE.get(env.STORAGE.idFromName(name));
 }
@@ -250,6 +297,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === "/cases") return json(Object.keys(CASES));
+    if (url.pathname === "/pitr") return json(await pointInTimeRecovery(env).then((detail) => ({ pass: true, detail }), (error) => ({ pass: false, detail: String(error?.message ?? error) })));
     if (url.pathname === "/socket") {
       return env.SOCKETS.get(env.SOCKETS.idFromName("sockets")).fetch(request);
     }
