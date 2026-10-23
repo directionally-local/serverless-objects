@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.3](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.13.2...serverless-objects-v0.13.3) (2026-10-23)
+
+
+### Bug Fixes
+
+* **native:** keep WebSocket frame parsing linear ([#101](https://github.com/sinameraji/serverless-objects/issues/101)) ([22e2248](https://github.com/sinameraji/serverless-objects/commit/22e224873af7af2f228e47b7dd497d83d9a4e4d5))
+
 ## [0.13.2](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.13.1...serverless-objects-v0.13.2) (2026-10-23)
 
 
