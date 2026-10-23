@@ -4,7 +4,7 @@ A single-node Serverless Objects host in Docker. The image installs the `serverl
 
 - **Security boundary:** celld, its operator API and the admin dashboard listen on loopback inside the container. Only the TLS ingress is published, on ports 443 and 80.
 - **User:** the processes run as the unprivileged `sobjects` user (uid 999). Compose lowers `net.ipv4.ip_unprivileged_port_start` for the container so that user can bind 443 and 80.
-- **State:** Durable Object state lives in your bucket. The `sobjects-data` volume keeps local service state: the inspector token, ACME account and certificates, and logs.
+- **State:** Durable Object state lives in your bucket. The `sobjects-data` volume keeps local service state: the inspector and admin tokens, ACME account and certificates, and logs.
 
 The `local-s3` profile adds a SeaweedFS server and creates a bucket, for trying it out on one machine. For real use, point `[celld]` at Cloudflare R2, S3 or another store with conditional writes, and leave the profile off.
 
@@ -48,10 +48,11 @@ Useful commands:
 ```sh
 docker compose logs -f sobjects
 docker compose exec sobjects sobjects upgrade --status
-docker compose exec sobjects node -e 'fetch("http://127.0.0.1:8790/api/v1/node").then(r => r.json()).then(console.log)'
+docker compose exec sobjects sobjects dashboard     # the dashboard URL, with its admin token
+docker compose exec sobjects node -e 'const t = require("fs").readFileSync(process.env.SOBJECTS_STATE_DIR + "/admin-token", "utf8").trim(); fetch("http://127.0.0.1:8790/api/v1/node", { headers: { authorization: "Bearer " + t } }).then(r => r.json()).then(console.log)'
 ```
 
-The dashboard and admin API are unauthenticated and stay on loopback inside the container. To view the dashboard, forward the port over SSH or use `docker compose exec`; don't publish port 8790.
+The dashboard and admin API stay on loopback inside the container; don't publish port 8790. Apart from `/api/v1/health` (the healthcheck) and `/metrics`, the API needs the admin token kept in the `sobjects-data` volume. `sobjects dashboard` prints a URL that carries it; treat it like a password.
 
 ## Notes
 

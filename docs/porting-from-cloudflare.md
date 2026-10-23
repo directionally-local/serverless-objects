@@ -42,7 +42,7 @@ npm exec --workspace=serverless-objects -- sobjects dev ./my-worker
 npm exec --workspace=serverless-objects -- sobjects deploy ./my-worker
 ```
 
-`dev` delegates to celld's local development server and does not start the Serverless Objects ingress. `deploy` uses the configured celld bucket/endpoint or explicit flags. For externally reachable traffic, run the service with ingress and TLS; keep celld and the unauthenticated admin/operator APIs on loopback.
+`dev` delegates to celld's local development server and does not start the Serverless Objects ingress. `deploy` uses the configured celld bucket/endpoint or explicit flags. For externally reachable traffic, run the service with ingress and TLS; keep celld, its unauthenticated operator API and the token-protected admin API on loopback.
 
 Use Wrangler's local runtime as a reference and run the same app against celld. The [conformance v0 report](conformance/results.md) records one local run on each target. Passing this suite is useful evidence, not a claim of complete Workers parity.
 

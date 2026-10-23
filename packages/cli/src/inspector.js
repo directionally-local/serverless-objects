@@ -8,28 +8,38 @@ const TOKEN_FILE = "inspector-token";
 
 // One token per data directory: deploy bakes its hash into the bundle and the
 // supervisor on the same host sends the token. The bucket only sees the hash.
-export async function readInspectorToken(dataDirectory) {
+export function readInspectorToken(dataDirectory) {
+  return readSecretToken(dataDirectory, TOKEN_FILE, "inspector token");
+}
+
+export function ensureInspectorToken(dataDirectory) {
+  return ensureSecretToken(dataDirectory, TOKEN_FILE, "inspector token");
+}
+
+// A 256-bit random token in a file only its owner can read. Concurrent
+// callers agree on one token: the first exclusive create wins.
+export async function readSecretToken(directory, file, label) {
   try {
-    const token = (await readFile(join(dataDirectory, TOKEN_FILE), "utf8")).trim();
+    const token = (await readFile(join(directory, file), "utf8")).trim();
     return token || undefined;
   } catch (error) {
     if (error.code === "ENOENT") return undefined;
-    throw new Error(`Could not read the inspector token: ${error.message}`);
+    throw new Error(`Could not read the ${label}: ${error.message}`);
   }
 }
 
-export async function ensureInspectorToken(dataDirectory) {
-  const existing = await readInspectorToken(dataDirectory);
+export async function ensureSecretToken(directory, file, label) {
+  const existing = await readSecretToken(directory, file, label);
   if (existing) return existing;
-  await mkdir(dataDirectory, { recursive: true, mode: 0o700 });
+  await mkdir(directory, { recursive: true, mode: 0o700 });
   const token = randomBytes(32).toString("base64url");
   try {
-    await writeFile(join(dataDirectory, TOKEN_FILE), `${token}\n`, { flag: "wx", mode: 0o600 });
+    await writeFile(join(directory, file), `${token}\n`, { flag: "wx", mode: 0o600 });
     return token;
   } catch (error) {
-    // Another deploy created it first.
-    if (error.code === "EEXIST") return readInspectorToken(dataDirectory);
-    throw new Error(`Could not create the inspector token: ${error.message}`);
+    // Another process created it first.
+    if (error.code === "EEXIST") return readSecretToken(directory, file, label);
+    throw new Error(`Could not create the ${label}: ${error.message}`);
   }
 }
 
