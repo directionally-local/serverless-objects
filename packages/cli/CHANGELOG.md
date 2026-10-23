@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.2](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.13.1...serverless-objects-v0.13.2) (2026-10-23)
+
+
+### Bug Fixes
+
+* **cli:** require an admin token for the admin API ([ee253d5](https://github.com/sinameraji/serverless-objects/commit/ee253d52bd9267c4c36ce1d4728285cc1710286f))
+* **cli:** validate bucket keys, page cursors and health output ([2efc891](https://github.com/sinameraji/serverless-objects/commit/2efc8910236f11d7255228784caf9ffeacd5702c))
+
 ## [0.13.1](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.13.0...serverless-objects-v0.13.1) (2026-10-21)
 
 
