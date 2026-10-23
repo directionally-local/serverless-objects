@@ -1,8 +1,15 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { chmod } from "node:fs/promises";
 import { createServer } from "node:http";
 import { splitHostPort } from "./ingress.js";
+import { ensureSecretToken, readSecretToken } from "./inspector.js";
 
 export const ADMIN_REQUEST_HEADER = "x-sobjects-request";
+export const ADMIN_TOKEN_FILE = "admin-token";
+// Liveness probes (the Docker HEALTHCHECK) and Prometheus scrapers call these
+// without a token. They carry no object data; everything else needs it.
+const PUBLIC_PATHS = new Set(["/api/v1/health", "/metrics"]);
 
 const DASHBOARD_FILES = {
   "/": ["index.html", "text/html; charset=utf-8"],
@@ -52,7 +59,32 @@ export function createIngressMetrics() {
   };
 }
 
-export async function startAdmin({ listen, engine, metrics, version }) {
+// The admin token lives in the state directory, readable only by the account
+// that runs the supervisor. `sobjects dashboard` reads it to build the URL.
+export async function ensureAdminToken(stateDirectory) {
+  const token = await ensureSecretToken(stateDirectory, ADMIN_TOKEN_FILE, "admin token");
+  await chmod(stateDirectory, 0o700).catch(() => {});
+  return token;
+}
+
+export function readAdminToken(stateDirectory) {
+  return readSecretToken(stateDirectory, ADMIN_TOKEN_FILE, "admin token");
+}
+
+// Hashing first gives timingSafeEqual equal-length inputs, so neither the
+// token's contents nor its length leak through response timing.
+export function adminTokenMatches(presented, expected) {
+  if (typeof presented !== "string" || typeof expected !== "string" || !presented || !expected) return false;
+  const digest = (value) => createHash("sha256").update(value).digest();
+  return timingSafeEqual(digest(presented), digest(expected));
+}
+
+function bearerToken(request) {
+  return /^Bearer +(\S+) *$/i.exec(String(request.headers.authorization ?? ""))?.[1];
+}
+
+export async function startAdmin({ listen, engine, metrics, version, token }) {
+  if (typeof token !== "string" || token.length < 32) throw new Error("The admin API needs an admin token.");
   const dashboard = Object.fromEntries(Object.entries(DASHBOARD_FILES).map(([path, [file, type]]) => [
     path,
     { type, body: readFileSync(new URL(`./dashboard/${file}`, import.meta.url)) },
@@ -73,19 +105,34 @@ export async function startAdmin({ listen, engine, metrics, version }) {
       sendJson(response, 403, { error: `Mutating admin requests require the ${ADMIN_REQUEST_HEADER}: 1 header.` });
       return;
     }
+    let url;
     try {
-      await route(request, response);
+      url = new URL(request.url, "http://admin.invalid");
+    } catch {
+      sendJson(response, 400, { error: "Invalid request URL." });
+      return;
+    }
+    // Other local processes, including deployed app code, can reach loopback,
+    // so object data and mutations also need the admin token. Static dashboard
+    // files are public; the page reads the token from its URL fragment.
+    const isPublic = request.method === "GET" && (Object.hasOwn(dashboard, url.pathname) || PUBLIC_PATHS.has(url.pathname));
+    if (!isPublic && !adminTokenMatches(bearerToken(request), token)) {
+      response.setHeader("www-authenticate", 'Bearer realm="sobjects-admin"');
+      sendJson(response, 401, { error: "Admin API requests require the admin token (Authorization: Bearer). Run 'sobjects dashboard' for a dashboard URL that carries it." });
+      return;
+    }
+    try {
+      await route(request, response, url);
     } catch (error) {
       const status = error instanceof RangeError ? 400 : 502;
       sendJson(response, status, { error: error.message });
     }
   });
 
-  async function route(request, response) {
-    const url = new URL(request.url, "http://admin.invalid");
+  async function route(request, response, url) {
     const path = url.pathname;
 
-    if (request.method === "GET" && dashboard[path]) {
+    if (request.method === "GET" && Object.hasOwn(dashboard, path)) {
       const file = dashboard[path];
       response.writeHead(200, { ...DASHBOARD_HEADERS, "content-type": file.type, "content-length": file.body.length });
       response.end(file.body);

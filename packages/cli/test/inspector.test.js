@@ -131,6 +131,20 @@ test("allows only read-only SQL in the console", () => {
   }
 });
 
+test("treats PRAGMA name(value) as a write, like PRAGMA name = value", () => {
+  const readOnly = [
+    "PRAGMA journal_mode", "pragma user_version;", "PRAGMA main.table_info(t)", "PRAGMA table_info (t)",
+    "PRAGMA index_list(t)", "PRAGMA foreign_key_list(t)", "PRAGMA integrity_check(10)", "PRAGMA table_list",
+  ];
+  for (const query of readOnly) assert.equal(isReadOnly(query), true, query);
+  const writes = [
+    "PRAGMA journal_mode(off)", "PRAGMA journal_mode (off)", "pragma main.journal_mode(off)", "PRAGMA user_version(5)",
+    "PRAGMA foreign_keys(0)", "PRAGMA wal_checkpoint(TRUNCATE)", "PRAGMA wal_checkpoint", "PRAGMA optimize",
+    "PRAGMA incremental_vacuum(10)", "PRAGMA journal_mode off",
+  ];
+  for (const query of writes) assert.equal(isReadOnly(query), false, query);
+});
+
 test("encodes structured-clone values as JSON", () => {
   assert.deepEqual(encodeValue({ m: new Map([["k", 1n]]), s: new Set([undefined]) }), {
     m: { $type: "Map", value: [["k", { $type: "bigint", value: "1" }]] },

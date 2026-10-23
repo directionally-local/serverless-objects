@@ -5,8 +5,52 @@
 const $ = (id) => document.getElementById(id);
 const state = { className: "", next: undefined, scope: undefined, kvNext: undefined, backupsNext: undefined };
 
+// The admin API needs the token that `sobjects dashboard` puts in the URL
+// fragment, which browsers never send to the server. Keep it for this tab
+// only and take it out of the address bar.
+const TOKEN_KEY = "sobjects-admin-token";
+const NO_TOKEN = "This dashboard needs the admin token: open the URL that 'sobjects dashboard' prints.";
+let adminToken = readStoredToken();
+takeTokenFromUrl();
+
+function readStoredToken() {
+  try {
+    return sessionStorage.getItem(TOKEN_KEY) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function storeToken(token) {
+  adminToken = token;
+  try {
+    if (token) sessionStorage.setItem(TOKEN_KEY, token);
+    else sessionStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // Storage can be disabled; the token then lasts until the page reloads.
+  }
+}
+
+function takeTokenFromUrl() {
+  const token = new URLSearchParams(location.hash.slice(1)).get("token");
+  if (!token) return false;
+  storeToken(token);
+  history.replaceState(null, "", `${location.pathname}${location.search}`);
+  return true;
+}
+
+async function authorizedFetch(path, { method = "GET", headers = {}, body } = {}) {
+  if (!adminToken) throw new Error(NO_TOKEN);
+  const response = await fetch(path, { method, headers: { ...headers, authorization: `Bearer ${adminToken}` }, body });
+  if (response.status === 401) {
+    storeToken(undefined);
+    throw new Error(NO_TOKEN);
+  }
+  return response;
+}
+
 async function api(path, { method = "GET", body } = {}) {
-  const response = await fetch(path, {
+  const response = await authorizedFetch(path, {
     method,
     headers: method === "GET" ? {} : { "x-sobjects-request": "1", "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -118,7 +162,6 @@ async function openObject(scope) {
   $("detail-scope").textContent = scope;
   $("sql-result").replaceChildren();
   const encoded = encodeURIComponent(scope);
-  $("export").href = `/api/v1/objects/${encoded}/export`;
   const summary = await api(`/api/v1/objects/${encoded}`);
   renderStats($("summary"), [
     ["Alarm", summary.alarm ?? "none"],
@@ -216,6 +259,22 @@ async function loadBackups({ append = false } = {}) {
   $("backups-more").hidden = !page.next;
 }
 
+// A plain link cannot send the token, so fetch the export and save it.
+async function exportObject() {
+  const response = await authorizedFetch(`/api/v1/objects/${encodeURIComponent(state.scope)}/export`);
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error ?? `HTTP ${response.status}`);
+  }
+  const name = /filename="([^"]+)"/.exec(response.headers.get("content-disposition") ?? "")?.[1] ?? "export.json";
+  const url = URL.createObjectURL(await response.blob());
+  const link = element("a", undefined, { href: url, download: name });
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1_000);
+}
+
 async function evict() {
   const result = await api(`/api/v1/objects/${encodeURIComponent(state.scope)}/evict`, { method: "POST" });
   if (result.ok) {
@@ -244,12 +303,18 @@ $("object-rows").addEventListener("click", (event) => {
 $("kv-form").addEventListener("submit", guard(() => listKv()));
 $("kv-more").addEventListener("click", guard(() => listKv({ append: true })));
 $("sql-form").addEventListener("submit", guard(runSql));
+$("export").addEventListener("click", guard(exportObject));
 $("evict").addEventListener("click", guard(evict));
 $("load-backups").addEventListener("click", guard(() => loadBackups()));
 $("backups-more").addEventListener("click", guard(() => loadBackups({ append: true })));
 $("backup-rows").addEventListener("click", (event) => {
   const row = event.target.closest("tr[data-scope]");
   if (row) guard(() => openObject(row.dataset.scope))();
+});
+
+// Pasting a new dashboard URL into an open tab changes only the fragment.
+window.addEventListener("hashchange", () => {
+  if (takeTokenFromUrl()) guard(() => Promise.all([refreshNode(), loadObjects()]))();
 });
 
 guard(() => Promise.all([refreshNode(), loadObjects()]))();

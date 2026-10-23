@@ -14,7 +14,7 @@ import {
   readEngineSelection,
   writeEngineSelection,
 } from "./engine.js";
-import { createIngressMetrics, startAdmin } from "./admin.js";
+import { createIngressMetrics, ensureAdminToken as ensureAdminTokenFile, readAdminToken as readAdminTokenFile, startAdmin } from "./admin.js";
 import { createCelldAdapter } from "./celld-adapter.js";
 import { HEALTH_PATH, startIngress } from "./ingress.js";
 import { ensureInspectorToken, readInspectorToken, tokenHash } from "./inspector.js";
@@ -48,6 +48,7 @@ Commands:
   status                         Show detached process status
   logs [--supervisor] [--tail N] Show recent detached celld or supervisor logs
   supervise [--config PATH]      Run only the ingress and admin API in the foreground
+  dashboard [--config PATH]      Print the admin dashboard URL, with its access token
   service print|install [opts]   Generate a systemd or launchd unit for up
   upgrade [--rollback|--status]  Install and select a pinned celld version
   dev [project] [options]        Run a project locally with celld (--engine native: in Node)
@@ -91,7 +92,18 @@ Run the [ingress] and [admin] services from sobjects.toml in the foreground,
 next to a celld started separately. The default config path is
 $SOBJECTS_CONFIG, else ./sobjects.toml. SIGHUP reloads TLS certificates from disk.
 Ingress health: ${HEALTH_PATH}. Admin API: /api/v1/health, /api/v1/node,
-/api/v1/objects, POST /api/v1/objects/<Class:id>/evict, and /metrics.`;
+/api/v1/objects, POST /api/v1/objects/<Class:id>/evict, and /metrics. Every
+admin route but /api/v1/health and /metrics needs the admin token from the
+state directory as 'Authorization: Bearer <token>'; 'sobjects dashboard'
+prints a dashboard URL that carries it.`;
+
+const dashboardHelpText = `Usage: sobjects dashboard [--config PATH]
+
+Print the URL of the [admin] dashboard. The URL carries the admin token in its
+fragment (#token=...), which the browser keeps out of requests; treat it like a
+password. The supervisor creates the token in the state directory
+($SOBJECTS_STATE_DIR, else $XDG_STATE_HOME/serverless-objects) on first start,
+so run this as the same user, with the same environment, as 'sobjects up'.`;
 
 export async function run(
   argv = process.argv.slice(2),
@@ -115,6 +127,8 @@ export async function run(
     readSelection = readEngineSelection,
     ensureToken = ensureInspectorToken,
     readToken = readInspectorToken,
+    ensureAdminToken = ensureAdminTokenFile,
+    readAdminToken = readAdminTokenFile,
     writeSelection = writeEngineSelection,
     isInstalled = isCelldInstalled,
     ...dependencies
@@ -148,6 +162,7 @@ export async function run(
       startAdminServer,
       createEngine,
       readToken,
+      ensureAdminToken,
     });
   }
   if (command === "supervise") {
@@ -162,8 +177,10 @@ export async function run(
       installEngine,
       readSelection,
       readToken,
+      ensureAdminToken,
     });
   }
+  if (command === "dashboard") return runDashboard(args, io, { env, cwd, loadConfig, readAdminToken });
   if (command === "upgrade") {
     return runUpgrade(args, io, { env, installEngine, readSelection, writeSelection, isInstalled, getServiceStatus });
   }
@@ -463,9 +480,11 @@ async function startSupervisorRuntime(config, io, dependencies) {
         inspectorToken: await dependencies.readToken(defaultDataDirectory(dependencies.env)),
         env: dependencies.env,
       });
-      const admin = await dependencies.startAdminServer({ listen: config.admin.listen, engine, metrics, version });
+      const token = await dependencies.ensureAdminToken(dependencies.stateDirectory);
+      const admin = await dependencies.startAdminServer({ listen: config.admin.listen, engine, metrics, version, token });
       closers.push(admin.close);
-      io.log(`Admin API listening on http://${config.admin.listen} (metrics at /metrics).`);
+      // The token stays out of logs; `sobjects dashboard` prints it on request.
+      io.log(`Admin API listening on http://${config.admin.listen} (metrics at /metrics). Run 'sobjects dashboard' for the dashboard URL.`);
     }
   } catch (error) {
     await close();
@@ -491,6 +510,40 @@ async function openAccessLog(target, io) {
 }
 
 // SOBJECTS_CONFIG sets the default, e.g. in a container image.
+async function runDashboard(args, io, { env, cwd, loadConfig, readAdminToken }) {
+  if (args.length === 1 && ["--help", "-h"].includes(args[0])) {
+    io.log(dashboardHelpText);
+    return 0;
+  }
+  const options = parseConfigOptions(args, io, "dashboard", { env });
+  if (!options) return 2;
+  let config;
+  try {
+    config = await loadConfig(resolve(cwd, options.configPath));
+  } catch (error) {
+    io.error(error.message);
+    return 2;
+  }
+  if (!config.admin) {
+    io.error(`No [admin] table in ${options.configPath}; the dashboard is served by the admin API.`);
+    return 2;
+  }
+  const stateDirectory = defaultStateDirectory(env);
+  let token;
+  try {
+    token = await readAdminToken(stateDirectory);
+  } catch (error) {
+    io.error(error.message);
+    return 1;
+  }
+  if (!token) {
+    io.error(`No admin token in ${stateDirectory} yet. Start the node with 'sobjects up' first, or set SOBJECTS_STATE_DIR to the state directory it uses.`);
+    return 1;
+  }
+  io.log(`http://${config.admin.listen}/#token=${token}`);
+  return 0;
+}
+
 function parseConfigOptions(args, io, command, { allowDetach = false, env = {} } = {}) {
   let configPath = env.SOBJECTS_CONFIG || "sobjects.toml";
   let detached = false;

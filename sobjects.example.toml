@@ -44,5 +44,7 @@ listen = "127.0.0.1:8080"
 #
 # Optional loopback admin API and Prometheus metrics, served by the supervisor.
 # Enabling it pins celld's operator listener (default: [celld] port + 1).
+# The API needs the admin token from the state directory; run
+# `sobjects dashboard` for a dashboard URL that carries it.
 # [admin]
 # listen = "127.0.0.1:8790"

@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { test } from "node:test";
+import { ensureAdminToken } from "../src/admin.js";
 import { run } from "../src/cli.js";
 
 function capture() {
@@ -712,8 +713,10 @@ test("up with [admin] pins celld's operator listener and starts the admin API on
   let celldArgs;
   let engineOptions;
   let adminOptions;
+  let tokenDirectory;
   const exitCode = await run(["up"], output.io, {
-    env: { SOBJECTS_CELLD_BIN: "/opt/celld" },
+    env: { SOBJECTS_CELLD_BIN: "/opt/celld", SOBJECTS_STATE_DIR: "/tmp/sobjects-admin-state" },
+    ensureAdminToken: async (directory) => { tokenDirectory = directory; return "admin-token-value"; },
     loadConfig: async () => ({
       bucket: "s3://b/p",
       endpoint: "http://127.0.0.1:19000",
@@ -738,5 +741,35 @@ test("up with [admin] pins celld's operator listener and starts the admin API on
   assert.equal(engineOptions.executable, "/opt/celld");
   assert.equal(adminOptions.listen, "127.0.0.1:8790");
   assert.deepEqual(adminOptions.engine, { kind: "engine" });
+  assert.equal(adminOptions.token, "admin-token-value");
+  assert.equal(tokenDirectory, "/tmp/sobjects-admin-state");
   assert.match(output.stdout.join("\n"), /Admin API listening on http:\/\/127\.0\.0\.1:8790/);
+  assert.match(output.stdout.join("\n"), /sobjects dashboard/);
+  assert.doesNotMatch(output.stdout.join("\n"), /admin-token-value/);
+});
+
+test("dashboard prints the admin URL with the token from the state directory", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "sobjects-cli-dashboard-"));
+  try {
+    const config = { bucket: "s3://b/p", listen: "127.0.0.1:8080", admin: { listen: "127.0.0.1:8790" } };
+    const env = { SOBJECTS_STATE_DIR: stateDirectory };
+    const missing = capture();
+    assert.equal(await run(["dashboard"], missing.io, { env, loadConfig: async () => config }), 1);
+    assert.match(missing.stderr[0], /No admin token in .* yet/);
+
+    const token = await ensureAdminToken(stateDirectory);
+    const output = capture();
+    assert.equal(await run(["dashboard"], output.io, { env, loadConfig: async () => config }), 0);
+    assert.deepEqual(output.stdout, [`http://127.0.0.1:8790/#token=${token}`]);
+
+    const noAdmin = capture();
+    assert.equal(await run(["dashboard"], noAdmin.io, { env, loadConfig: async () => ({ ...config, admin: undefined }) }), 2);
+    assert.match(noAdmin.stderr[0], /No \[admin\] table/);
+    const help = capture();
+    assert.equal(await run(["dashboard", "--help"], help.io, { env }), 0);
+    assert.match(help.stdout[0], /#token=/);
+    assert.equal(await run(["dashboard", "--nope"], capture().io, { env }), 2);
+  } finally {
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
 });

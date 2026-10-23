@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import { request } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { createIngressMetrics, startAdmin } from "../src/admin.js";
+import { adminTokenMatches, createIngressMetrics, ensureAdminToken, readAdminToken, startAdmin } from "../src/admin.js";
 
 const ID = "a".repeat(64);
+const TOKEN = "t".repeat(43);
+const AUTH = { authorization: `Bearer ${TOKEN}` };
 const servers = [];
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
@@ -26,18 +31,18 @@ function fakeEngine(overrides = {}) {
 }
 
 async function admin(engine = fakeEngine(), metrics) {
-  const instance = await startAdmin({ listen: "127.0.0.1:0", engine, metrics, version: "0.1.0" });
+  const instance = await startAdmin({ listen: "127.0.0.1:0", engine, metrics, version: "0.1.0", token: TOKEN });
   servers.push(instance);
   return instance.address.port;
 }
 
-function call(port, path, { method = "GET", headers = {} } = {}) {
+function call(port, path, { method = "GET", headers = AUTH, body } = {}) {
   return new Promise((resolve, reject) => {
     request({ host: "127.0.0.1", port, path, method, headers: { host: `127.0.0.1:${port}`, ...headers } }, (response) => {
       let text = "";
       response.on("data", (chunk) => { text += chunk; });
-      response.on("end", () => resolve({ status: response.statusCode, text, json: () => JSON.parse(text) }));
-    }).on("error", reject).end();
+      response.on("end", () => resolve({ status: response.statusCode, headers: response.headers, text, json: () => JSON.parse(text) }));
+    }).on("error", reject).end(body);
   });
 }
 
@@ -74,7 +79,7 @@ test("requires the admin header for evictions and passes the engine status throu
   const path = `/api/v1/objects/${encodeURIComponent(`Room:${ID}`)}/evict`;
   assert.equal((await call(port, path, { method: "POST" })).status, 403);
   assert.equal(evicted, undefined);
-  const result = await call(port, path, { method: "POST", headers: { "x-sobjects-request": "1" } });
+  const result = await call(port, path, { method: "POST", headers: { ...AUTH, "x-sobjects-request": "1" } });
   assert.equal(result.status, 409);
   assert.equal(result.json().error.reason, "alarm_imminent");
   assert.equal(evicted, `Room:${ID}`);
@@ -120,7 +125,7 @@ test("inspects object storage through the engine", async () => {
   const base = `/api/v1/objects/Room:${ID}`;
   assert.deepEqual((await call(port, base)).json(), { ok: "summary" });
   assert.deepEqual((await call(port, `${base}/kv?prefix=a&limit=5`)).json(), { ok: "kv" });
-  const sql = (query, headers = { "x-sobjects-request": "1" }) => new Promise((resolve, reject) => {
+  const sql = (query, headers = { ...AUTH, "x-sobjects-request": "1" }) => new Promise((resolve, reject) => {
     const req = request({ host: "127.0.0.1", port, path: `${base}/sql`, method: "POST", headers: { host: "localhost", ...headers } }, (response) => {
       let text = "";
       response.on("data", (chunk) => { text += chunk; });
@@ -131,7 +136,7 @@ test("inspects object storage through the engine", async () => {
   });
   assert.deepEqual((await sql("SELECT 1")).json(), { ok: "sql" });
   assert.equal((await sql("DELETE FROM t")).status, 400);
-  assert.equal((await sql("SELECT 1", {})).status, 403);
+  assert.equal((await sql("SELECT 1", AUTH)).status, 403);
   assert.deepEqual(calls.slice(0, 3), [
     [`Room:${ID}`, { op: "summary" }],
     [`Room:${ID}`, { op: "kv", prefix: "a", startAfter: undefined, limit: 5 }],
@@ -149,6 +154,8 @@ test("serves the dashboard with a strict content security policy", async () => {
   const script = await call(port, "/dashboard/app.js");
   assert.equal(script.status, 200);
   assert.match(script.text, /x-sobjects-request/);
+  assert.match(script.text, /authorization: `Bearer \$\{adminToken\}`/);
+  assert.match(script.text, /sessionStorage/);
   assert.match(script.text, /Only objects with superseded epochs are listed/);
   assert.doesNotMatch(script.text, /innerHTML/);
   assert.equal((await call(port, "/dashboard/app.css")).status, 200);
@@ -175,7 +182,7 @@ test("lists backups and downloads an object export", async () => {
   const backups = (await call(port, "/api/v1/backups?class=Room&limit=5")).json();
   assert.deepEqual(backups.options, { className: "Room", limit: 5 });
   const exported = await new Promise((resolve, reject) => {
-    request({ host: "127.0.0.1", port, path: `/api/v1/objects/Room:${ID}/export`, headers: { host: "localhost" } }, (response) => {
+    request({ host: "127.0.0.1", port, path: `/api/v1/objects/Room:${ID}/export`, headers: { host: "localhost", ...AUTH } }, (response) => {
       let text = "";
       response.on("data", (chunk) => { text += chunk; });
       response.on("end", () => resolve({ headers: response.headers, body: JSON.parse(text) }));
@@ -183,4 +190,90 @@ test("lists backups and downloads an object export", async () => {
   });
   assert.match(exported.headers["content-disposition"], new RegExp(`attachment; filename="Room-${ID}-2026-10-19T00-00-00-000Z\\.json"`));
   assert.equal(exported.body.scope, `Room:${ID}`);
+});
+
+test("requires the admin token for object data and mutations", async () => {
+  const evicted = [];
+  const port = await admin(fakeEngine({
+    inspect: async (_scope, operation) => ({ format: "x", exportedAt: "2026-10-19T00:00:00.000Z", ok: operation.op }),
+    listBackups: async () => ({ retentionSeconds: null, objects: [], next: undefined }),
+    evict: async (scope) => { evicted.push(scope); return { status: 200, ok: true, scope }; },
+  }));
+  const object = `/api/v1/objects/Room:${ID}`;
+  const routes = [
+    ["GET", "/api/v1/node"],
+    ["GET", "/api/v1/objects"],
+    ["GET", "/api/v1/backups"],
+    ["GET", object],
+    ["GET", `${object}/kv`],
+    ["GET", `${object}/export`],
+    ["POST", `${object}/sql`],
+    ["POST", `${object}/evict`],
+    ["GET", "/nope"],
+  ];
+  const wrong = [
+    {},
+    { authorization: `Bearer ${"u".repeat(43)}` },
+    { authorization: `Bearer ${TOKEN.slice(0, -1)}` },
+    { authorization: `Bearer ${TOKEN}x` },
+    { authorization: TOKEN },
+    { authorization: `Basic ${TOKEN}` },
+  ];
+  for (const [method, path] of routes) {
+    const body = method === "POST" ? JSON.stringify({ query: "SELECT 1" }) : undefined;
+    for (const headers of wrong) {
+      const response = await call(port, path, { method, headers: { ...headers, "x-sobjects-request": "1" }, body });
+      assert.equal(response.status, 401, `${method} ${path} ${JSON.stringify(headers)}`);
+      assert.equal(response.headers["www-authenticate"], 'Bearer realm="sobjects-admin"');
+      assert.match(response.json().error, /sobjects dashboard/);
+    }
+    const allowed = await call(port, path, { method, headers: { ...AUTH, "x-sobjects-request": "1" }, body });
+    assert.equal(allowed.status, path === "/nope" ? 404 : 200, `${method} ${path}`);
+  }
+  assert.deepEqual(evicted, [`Room:${ID}`]);
+});
+
+test("serves the dashboard files, health and metrics without the token", async () => {
+  const port = await admin(fakeEngine(), createIngressMetrics());
+  for (const path of ["/", "/dashboard/app.js", "/dashboard/app.css", "/api/v1/health", "/metrics"]) {
+    assert.equal((await call(port, path, { headers: {} })).status, 200, path);
+  }
+  // Public paths are public only for GET.
+  assert.equal((await call(port, "/metrics", { method: "POST", headers: { "x-sobjects-request": "1" } })).status, 401);
+  // The Host and custom-header checks still come first.
+  assert.equal((await call(port, "/api/v1/node", { headers: { ...AUTH, host: "attacker.example" } })).status, 421);
+});
+
+test("refuses to start without an admin token", async () => {
+  await assert.rejects(startAdmin({ listen: "127.0.0.1:0", engine: fakeEngine(), version: "0.1.0" }), /admin token/);
+  await assert.rejects(startAdmin({ listen: "127.0.0.1:0", engine: fakeEngine(), version: "0.1.0", token: "short" }), /admin token/);
+});
+
+test("compares admin tokens by digest, whatever their length", () => {
+  assert.equal(adminTokenMatches(TOKEN, TOKEN), true);
+  assert.equal(adminTokenMatches(`${TOKEN}`.replace(/t$/, "u"), TOKEN), false);
+  assert.equal(adminTokenMatches(TOKEN.slice(0, 10), TOKEN), false);
+  assert.equal(adminTokenMatches(`${TOKEN}${TOKEN}`, TOKEN), false);
+  assert.equal(adminTokenMatches("", TOKEN), false);
+  assert.equal(adminTokenMatches(undefined, TOKEN), false);
+  assert.equal(adminTokenMatches(TOKEN, undefined), false);
+  assert.equal(adminTokenMatches(TOKEN, ""), false);
+});
+
+test("creates one 256-bit admin token, readable only by its owner", { skip: process.platform === "win32" }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "sobjects-admin-token-"));
+  try {
+    const stateDirectory = join(root, "state");
+    assert.equal(await readAdminToken(stateDirectory), undefined);
+    const [first, second] = await Promise.all([ensureAdminToken(stateDirectory), ensureAdminToken(stateDirectory)]);
+    assert.equal(first, second);
+    assert.match(first, /^[A-Za-z0-9_-]{43}$/);
+    assert.equal(Buffer.from(first, "base64url").length, 32);
+    assert.equal(await ensureAdminToken(stateDirectory), first);
+    assert.equal(await readAdminToken(stateDirectory), first);
+    assert.equal((await stat(join(stateDirectory, "admin-token"))).mode & 0o777, 0o600);
+    assert.equal((await stat(stateDirectory)).mode & 0o777, 0o700);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

@@ -173,13 +173,29 @@ export async function inspectStorage(state, { op, prefix, startAfter, limit = 10
   throw new RangeError(`Unknown inspector operation ${op}.`);
 }
 
+// PRAGMAs whose parenthesized argument names what to read rather than a new
+// value: `PRAGMA name(value)` sets a value just like `PRAGMA name = value`.
+const QUERY_PRAGMAS = new Set([
+  "foreign_key_check", "foreign_key_list", "index_info", "index_list", "index_xinfo",
+  "integrity_check", "quick_check", "table_info", "table_list", "table_xinfo",
+]);
+// PRAGMAs that write or checkpoint even without an argument.
+const ACTING_PRAGMAS = new Set(["incremental_vacuum", "optimize", "shrink_memory", "wal_checkpoint"]);
+
 // A guard against accidents in the console, not a security boundary: callers
 // already hold the inspector token.
 export function isReadOnly(query) {
   const statements = query.replace(/;\s*$/, "");
   if (statements.includes(";")) return false;
   const keyword = /^\s*(\w+)/.exec(statements)?.[1]?.toUpperCase();
-  if (keyword === "PRAGMA") return !statements.includes("=");
+  if (keyword === "PRAGMA") {
+    if (statements.includes("=")) return false;
+    const pragma = /^\s*PRAGMA\s+(?:\w+\s*\.\s*)?(\w+)\s*([\s\S]*)$/i.exec(statements);
+    if (!pragma) return false;
+    const name = pragma[1].toLowerCase();
+    if (pragma[2] === "") return !ACTING_PRAGMAS.has(name);
+    return pragma[2].startsWith("(") && QUERY_PRAGMAS.has(name);
+  }
   if (keyword === "SELECT" || keyword === "EXPLAIN") return true;
   if (keyword === "WITH") return !/\b(INSERT|UPDATE|DELETE|REPLACE|CREATE|DROP|ALTER)\b/i.test(statements);
   return false;

@@ -62,7 +62,7 @@ sobjects down
 
 Detached mode records local process and log metadata; it is not an OS service manager. To generate a systemd or launchd unit, use `sobjects service print` or `sobjects service install` and review the result before enabling it.
 
-The optional `[admin]` API/dashboard is unauthenticated and must stay on loopback. It provides local health, object and storage inspection; it is not a public control plane. Service state and logs default to the user's state directory (`$XDG_STATE_HOME/serverless-objects` or `~/.local/state/serverless-objects`); set `SOBJECTS_STATE_DIR` to relocate it. Engine binaries are managed under the user data directory; `SOBJECTS_DATA_DIR` can relocate that directory.
+The optional `[admin]` API/dashboard must stay on loopback. It provides local health, object and storage inspection; it is not a public control plane. Apart from its health and metrics routes, it requires the admin token that the supervisor creates in the state directory: run `sobjects dashboard`, as the same user and with the same environment as `sobjects up`, to print a dashboard URL that carries it. Service state and logs default to the user's state directory (`$XDG_STATE_HOME/serverless-objects` or `~/.local/state/serverless-objects`); set `SOBJECTS_STATE_DIR` to relocate it. Engine binaries are managed under the user data directory; `SOBJECTS_DATA_DIR` can relocate that directory.
 
 ## Development and deployment
 

@@ -98,7 +98,7 @@ export function parseSobjectsConfig(source, sourceName = "sobjects.toml", { base
     const listen = requireString(parsed.admin.listen, `${table}.listen`);
     validateListenAddress(listen, `${table}.listen`);
     if (!isLoopback(listen)) {
-      throw new Error(`${table}.listen must be a loopback address; the admin API has no authentication.`);
+      throw new Error(`${table}.listen must be a loopback address; the admin API is a local control plane, not a public one.`);
     }
     config.admin = Object.freeze({ listen });
     // The admin API reads celld's operator listener, so it needs a known port.

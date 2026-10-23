@@ -63,6 +63,7 @@ npm install serverless-objects
 | `sobjects up [--config PATH] [--detach]` | Starts celld plus the configured ingress and admin API from `./sobjects.toml`, in the foreground or in the background. |
 | `sobjects status` / `logs [--supervisor] [--tail N]` / `down` | Inspect or stop a node started with `--detach`. `down` waits for celld to drain and release its lease. |
 | `sobjects supervise [--config PATH]` | Runs only the ingress and admin API in the foreground. |
+| `sobjects dashboard [--config PATH]` | Prints the admin dashboard URL, which carries the admin token. |
 | `sobjects build [project] [--strict]` | Bundles the app and checks every Node.js built-in it imports against Cloudflare's `nodejs_compat` support. Reports the app as portable or native-only; `--strict` exits 1 for native-only. |
 | `sobjects upgrade [--engine-version V \| --rollback \| --status]` | Installs and selects a pinned celld release. |
 | `sobjects service print\|install [opts]` | Generates a systemd or launchd unit for `up`. |
@@ -129,7 +130,23 @@ The default directory is Let's Encrypt production, so test with the staging `dir
 
 ## Dashboard and admin API
 
-An `[admin]` table makes the supervisor serve a dashboard at `/` and a JSON API. The dashboard shows node health and load, objects, per-object storage with a key-value browser and read-only SQL console, and eviction. The API has **no authentication**, so it refuses non-loopback addresses and non-loopback `Host` headers (DNS rebinding). Mutations require the `x-sobjects-request: 1` header.
+An `[admin]` table makes the supervisor serve a dashboard at `/` and a JSON API. The dashboard shows node health and load, objects, per-object storage with a key-value browser and read-only SQL console, and eviction. The API listens on loopback only and refuses non-loopback `Host` headers (DNS rebinding). Mutations require the `x-sobjects-request: 1` header.
+
+Loopback is reachable by every local process, including the apps you deploy, so the API also requires an admin token. The supervisor creates it on first start as `admin-token` in the state directory (a 256-bit random value, mode 0600 in a 0700 directory). Send it as `Authorization: Bearer <token>`. Only the dashboard's static files, `GET /api/v1/health` and `GET /metrics` work without it, for health checks and Prometheus scrapers. To open the dashboard, run `sobjects dashboard` as the same user and with the same `SOBJECTS_STATE_DIR` as `sobjects up`, and open the URL it prints:
+
+```sh
+sobjects dashboard
+# http://127.0.0.1:8790/#token=...
+```
+
+The token travels in the URL fragment, which browsers don't send to the server. The dashboard keeps it in the tab's session storage and removes it from the address bar. Treat the URL like a password. To rotate the token, stop the supervisor, delete `admin-token` and start it again.
+
+From a script:
+
+```sh
+curl -H "Authorization: Bearer $(cat "${SOBJECTS_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/serverless-objects}/admin-token")" \
+  http://127.0.0.1:8790/api/v1/node
+```
 
 | Endpoint | Returns |
 |---|---|
@@ -181,7 +198,7 @@ It refuses to overwrite without `--force` and prints the enable commands; it doe
 
 ## Security notes
 
-- Keep celld's listener, its operator listener and the admin API on loopback. Only the ingress should face the network, and it requires TLS to do so.
+- Keep celld's listener, its operator listener and the admin API on loopback. Only the ingress should face the network, and it requires TLS to do so. The admin token guards the admin API against other local processes; it is not a reason to expose it.
 - Keep object-store credentials in the environment or credential chain, never in `sobjects.toml`.
 - Use a bucket dedicated to Serverless Objects.
 
