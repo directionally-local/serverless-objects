@@ -6,6 +6,7 @@ import { createSecureContext } from "node:tls";
 import { createAcmeCertificateManager } from "./acme.js";
 
 export const HEALTH_PATH = "/.well-known/sobjects/health";
+const HEALTH_CACHE_MS = 1_000;
 
 // Hop-by-hop headers (RFC 9110 section 7.6.1) and client-supplied forwarding
 // headers. The ingress is the trust boundary, so forwarding headers are always
@@ -188,6 +189,17 @@ function parseUpstream(upstream) {
 
 function createHandlers({ router, secure, accessLog, tunnels }) {
   const proto = secure ? "https" : "http";
+  // Health requests share one upstream check, reused for a second after it
+  // finishes, so a flood of them can't open a connection each.
+  let healthCheck;
+  const upstreamHealth = () => {
+    if (!healthCheck || (healthCheck.finishedAt && Date.now() - healthCheck.finishedAt > HEALTH_CACHE_MS)) {
+      const check = { finishedAt: 0 };
+      check.result = checkUpstreams(router).finally(() => { check.finishedAt = Date.now(); });
+      healthCheck = check;
+    }
+    return healthCheck.result;
+  };
 
   function request(clientRequest, clientResponse) {
     const started = process.hrtime.bigint();
@@ -199,8 +211,9 @@ function createHandlers({ router, secure, accessLog, tunnels }) {
     };
 
     if (pathOf(clientRequest.url) === HEALTH_PATH) {
-      checkUpstreams(router).then((health) => {
-        const body = `${JSON.stringify(health)}\n`;
+      upstreamHealth().then((health) => {
+        // Upstream addresses are internal: only local callers see them.
+        const body = `${JSON.stringify(isLoopbackPeer(clientRequest.socket.remoteAddress) ? health : { status: health.status })}\n`;
         const status = health.status === "ok" ? 200 : 503;
         clientResponse.writeHead(status, {
           "content-type": "application/json",
@@ -412,6 +425,10 @@ function stripHopByHop(rawHeaders) {
     result.push(rawHeaders[index], rawHeaders[index + 1]);
   }
   return result;
+}
+
+export function isLoopbackPeer(address) {
+  return /^(?:::ffff:)?127\./.test(address ?? "") || address === "::1";
 }
 
 async function checkUpstreams(router) {

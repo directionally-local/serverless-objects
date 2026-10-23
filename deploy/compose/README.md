@@ -21,7 +21,8 @@ mkdir -p tls apps
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 30 \
   -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost" \
   -keyout tls/privkey.pem -out tls/fullchain.pem
-chmod 644 tls/privkey.pem               # readable by the container user; see Notes
+chmod 600 tls/privkey.pem               # never world-readable
+sudo chown 999 tls/privkey.pem          # owned by the container user (uid 999); see Notes
 
 docker compose --profile local-s3 up -d --build
 ```
@@ -56,9 +57,9 @@ The dashboard and admin API stay on loopback inside the container; don't publish
 
 ## Notes
 
-- **Pinned versions:** the image pins `serverless-objects` with the `SOBJECTS_VERSION` build argument (default `0.1.2`), and that CLI pins celld 0.6.2. To upgrade, change the argument and rebuild.
+- **Pinned versions:** the image pins `serverless-objects` with the `SOBJECTS_VERSION` build argument (default `0.1.2`), and that CLI pins celld 0.6.2. To upgrade, change the argument and rebuild. The `local-s3` profile pins SeaweedFS (`chrislusf/seaweedfs:4.48`); change the tag in `compose.yaml` to move it.
 - **Graceful stop:** on stop, celld drains and releases its lease. `stop_grace_period` is 60 s; a stop took about 17 s in testing.
-- **Key permissions:** the private key must be readable by uid 999. Prefer `chown 999 tls/privkey.pem && chmod 600 tls/privkey.pem` on Linux hosts.
+- **Key permissions:** the private key must be readable by uid 999, the container's `sobjects` user, and by nobody else: `chmod 600 tls/privkey.pem && sudo chown 999 tls/privkey.pem`. Don't make it world-readable (`chmod 644`), which exposes it to every account on the host.
 - **Platforms:** linux/arm64 and linux/amd64. The full stack has been tested on arm64 (Docker on macOS). CI builds the amd64 image and checks that `sobjects` and `celld` run in it.
 - **Tested** with `--profile local-s3` on Docker Desktop for macOS (arm64), Compose v5.1.3:
   - deploy from inside the container

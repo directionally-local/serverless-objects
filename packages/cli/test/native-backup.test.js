@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
+import { BucketBackup } from "../src/native/backup.js";
+import { Cluster } from "../src/native/cluster.js";
 import { NativeEngine, loadProjectConfig } from "../src/native/engine.js";
 import { parseNativeDevArgs } from "../src/native/dev.js";
 import { S3Client, parseBucketUri } from "../src/native/s3.js";
@@ -257,4 +261,33 @@ test("an upload that failed but landed doesn't stop the object's backups", async
   } finally {
     await restored.close();
   }
+});
+
+test("restore ignores bucket keys whose class isn't an identifier, such as ..", async () => {
+  const directory = await temporaryDirectory();
+  const objects = join(directory, "data", "objects");
+  const source = join(directory, "source.sqlite");
+  const db = new DatabaseSync(source);
+  db.exec("CREATE TABLE _cf_METADATA (key TEXT PRIMARY KEY, value); INSERT INTO _cf_METADATA VALUES ('alarm', 1)");
+  db.close();
+  const body = readFileSync(source);
+  const id = "c".repeat(64);
+  const bucket = new MemoryBucket();
+  for (const className of ["..", ".", "Counter"]) await bucket.put(`p/native/app/${className}/${id}.sqlite`, body);
+  const alarms = [];
+  const backup = new BucketBackup({ client: bucket, prefix: "p", scriptName: "app", tempDirectory: join(directory, "tmp") });
+  await backup.restore(objects, { set: (...args) => alarms.push(args) });
+  assert.equal(backup.restored, 1);
+  assert.equal(existsSync(join(objects, "Counter", `${id}.sqlite`)), true);
+  assert.equal(existsSync(join(directory, "data", `${id}.sqlite`)), false);
+  assert.equal(existsSync(join(objects, `${id}.sqlite`)), false);
+  assert.deepEqual(alarms, [["Counter", id, 1]]);
+});
+
+test("the alarm waker ignores alarm keys whose class isn't an identifier", async () => {
+  const bucket = new MemoryBucket();
+  const id = "d".repeat(64);
+  for (const className of ["..", "Counter"]) await bucket.put(`p/native/app/alarms/${className}/${id}.json`, JSON.stringify({ at: 1 }));
+  const cluster = new Cluster({ client: bucket, prefix: "p", scriptName: "app", name: "n1" });
+  assert.deepEqual(await cluster.dueAlarms(), [{ className: "Counter", id, at: 1 }]);
 });

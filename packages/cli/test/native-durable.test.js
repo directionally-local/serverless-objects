@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
-import { readdirSync, rmSync, truncateSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, truncateSync } from "node:fs";
+import { gzipSync } from "node:zlib";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { NativeEngine, loadProjectConfig } from "../src/native/engine.js";
-import { decodeSegment } from "../src/native/durable.js";
+import { DurableLog, decodeSegment } from "../src/native/durable.js";
 
 const directories = [];
 after(async () => Promise.all(directories.map((directory) => rm(directory, { recursive: true, force: true }))));
@@ -418,4 +419,33 @@ test("a copy closed cleanly behind the engine's back (a crashed thread) is kept,
   assert.ok(!after.logs.some((line) => line.includes("lost transactions")), after.logs.join("\n"));
   // The bucket alone rebuilds it, including the write the log never saw.
   assert.deepEqual(runNode(directory, await temporaryDirectory(), bucketFile, "read", ["a"]).read, { count: 7, last: 7 });
+});
+
+test("restore ignores snapshots and log entries whose class or id could leave the objects directory", async () => {
+  const directory = await temporaryDirectory();
+  const objects = join(directory, "data", "objects");
+  const source = join(directory, "source.sqlite");
+  const db = new DatabaseSync(source);
+  db.exec("CREATE TABLE _cf_METADATA (key TEXT PRIMARY KEY, value)");
+  db.close();
+  const id = "e".repeat(64);
+  const bucket = new MemoryBucket();
+  await bucket.put(`p/native/app/objects/../${id}/snapshot-000000000001.sqlite`, readFileSync(source));
+  // A log segment naming a class and an id that walk out of the directory.
+  const header = Buffer.from(JSON.stringify({
+    format: 1,
+    entries: [
+      { class: "..", id: "f".repeat(64), epoch: 0, txid: 1, pageSize: 4096, databasePages: 0, pages: [] },
+      { class: "Counter", id: "../../escape", epoch: 0, txid: 1, pageSize: 4096, databasePages: 0, pages: [] },
+    ],
+  }));
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(header.length);
+  await bucket.put("p/native/app/log/t0/000000000001.seg", gzipSync(Buffer.concat([length, header])));
+  const log = new DurableLog({ client: bucket, prefix: "p", scriptName: "app", statePath: join(directory, "state.db"), objectsDirectory: objects });
+  await log.restore(objects, { set: () => {} });
+  assert.equal(log.restored, 0);
+  assert.equal(existsSync(join(directory, "data", `${id}.sqlite`)), false);
+  assert.equal(existsSync(join(directory, "data", `${"f".repeat(64)}.sqlite`)), false);
+  assert.equal(existsSync(join(directory, "data", "escape.sqlite")), false);
 });

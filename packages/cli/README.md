@@ -114,7 +114,7 @@ With an `[ingress]` table, `up` starts a TLS-terminating reverse proxy in front 
 - tunnels WebSocket upgrades;
 - replaces client-supplied `X-Forwarded-*` and `CF-Connecting-IP` with the real peer address;
 - optionally redirects HTTP to HTTPS with `308`;
-- serves `/.well-known/sobjects/health`, which checks the upstream;
+- serves `/.well-known/sobjects/health`, which checks the upstreams at most once a second. Remote clients get only `{"status":"ok"}` or `"degraded"` (with `503`); loopback clients also see each upstream's address and state;
 - writes JSON access logs without query strings.
 
 Plaintext ingress is allowed only on loopback. When `[celld].listen` is loopback, `up` starts celld with `--trust-forwarded-headers`, so a Worker's `request.url` has the client's `https://` scheme and host, as on Cloudflare.

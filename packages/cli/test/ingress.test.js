@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
-import { connect } from "node:net";
+import { connect, createServer as createTcpServer } from "node:net";
+import { networkInterfaces } from "node:os";
 import { connect as tlsConnect } from "node:tls";
 import { afterEach, test } from "node:test";
-import { createRouter, HEALTH_PATH, hostnameMatches, startIngress } from "../src/ingress.js";
+import { createRouter, HEALTH_PATH, hostnameMatches, isLoopbackPeer, startIngress } from "../src/ingress.js";
 
 const fixture = (name) => new URL(`./fixtures/tls/${name}`, import.meta.url).pathname;
 const cleanups = [];
@@ -127,6 +128,41 @@ test("rejects unknown hosts and reports unavailable upstreams", async () => {
     status: "degraded",
     upstreams: { "http://127.0.0.1:1": "unreachable" },
   });
+});
+
+const externalAddress = Object.values(networkInterfaces()).flat()
+  .find((entry) => entry && !entry.internal && entry.family === "IPv4")?.address;
+
+test("hides upstream addresses from remote health checks", { skip: !externalAddress && "no non-loopback IPv4 address" }, async () => {
+  const { address } = await ingress({ listen: "0.0.0.0:0", routes: [{ hostname: "*", upstream: "http://127.0.0.1:1" }] });
+  const remote = await new Promise((resolve, reject) => {
+    httpRequest({ host: externalAddress, port: address.port, path: HEALTH_PATH, headers: { host: "x" }, agent: false }, (response) => {
+      let text = "";
+      response.on("data", (chunk) => { text += chunk; });
+      response.on("end", () => resolve({ status: response.statusCode, text }));
+    }).on("error", reject).end();
+  });
+  assert.equal(remote.status, 503);
+  assert.deepEqual(JSON.parse(remote.text), { status: "degraded" });
+  const local = await get(address.port, { host: "x", path: HEALTH_PATH });
+  assert.deepEqual(JSON.parse(local.text).upstreams, { "http://127.0.0.1:1": "unreachable" });
+});
+
+test("recognizes loopback peers", () => {
+  for (const address of ["127.0.0.1", "127.8.0.1", "::1", "::ffff:127.0.0.1"]) assert.equal(isLoopbackPeer(address), true, address);
+  for (const address of ["10.0.0.1", "::ffff:10.0.0.1", "192.0.2.127", "fe80::1", "", undefined]) assert.equal(isLoopbackPeer(address), false, address);
+});
+
+test("health checks share one upstream connection", async () => {
+  let connections = 0;
+  const upstream = createTcpServer((socket) => { connections += 1; socket.destroy(); });
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  cleanups.push(() => new Promise((resolve) => upstream.close(resolve)));
+  const { address } = await ingress({ routes: [{ hostname: "*", upstream: `http://127.0.0.1:${upstream.address().port}` }] });
+  const results = await Promise.all(Array.from({ length: 20 }, () => get(address.port, { host: "x", path: HEALTH_PATH })));
+  assert.ok(results.every((result) => result.status === 200));
+  assert.equal((await get(address.port, { host: "x", path: HEALTH_PATH })).status, 200);
+  assert.equal(connections, 1);
 });
 
 test("reports healthy upstreams", async () => {

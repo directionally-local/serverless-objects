@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { threadId } from "node:worker_threads";
+import { isClassName } from "./ids.js";
 
 export class BucketBackup {
   #client;
@@ -49,7 +50,8 @@ export class BucketBackup {
       const match = /^([^/]+)\/([0-9a-f]{64})\.sqlite$/.exec(key.slice(this.#root.length + 1));
       if (!match) continue;
       const [, className, id] = match;
-      if (!owns(id)) continue;
+      // The class becomes a directory under objectsDirectory: never "..".
+      if (!isClassName(className) || !owns(id)) continue;
       this.#etags.set(key, etag);
       const path = join(objectsDirectory, className, `${id}.sqlite`);
       if (existsSync(path)) continue;

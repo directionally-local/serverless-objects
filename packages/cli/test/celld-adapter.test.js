@@ -106,6 +106,18 @@ test("lists objects through celld cell list with paging", async () => {
   await assert.rejects(engine.listObjects({ limit: 0 }), RangeError);
 });
 
+test("refuses page cursors that aren't scopes before running celld", async () => {
+  let runs = 0;
+  const engine = adapter({ run: async () => { runs += 1; return ""; } });
+  for (const after of ["--bucket=s3://other", "-h", `-Room:${"0".repeat(64)}`, `Room:${"0".repeat(64)} --json`, "Room:abc"]) {
+    await assert.rejects(engine.listObjects({ after }), RangeError, after);
+    await assert.rejects(engine.listBackups({ after }), RangeError, after);
+  }
+  assert.equal(runs, 0);
+  await engine.listBackups({ after: `Room:${"0".repeat(64)}` });
+  assert.equal(runs, 1);
+});
+
 test("evicts through the operator listener and reports refusals", async () => {
   const calls = [];
   const engine = adapter({
