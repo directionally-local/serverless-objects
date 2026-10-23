@@ -364,7 +364,12 @@ test("ctx.abort() inside an alarm handler resets the object, and the alarm runs 
   try {
     const doc = () => node.env.DOC.getByName("k");
     await doc().abortInAlarm(50);
-    for (let attempt = 0; attempt < 200 && !(await doc().alarmed()); attempt += 1) await tick();
+    // A poll queued behind the alarm when it aborts fails with the abort's reason, like any queued event.
+    const alarmed = () => doc().alarmed().catch((error) => {
+      if (error?.message !== "reset from the alarm") throw error;
+      return false;
+    });
+    for (let attempt = 0; attempt < 200 && !(await alarmed()); attempt += 1) await tick();
     assert.equal(await doc().alarmed(), true);
   } finally {
     await node.close();
