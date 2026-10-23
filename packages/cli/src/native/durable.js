@@ -35,6 +35,7 @@ import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { inHistory } from "./cluster.js";
+import { isClassName, isObjectId } from "./ids.js";
 import { WalReader, applyTransactions } from "./wal.js";
 
 const SEGMENT_FORMAT = 1;
@@ -215,7 +216,8 @@ export class DurableLog {
     const seen = (objectKey, txid) => highest.set(objectKey, Math.max(highest.get(objectKey) ?? 0, txid));
     for (const { key } of await this.#client.list(`${this.#root}/objects/`)) {
       const match = SNAPSHOT_RE.exec(key);
-      if (!match || !owns(match[2])) continue;
+      // The class becomes a directory under objectsDirectory: never "..".
+      if (!match || !isClassName(match[1]) || !owns(match[2])) continue;
       const objectKey = `${match[1]}/${match[2]}`;
       const txid = Number(match[3]);
       seen(objectKey, txid);
@@ -329,7 +331,11 @@ export class DurableLog {
       if (!object) return [];
       // Entries from before capture times were recorded date from their upload.
       const uploaded = Date.parse(lastModified ?? "") || undefined;
-      index = decodeSegment(object.body).map((entry) => ({ class: entry.class, id: entry.id, epoch: entry.epoch ?? 0, txid: entry.txid, at: entry.at ?? uploaded, segment: key }));
+      // Class and id name a local file on restore, so entries with anything
+      // else (a bucket written by something other than this engine) are skipped.
+      index = decodeSegment(object.body)
+        .filter((entry) => isClassName(entry.class) && isObjectId(entry.id))
+        .map((entry) => ({ class: entry.class, id: entry.id, epoch: entry.epoch ?? 0, txid: entry.txid, at: entry.at ?? uploaded, segment: key }));
       this.#segmentIndex.set(key, index);
     }
     return index;

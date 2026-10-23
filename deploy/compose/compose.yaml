@@ -35,7 +35,7 @@ services:
 
   seaweedfs:
     profiles: ["local-s3"]
-    image: chrislusf/seaweedfs:latest
+    image: chrislusf/seaweedfs:4.48
     restart: unless-stopped
     env_file: .env
     entrypoint: ["/bin/sh", "-c"]
@@ -49,7 +49,7 @@ services:
 
   seaweedfs-init:
     profiles: ["local-s3"]
-    image: chrislusf/seaweedfs:latest
+    image: chrislusf/seaweedfs:4.48
     env_file: .env
     depends_on: [seaweedfs]
     entrypoint: ["/bin/sh", "-c"]

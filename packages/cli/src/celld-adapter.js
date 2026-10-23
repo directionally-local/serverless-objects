@@ -65,7 +65,7 @@ export function createCelldAdapter({
       const args = ["cell", "list"];
       if (className) args.push(className);
       args.push(...storageArgs, "--json", "--limit", String(limit + 1));
-      if (after) args.push("--after", after);
+      if (after) args.push("--after", afterCursor(after));
       const output = await run(executable, args, { env, timeoutMs: 30_000 });
       const rows = output
         .split("\n")
@@ -91,7 +91,7 @@ export function createCelldAdapter({
       const args = ["cell", "gc", "--dry-run"];
       if (className) args.push(className);
       args.push(...storageArgs, "--json", "--grace-secs", "0", "--limit", String(limit + 1));
-      if (after) args.push("--after", after);
+      if (after) args.push("--after", afterCursor(after));
       const output = await run(executable, args, { env, timeoutMs: 60_000 });
       const rows = output.split("\n").map((line) => line.trim()).filter((line) => line.startsWith("{")).map((line) => JSON.parse(line));
       const page = rows.slice(0, limit);
@@ -144,6 +144,14 @@ export function parseScope(scope) {
   const match = /^([^:\s/]+):([0-9a-f]{64})$/.exec(String(scope ?? ""));
   if (!match) throw new RangeError(`Invalid object scope ${JSON.stringify(scope)}; expected Class:<64 hex id>.`);
   return { scope: match[0], className: match[1], id: match[2], reserved: match[1].startsWith("__") };
+}
+
+// A page cursor is the last scope of the previous page. It goes into celld's
+// argv, so it must be a scope and must not look like an option.
+function afterCursor(after) {
+  const { scope } = parseScope(after);
+  if (scope.startsWith("-")) throw new RangeError(`Invalid page cursor ${JSON.stringify(after)}.`);
+  return scope;
 }
 
 export function summarizeState(state) {

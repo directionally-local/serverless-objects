@@ -5,6 +5,18 @@
 import { createHash, createHmac, randomBytes } from "node:crypto";
 
 const ID_RE = /^[0-9a-f]{64}$/;
+// A Durable Object class name is a JavaScript identifier, so it is never "."
+// or ".." and holds no path separator. Bucket keys carry class names that
+// become local directory names, so whatever a bucket lists is checked first.
+const CLASS_NAME_RE = /^[\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*$/u;
+
+export function isClassName(value) {
+  return typeof value === "string" && CLASS_NAME_RE.test(value);
+}
+
+export function isObjectId(value) {
+  return typeof value === "string" && ID_RE.test(value);
+}
 
 export class DurableObjectId {
   #hex;

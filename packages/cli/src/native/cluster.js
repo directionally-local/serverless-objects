@@ -11,6 +11,7 @@
 //   alarms/<class>/<id>.json     { at }   (so another node can run a dead node's alarms)
 // See docs/design/multi-node.md.
 import { randomBytes } from "node:crypto";
+import { isClassName } from "./ids.js";
 
 const sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 
@@ -250,7 +251,7 @@ export class Cluster {
     const due = [];
     for (const { key } of await this.#client.list(`${this.#root}/alarms/`)) {
       const match = /alarms\/([^/]+)\/([0-9a-f]{64})\.json$/.exec(key);
-      if (!match) continue;
+      if (!match || !isClassName(match[1])) continue;
       const object = await this.#client.get(key);
       if (!object) continue;
       const { at } = JSON.parse(object.body.toString("utf8"));
