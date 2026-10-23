@@ -44,6 +44,25 @@ test("frames are unmasked, reassembled across fragments and chunk boundaries, an
   assert.equal(encodeFrame(0x2, Buffer.alloc(70_000)).readBigUInt64BE(2), 70_000n);
 });
 
+test("parsing stays linear for large frames and floods of empty fragments", () => {
+  const frames = [];
+  const parser = new FrameParser((opcode, payload) => frames.push([opcode, payload.length]), (error) => assert.fail(error));
+  const size = 8 * 1024 * 1024;
+  const header = Buffer.alloc(10);
+  header[0] = 0x82;
+  header[1] = 0x80 | 127;
+  header.writeBigUInt64BE(BigInt(size), 2);
+  const big = Buffer.concat([header, Buffer.from([1, 2, 3, 4]), Buffer.alloc(size)]);
+  const flood = Buffer.concat([maskedFrame(0x1, "a", false), ...Array.from({ length: 80_000 }, () => maskedFrame(0x0, "", false)), maskedFrame(0x0, "b")]);
+  const started = performance.now();
+  for (const data of [big, flood]) {
+    for (let offset = 0; offset < data.length; offset += 16_384) parser.push(data.subarray(offset, offset + 16_384));
+  }
+  // Re-joining the buffer per chunk and re-summing fragments per frame made these take seconds.
+  assert.ok(performance.now() - started < 2_000, `took ${Math.round(performance.now() - started)} ms`);
+  assert.deepEqual(frames, [[0x2, size], [0x1, 2]]);
+});
+
 test("pair ends deliver messages after accept(), keep attachments, and close both sides", async () => {
   const [client, server] = new WebSocketPair();
   const received = [];

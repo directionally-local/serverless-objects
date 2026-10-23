@@ -305,7 +305,14 @@ function encodeClose(code, reason) {
 // Parses masked client frames, reassembling fragmented messages.
 export class FrameParser {
   #buffer = Buffer.alloc(0);
+  // Chunks received since the last parse, joined only once a frame can be
+  // complete: re-concatenating the buffer on every chunk made one large frame
+  // quadratic in its size.
+  #pending = [];
+  #pendingBytes = 0;
+  #needed = 2;
   #fragments = [];
+  #fragmentBytes = 0;
   #fragmentOpcode = 0;
   #onFrame;
   #onError;
@@ -318,7 +325,13 @@ export class FrameParser {
 
   push(chunk) {
     if (this.#failed) return;
-    this.#buffer = this.#buffer.length ? Buffer.concat([this.#buffer, chunk]) : chunk;
+    this.#pending.push(chunk);
+    this.#pendingBytes += chunk.length;
+    if (this.#buffer.length + this.#pendingBytes < this.#needed) return;
+    if (this.#buffer.length) this.#pending.unshift(this.#buffer);
+    this.#buffer = this.#pending.length === 1 ? this.#pending[0] : Buffer.concat(this.#pending);
+    this.#pending = [];
+    this.#pendingBytes = 0;
     try {
       while (this.#parseOne());
     } catch (error) {
@@ -329,6 +342,7 @@ export class FrameParser {
 
   #parseOne() {
     const buffer = this.#buffer;
+    this.#needed = 2;
     if (buffer.length < 2) return false;
     const fin = (buffer[0] & 0x80) !== 0;
     const opcode = buffer[0] & 0x0f;
@@ -338,18 +352,18 @@ export class FrameParser {
     let length = buffer[1] & 0x7f;
     let offset = 2;
     if (length === 126) {
-      if (buffer.length < 4) return false;
+      if (buffer.length < 4) return (this.#needed = 4), false;
       length = buffer.readUInt16BE(2);
       offset = 4;
     } else if (length === 127) {
-      if (buffer.length < 10) return false;
+      if (buffer.length < 10) return (this.#needed = 10), false;
       const big = buffer.readBigUInt64BE(2);
       if (big > BigInt(MAX_MESSAGE_BYTES)) throw new Error("message too big");
       length = Number(big);
       offset = 10;
     }
     if (length > MAX_MESSAGE_BYTES) throw new Error("message too big");
-    if (buffer.length < offset + 4 + length) return false;
+    if (buffer.length < offset + 4 + length) return (this.#needed = offset + 4 + length), false;
     const mask = buffer.subarray(offset, offset + 4);
     const payload = Buffer.from(buffer.subarray(offset + 4, offset + 4 + length));
     for (let index = 0; index < payload.length; index += 1) payload[index] ^= mask[index & 3];
@@ -362,18 +376,22 @@ export class FrameParser {
     }
     if (opcode === 0x0) {
       if (!this.#fragmentOpcode) throw new Error("unexpected continuation frame");
-      this.#fragments.push(payload);
+      // A running total, not a re-sum per frame: a flood of empty continuation
+      // frames made the re-sum quadratic and stalled the event loop for seconds.
+      if (payload.length) this.#fragments.push(payload);
+      this.#fragmentBytes += payload.length;
     } else {
       if (this.#fragmentOpcode) throw new Error("expected a continuation frame");
       this.#fragmentOpcode = opcode;
       this.#fragments = [payload];
+      this.#fragmentBytes = payload.length;
     }
-    const total = this.#fragments.reduce((sum, part) => sum + part.length, 0);
-    if (total > MAX_MESSAGE_BYTES) throw new Error("message too big");
+    if (this.#fragmentBytes > MAX_MESSAGE_BYTES) throw new Error("message too big");
     if (fin) {
-      const message = Buffer.concat(this.#fragments);
+      const message = this.#fragments.length === 1 ? this.#fragments[0] : Buffer.concat(this.#fragments, this.#fragmentBytes);
       const messageOpcode = this.#fragmentOpcode;
       this.#fragments = [];
+      this.#fragmentBytes = 0;
       this.#fragmentOpcode = 0;
       this.#onFrame(messageOpcode, message);
     }
