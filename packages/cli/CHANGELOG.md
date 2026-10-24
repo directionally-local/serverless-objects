@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.4](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.13.3...serverless-objects-v0.13.4) (2026-10-24)
+
+
+### Bug Fixes
+
+* **cli:** warn on Node with the Brotli RCE (CVE-2026-111497) ([#104](https://github.com/sinameraji/serverless-objects/issues/104)) ([a5ffae4](https://github.com/sinameraji/serverless-objects/commit/a5ffae4629e8c59fe842cca4069f5ea19f1921c4))
+
 ## [0.13.3](https://github.com/sinameraji/serverless-objects/compare/serverless-objects-v0.13.2...serverless-objects-v0.13.3) (2026-10-23)
 
 
