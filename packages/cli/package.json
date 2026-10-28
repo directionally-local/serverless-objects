@@ -32,12 +32,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sinameraji/serverless-objects.git",
+    "url": "git+https://github.com/directionally-local/serverless-objects.git",
     "directory": "packages/cli"
   },
   "homepage": "https://directionallylocal.com/serverless-objects/",
   "bugs": {
-    "url": "https://github.com/sinameraji/serverless-objects/issues"
+    "url": "https://github.com/directionally-local/serverless-objects/issues"
   },
   "keywords": [
     "cloudflare-workers",

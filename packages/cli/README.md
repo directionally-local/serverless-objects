@@ -1,13 +1,13 @@
 # serverless-objects
 
 [![npm](https://img.shields.io/npm/v/serverless-objects)](https://www.npmjs.com/package/serverless-objects)
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/sinameraji/serverless-objects/blob/main/LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/directionally-local/serverless-objects/blob/main/LICENSE)
 
 `sobjects` runs Cloudflare Workers and Durable Objects apps on your own hardware. Deploy an ordinary Wrangler project and it runs on a host you control, with Durable Object state in your own S3-compatible bucket, plus TLS ingress, a local dashboard, engine upgrades and service units. The runtime underneath is [celld](https://github.com/denoland/celld) 0.6.2, which the CLI downloads and verifies by checksum.
 
-> **Status: pre-alpha (0.1.x).** For evaluation and testing, not production. Single host; macOS arm64 or Linux arm64/x64; Node.js 22 or newer. See the [compatibility table](https://github.com/sinameraji/serverless-objects/blob/main/docs/compatibility.md).
+> **Status: pre-alpha (0.1.x).** For evaluation and testing, not production. Single host; macOS arm64 or Linux arm64/x64; Node.js 22 or newer. See the [compatibility table](https://github.com/directionally-local/serverless-objects/blob/main/docs/compatibility.md).
 
-Project home, roadmap and conformance results: [github.com/sinameraji/serverless-objects](https://github.com/sinameraji/serverless-objects).
+Project home, roadmap and conformance results: [github.com/directionally-local/serverless-objects](https://github.com/directionally-local/serverless-objects).
 
 ## Install
 
@@ -41,14 +41,14 @@ sobjects logs
 sobjects down
 ```
 
-The [project README](https://github.com/sinameraji/serverless-objects#quick-start) walks through a complete Durable Object example.
+The [project README](https://github.com/directionally-local/serverless-objects#quick-start) walks through a complete Durable Object example.
 
 ## Modules for Worker code
 
 The package also ships two Durable Object modules, imported from your Worker:
 
-- [`serverless-objects/hotcell`](https://github.com/sinameraji/serverless-objects/blob/main/docs/hotcell-binding.md): a `Sandbox` Durable Object and `getSandbox()` with the Cloudflare Sandbox SDK 0.x call shape, backed by a Hotcell daemon.
-- [`serverless-objects/autopilot`](https://github.com/sinameraji/serverless-objects/blob/main/docs/autopilot.md): Autopilot runs as Durable Objects (`RunObject`, `RunRegistry`). `serverless-objects/autopilot/cell` runs a task with Autopilot in a Hotcell cell (`AutopilotCellRun`), and `serverless-objects/autopilot/native` runs it in-process on the native engine (`AutopilotNativeRun`).
+- [`serverless-objects/hotcell`](https://github.com/directionally-local/serverless-objects/blob/main/docs/hotcell-binding.md): a `Sandbox` Durable Object and `getSandbox()` with the Cloudflare Sandbox SDK 0.x call shape, backed by a Hotcell daemon.
+- [`serverless-objects/autopilot`](https://github.com/directionally-local/serverless-objects/blob/main/docs/autopilot.md): Autopilot runs as Durable Objects (`RunObject`, `RunRegistry`). `serverless-objects/autopilot/cell` runs a task with Autopilot in a Hotcell cell (`AutopilotCellRun`), and `serverless-objects/autopilot/native` runs it in-process on the native engine (`AutopilotNativeRun`).
 
 ```sh
 npm install serverless-objects
@@ -58,7 +58,7 @@ npm install serverless-objects
 
 | Command | What it does |
 |---|---|
-| `sobjects dev [project] [celld dev options]` | Local development with celld. It doesn't run the ingress. With `--engine native`, it runs the app in Node instead ([native engine](https://github.com/sinameraji/serverless-objects/blob/main/docs/native-engine.md)). |
+| `sobjects dev [project] [celld dev options]` | Local development with celld. It doesn't run the ingress. With `--engine native`, it runs the app in Node instead ([native engine](https://github.com/directionally-local/serverless-objects/blob/main/docs/native-engine.md)). |
 | `sobjects deploy [project] [celld deploy options]` | Preflights the Wrangler config, bundles the app and uploads it to the bucket. Running nodes pick up the new version on their next poll. |
 | `sobjects up [--config PATH] [--detach]` | Starts celld plus the configured ingress and admin API from `./sobjects.toml`, in the foreground or in the background. |
 | `sobjects status` / `logs [--supervisor] [--tail N]` / `down` | Inspect or stop a node started with `--detach`. `down` waits for celld to drain and release its lease. |
@@ -71,7 +71,7 @@ npm install serverless-objects
 
 ## Configuration: `sobjects.toml`
 
-Unknown keys are rejected, so a typo fails loudly instead of being ignored. A full annotated example lives at [`sobjects.example.toml`](https://github.com/sinameraji/serverless-objects/blob/main/sobjects.example.toml).
+Unknown keys are rejected, so a typo fails loudly instead of being ignored. A full annotated example lives at [`sobjects.example.toml`](https://github.com/directionally-local/serverless-objects/blob/main/sobjects.example.toml).
 
 ```toml
 [celld]
@@ -204,4 +204,4 @@ It refuses to overwrite without `--force` and prints the enable commands; it doe
 
 ## License
 
-Apache-2.0. Report issues at [github.com/sinameraji/serverless-objects/issues](https://github.com/sinameraji/serverless-objects/issues).
+Apache-2.0. Report issues at [github.com/directionally-local/serverless-objects/issues](https://github.com/directionally-local/serverless-objects/issues).

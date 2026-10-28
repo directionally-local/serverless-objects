@@ -52,7 +52,7 @@ await env.RUN_REGISTRY.getByName("acme").list({ status: "waiting" });
 
 ## Running Autopilot in a Hotcell cell
 
-`AutopilotCellRun` is a `RunObject` that runs its task with Autopilot inside a [Hotcell](https://github.com/sinameraji/hotcell) cell, following Autopilot's own cell runtime (`src/server/aster-cell-runtime.ts`):
+`AutopilotCellRun` is a `RunObject` that runs its task with Autopilot inside a [Hotcell](https://github.com/directionally-local/hotcell) cell, following Autopilot's own cell runtime (`src/server/aster-cell-runtime.ts`):
 
 1. Create the cell with gateway egress, so the cell gets a short-lived token for model calls, never a provider key.
 2. Install `autopilot-ai` in the cell and start its bridge.
@@ -165,7 +165,7 @@ Unit tests run the SQL against `node:sqlite`. They cover transitions, budgets, h
 
 A real Autopilot run (celld 0.6.2, Hotcell 0.1.19 container driver, `autopilot-ai` 1.25.1, `moonshotai/kimi-k2.6` through the Hotcell gateway) went from provision to completion in about 30 seconds. It wrote the requested file for $0.0084, and `camouflage-validate` accepted all 99 session events. In a second run, the node was stopped for about 45 seconds during a 40-second bash tool call. After `up`, the object resumed from its saved cursor (36 → 48) and the run completed ($0.0114). Its tool intent and result stayed paired, and all 48 session events were valid. A third run with `maxToolIterations: 1` paused at its second tool call. `resume({ maxToolIterations: 5 }, { message })` then finished the task in the same session ($0.0145), and all 33 session events were valid.
 
-Separately, [`examples/autopilot-runs`](https://github.com/sinameraji/serverless-objects/tree/main/examples/autopilot-runs) was run on celld 0.6.2 through `sobjects deploy`/`up` with a SeaweedFS bucket:
+Separately, [`examples/autopilot-runs`](https://github.com/directionally-local/serverless-objects/tree/main/examples/autopilot-runs) was run on celld 0.6.2 through `sobjects deploy`/`up` with a SeaweedFS bucket:
 - A wake fell due while the node was stopped, and fired after `up`.
 - A WebSocket opened at a cursor received the backlog, then live events.
 - Reconcile marked a run with an unmatched tool intent `interrupted_unknown`.
