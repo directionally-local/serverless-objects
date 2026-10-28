@@ -1,7 +1,7 @@
 # Serverless Objects
 
 [![npm](https://img.shields.io/npm/v/serverless-objects)](https://www.npmjs.com/package/serverless-objects)
-[![CI](https://github.com/sinameraji/serverless-objects/actions/workflows/ci.yml/badge.svg)](https://github.com/sinameraji/serverless-objects/actions/workflows/ci.yml)
+[![CI](https://github.com/directionally-local/serverless-objects/actions/workflows/ci.yml/badge.svg)](https://github.com/directionally-local/serverless-objects/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 Run Cloudflare Workers and Durable Objects apps on your own hardware, built for agents.
