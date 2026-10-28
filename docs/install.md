@@ -12,7 +12,7 @@
 
 ```sh
 npm install --global serverless-objects
-curl -fsSL -o sobjects.toml https://raw.githubusercontent.com/sinameraji/serverless-objects/main/sobjects.example.toml
+curl -fsSL -o sobjects.toml https://raw.githubusercontent.com/directionally-local/serverless-objects/main/sobjects.example.toml
 ```
 
 The examples below run `sobjects` directly.
@@ -20,7 +20,7 @@ The examples below run `sobjects` directly.
 ## Install from source
 
 ```sh
-git clone https://github.com/sinameraji/serverless-objects.git
+git clone https://github.com/directionally-local/serverless-objects.git
 cd serverless-objects
 npm ci
 cp sobjects.example.toml sobjects.toml
