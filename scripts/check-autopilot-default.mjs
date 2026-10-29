@@ -1,6 +1,7 @@
-// Warns when the autopilot-ai version the cell executor installs by default
-// falls more than a minor release behind the latest on npm. CI runs this on
-// every push and pull request; it warns instead of failing, because a new
+// Checks the autopilot-ai version the cell executor installs by default against
+// the latest on npm. CI runs this on every push and pull request. A default a
+// major release behind fails the build, because the bridge protocol may have
+// changed; a default more than a minor behind only warns, because a new
 // Autopilot release should not break an unrelated change.
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
@@ -12,6 +13,12 @@ export function parseVersion(version) {
   const match = /^(\d+)\.(\d+)\.(\d+)/.exec(String(version).trim());
   if (!match) throw new Error(`not a version: ${version}`);
   return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]) };
+}
+
+// A newer major on npm means the bridge protocol may have changed, so the
+// default must be re-checked rather than left to drift.
+export function isMajorBehind(defaultVersion, latestVersion) {
+  return parseVersion(latestVersion).major > parseVersion(defaultVersion).major;
 }
 
 // "More than a minor behind" means a newer major, or two or more minors within
@@ -38,6 +45,11 @@ async function main() {
     latest = (await response.json()).version;
   } catch (error) {
     console.log(`::warning::could not read the latest autopilot-ai version (${error.message}); the default is ${pinned}`);
+    return;
+  }
+  if (isMajorBehind(pinned, latest)) {
+    console.log(`::error::AutopilotCellRun installs autopilot-ai@${pinned} by default, but ${latest} is on npm. Bump DEFAULT_PACKAGE in packages/cli/autopilot/cell-executor.js and re-check the bridge protocol against the new major.`);
+    process.exitCode = 1;
     return;
   }
   if (isBehind(pinned, latest)) {
