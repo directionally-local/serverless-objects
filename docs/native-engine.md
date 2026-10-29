@@ -23,7 +23,8 @@ The app's own code is bundled with esbuild, which handles TypeScript and `define
 | `vars`, `cloudflare:workers` (`DurableObject`, `WorkerEntrypoint`, `WorkflowEntrypoint`, `RpcTarget`, `env`, `exports`), `cloudflare:email` (`EmailMessage` only) | Yes |
 | WebSockets | Yes: `WebSocketPair`, `accept()`, event listeners, attachments, and a built-in RFC 6455 server (handshake, masking, fragmentation, ping/pong, close handshake) |
 | Hibernation API | Yes: `acceptWebSocket` with tags, `getWebSockets`, `getTags`, `setWebSocketAutoResponse` (answered without waking the object), and `webSocketMessage`/`webSocketClose`/`webSocketError` delivered through the object's input-gated queue. Sockets belong to the object's host, so an evicted object's hibernatable sockets stay open, and the next message wakes a new instance. |
-| Agents SDK | Yes: the conformance Agents suite passes (state, SQL, schedules, addressing, `@callable()` RPC over WebSocket) |
+| Agents SDK | Yes: the conformance Agents suite passes (state, SQL, schedules, addressing, `@callable()` RPC over WebSocket, and a delayed schedule that survives a process restart) |
+| Facets (`ctx.facets`) | Not yet. The engine has no `ctx.facets`, so the conformance facet check is skipped on this target. |
 | KV, D1, R2, Queues, Workflows, service bindings, assets | Not yet. The engine refuses a config that declares them. |
 | Idle eviction | Yes: an object idle for `--idle-evict-seconds` (default 60; 0 never) loses its instance. Sockets accepted with `accept()` and listeners keep it in memory. An object with no sockets and no pending alarm also closes its database. |
 | Portability check | Yes: `sobjects build [--strict]` lists each Node.js built-in the app imports, with the files that import it, and marks it as supported on Cloudflare, a non-functional stub there, or blocked by a missing `nodejs_compat` flag or compatibility date. It also flags packages that ship compiled native addons. A portable app runs on Cloudflare, celld and the native engine; a native-only app runs only here. |
@@ -185,4 +186,4 @@ See [benchmarks](benchmarks.md) for latency and throughput next to celld and Wra
 
 The conformance runner has a `native` target: `npm run test:native --workspace=sobjects-conformance`.
 
-It passes all 17 checks, the same set celld passes: the core suite, including the alarm-across-restart and hibernation checks, plus the Agents SDK suite. The runner starts the engine with `--idle-evict-seconds 2`. CI runs it on every change. See [results](conformance/results.md).
+It passes all 18 checks: the core suite, including the alarm-across-restart and hibernation checks, plus the Agents SDK suite, including a schedule that survives a process restart. The facet check is skipped here because the engine has no `ctx.facets`. The runner starts the engine with `--idle-evict-seconds 2`. CI runs it on every change. See [results](conformance/results.md).

@@ -306,6 +306,44 @@ async function runPitrCheck(baseUrl) {
   return validateCaseResult("point-in-time-recovery", response, await response.json());
 }
 
+// Facets are part of the Durable Objects contract. workerd and celld 0.6.2
+// implement them; the native engine has no ctx.facets, so it skips this.
+async function runFacetCheck(baseUrl) {
+  const response = await fetch(new URL("/facets", baseUrl));
+  return validateCaseResult("facets", response, await response.json());
+}
+
+async function readAgentsScheduleStatus(baseUrl, agent) {
+  const response = await fetch(`${baseUrl}/schedule/status?agent=${encodeURIComponent(agent)}`, { signal: AbortSignal.timeout(5_000) });
+  if (!response.ok) throw new Error(`/schedule/status returned HTTP ${response.status}`);
+  return response.json();
+}
+
+// A delayed schedule is stored with the agent, so it must survive a process
+// restart and still fire afterwards.
+async function runAgentsScheduleRestartCheck(baseUrl, restart) {
+  const agent = "restart";
+  const response = await fetch(`${baseUrl}/schedule/arm?seconds=30&agent=${agent}`, { signal: AbortSignal.timeout(5_000) });
+  if (!response.ok) throw new Error(`/schedule/arm returned HTTP ${response.status}`);
+  const before = await readAgentsScheduleStatus(baseUrl, agent);
+  if (before.ticks !== 0 || before.schedules < 1) throw new Error(`schedule was not armed: ${JSON.stringify(before)}`);
+
+  await restart();
+
+  const afterRestart = await readAgentsScheduleStatus(baseUrl, agent);
+  if (afterRestart.ticks !== 0) throw new Error(`schedule fired during the restart: ${JSON.stringify(afterRestart)}`);
+  if (afterRestart.schedules < 1) throw new Error(`schedule was not restored after restart: ${JSON.stringify(afterRestart)}`);
+
+  const deadline = Date.now() + 60_000;
+  let status = afterRestart;
+  while (Date.now() < deadline) {
+    status = await readAgentsScheduleStatus(baseUrl, agent);
+    if (status.ticks === 1 && status.lastTick === "fire") return { pass: true, detail: "a pending schedule survived a process restart and fired" };
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`Schedule did not fire after restart before timeout: ${JSON.stringify(status)}`);
+}
+
 // Deploys a suite's app to the Cloudflare account Wrangler is logged in to
 // and returns its workers.dev URL.
 async function deployToCloudflare(projectDir) {
@@ -359,11 +397,15 @@ async function runSuite(suite, options, scratchDir) {
       await record("alarm-durability", () => runAlarmCheck(baseUrl, options.alarmDelayMs, options.restartAfterAlarm, restart));
       await record("websockets", () => runWebSocketCheck(baseUrl));
       if (options.target !== "wrangler") await record("websocket-hibernation", () => runHibernationCheck(baseUrl));
+      // Facets exist in workerd and celld 0.6.2; the native engine has no
+      // ctx.facets yet, so it is the one target that skips this.
+      if (options.target !== "native") await record("facets", () => runFacetCheck(baseUrl));
       // Point-in-time recovery needs the native engine's durable mode (a bucket).
       if (options.target === "native" && (options.nativeArgs ?? []).includes("durable")) await record("point-in-time-recovery", () => runPitrCheck(baseUrl));
     } else {
       await record("client-protocol", () => runAgentsClientCheck(baseUrl));
       await record("schedule-fires", () => runAgentsScheduleCheck(baseUrl));
+      if (options.restartAfterAlarm) await record("schedule-across-restart", () => runAgentsScheduleRestartCheck(baseUrl, restart));
     }
     return suite === "core" ? results : results.map((result) => ({ ...result, name: `${suite}/${result.name}` }));
   } finally {
@@ -390,6 +432,7 @@ async function runCloudflareSuite(suite, options, projectDir) {
       await record("alarm-durability", () => runAlarmCheck(baseUrl, options.alarmDelayMs, false));
       await record("websockets", () => runWebSocketCheck(baseUrl));
       await record("websocket-hibernation", () => runHibernationCheck(baseUrl, 30_000));
+      await record("facets", () => runFacetCheck(baseUrl));
       await record("point-in-time-recovery", () => runPitrCheck(baseUrl));
     } else {
       await record("client-protocol", () => runAgentsClientCheck(baseUrl));

@@ -94,9 +94,9 @@ State survives `down` and `up` because it lives in the bucket. The [install guid
 
 ## Compatibility
 
-Cloudflare's APIs are the contract. The current [conformance results](docs/conformance/results.md) pass every check on real Cloudflare (17/17), Wrangler 4.150.0 (16/16), celld 0.6.2 (17/17) and the native engine (17/17): the same apps, unchanged. They cover Durable Object IDs, KV and SQL storage, transactions, input gates, RPC, alarms (including across a restart), WebSockets with hibernation on celld, and an Agents SDK suite: state, SQL, schedules, addressing and `@callable()` RPC.
+Cloudflare's APIs are the contract. The current [conformance results](docs/conformance/results.md) pass every check on real Cloudflare (17/17), Wrangler 4.150.0 (17/17), celld 0.6.2 (19/19) and the native engine (18/18): the same apps, unchanged. They cover Durable Object IDs, KV and SQL storage, transactions, input gates, RPC, alarms (including across a restart), WebSockets with hibernation on celld, facets on Wrangler and celld, and an Agents SDK suite: state, SQL, schedules (including one across a restart), addressing and `@callable()` RPC.
 
-Not covered yet: sockets across a cell move between nodes, facets, PartyServer, Agents SDK chat, MCP and Workflows, and Cloudflare-hosted production behavior. Point-in-time restore isn't available on celld 0.6; the native engine has Cloudflare's point-in-time recovery API in durable mode. The [compatibility table](docs/compatibility.md) has the details, including Containers and `@cloudflare/sandbox` 1.0 on celld. The [porting guide](docs/porting-from-cloudflare.md) covers moving an existing project.
+Not covered yet: sockets across a cell move between nodes, PartyServer, Agents SDK chat, MCP and Workflows, and Cloudflare-hosted production behavior. Facets pass on Wrangler and celld but are not implemented by the native engine. Point-in-time restore isn't available on celld 0.6; the native engine has Cloudflare's point-in-time recovery API in durable mode. The [compatibility table](docs/compatibility.md) has the details, including Containers and `@cloudflare/sandbox` 1.0 on celld. The [porting guide](docs/porting-from-cloudflare.md) covers moving an existing project.
 
 ## Repository layout
 
@@ -115,7 +115,7 @@ celld is driven through a small contract: the Wrangler bundle, the Wrangler conf
 | Engine | Status | Notes |
 |---|---|---|
 | [celld](https://github.com/denoland/celld) | Supported (0.6.2, pinned) | Runs Wrangler bundles with Durable Objects, KV, D1, R2, Queues, Workflows and Containers. |
-| native | In progress: `sobjects dev --engine native` | Runs the Worker and Durable Objects in Node, with each object in its own SQLite file and full Node APIs inside objects. It passes the full conformance suite (17/17, hibernation and the Agents SDK included), with idle eviction. `sobjects build --strict` checks that an app stays portable to Cloudflare. `--backup-bucket` backs objects up to S3-compatible storage (with `--backup-mode durable`, every acknowledged write is in the bucket), `--threads N` spreads objects over worker threads, and `--node-name` lets several nodes share one bucket, taking over each other's objects and forwarding calls. A `[native]` table in `sobjects.toml` runs it under `sobjects up`. For trusted code. See [the native engine](docs/native-engine.md). |
+| native | In progress: `sobjects dev --engine native` | Runs the Worker and Durable Objects in Node, with each object in its own SQLite file and full Node APIs inside objects. It passes the full conformance suite (18/18, hibernation and the Agents SDK included, with facets skipped), with idle eviction. `sobjects build --strict` checks that an app stays portable to Cloudflare. `--backup-bucket` backs objects up to S3-compatible storage (with `--backup-mode durable`, every acknowledged write is in the bucket), `--threads N` spreads objects over worker threads, and `--node-name` lets several nodes share one bucket, taking over each other's objects and forwarding calls. A `[native]` table in `sobjects.toml` runs it under `sobjects up`. For trusted code. See [the native engine](docs/native-engine.md). |
 
 ## Why
 
