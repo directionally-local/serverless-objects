@@ -25,6 +25,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      # Warns, without failing, when the cell executor's default autopilot-ai
+      # version falls more than a minor release behind npm.
+      - name: Autopilot default package is current
+        run: node scripts/check-autopilot-default.mjs
       - run: npm run test:wrangler --workspace=sobjects-conformance
       - run: npm run test:native --workspace=sobjects-conformance
       - run: npm run test:native --workspace=sobjects-conformance -- --native-threads 3
