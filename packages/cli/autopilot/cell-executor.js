@@ -8,7 +8,7 @@ import { redactDeep } from "./redact.js";
 import { TurnRecorder, bounded } from "./turn-recorder.js";
 
 export const DEFAULT_MODEL = "moonshotai/kimi-k2.6";
-export const DEFAULT_PACKAGE = "autopilot-ai@1.25.1";
+export const DEFAULT_PACKAGE = "autopilot-ai@2.8.0";
 export const DEFAULT_IMAGE = "ghcr.io/sinameraji/hotcell-base:latest";
 
 const CELL_STATE_DIR = "/workspace/.aster";

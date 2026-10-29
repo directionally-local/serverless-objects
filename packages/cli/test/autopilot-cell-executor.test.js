@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CellExecutor } from "../autopilot/cell-executor.js";
+import { CellExecutor, DEFAULT_PACKAGE } from "../autopilot/cell-executor.js";
 import { RunHost } from "../autopilot/run-host.js";
 import { RUN, clock, ids, memoryDb } from "./autopilot-helpers.js";
 
@@ -28,7 +28,7 @@ function fakeCell() {
       if (command.includes("npm install")) {
         // The install runs in the background; it has finished by the next check.
         this.installs += 1;
-        if (this.installExit === "0") this.files.set("/opt/autopilot/node_modules/autopilot-ai/package.json", JSON.stringify({ version: "1.25.1" }));
+        if (this.installExit === "0") this.files.set("/opt/autopilot/node_modules/autopilot-ai/package.json", JSON.stringify({ version: DEFAULT_PACKAGE.slice("autopilot-ai@".length) }));
         this.files.set("/workspace/.aster/install.log", "npm ERR! network");
         this.files.set("/workspace/.aster/install.exit", `${this.installExit}\n`);
         return;
