@@ -1,10 +1,10 @@
 # Install Serverless Objects
 
-> **Status:** pre-alpha. `serverless-objects` is published on npm as a 0.1.x test release; do not treat it as a production-ready service.
+> **Status:** pre-alpha. `serverless-objects` is published on npm as a 0.13.x test release; do not treat it as a production-ready service.
 
 ## Requirements
 
-- Node.js 22 or newer and npm.
+- Node.js 22.23.4+, 24.22.1+ or 26.12.1+, and npm. Older versions have the Brotli decoder bug CVE-2026-111497; the CLI warns when it runs on one.
 - A supported celld binary platform: macOS arm64 or Linux arm64/x64. celld does not currently provide a Windows binary.
 - An S3-compatible bucket supported by celld, with conditional writes enabled. The bucket is the durable home for Durable Object state; local service state is separate.
 
@@ -73,6 +73,6 @@ Use `sobjects dev [project]` for local celld development and `sobjects deploy [p
 - Use a bucket dedicated to the service. Do not point test commands at a bucket containing unrelated data.
 - Single-node writes wait on the object store. One R2 smoke run from a Mac measured approximately 0.63–0.78 seconds per request; this is an environment-specific observation, not a latency guarantee.
 - The dashboard's read-only GC-candidate view lists objects with superseded epochs; it is not a complete object-history inventory. celld 0.6 does not provide a supported point-in-time restore command, so this version cannot restore an older epoch.
-- The current product is a single-host operating layer. It does not provide multi-tenant isolation, SSO, audit logs, or a native Workers runtime.
+- The current product is a single-host operating layer by default. The native engine can share one bucket across several named nodes (`--node-name`), but there is no multi-tenant isolation, SSO, audit log or fleet control plane.
 
 See the [compatibility table](compatibility.md) for tested behavior and known gaps.

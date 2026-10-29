@@ -1,6 +1,6 @@
 {
   "name": "serverless-objects-workspace",
-  "version": "0.1.0",
+  "version": "0.13.4",
   "private": true,
   "description": "Self-hostable Workers and Durable Objects infrastructure for agents",
   "license": "Apache-2.0",

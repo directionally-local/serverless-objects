@@ -8,13 +8,13 @@ Run Cloudflare Workers and Durable Objects apps on your own hardware, built for 
 
 Serverless Objects is the operating layer around a Workers-compatible engine. You deploy an ordinary Wrangler project, and `sobjects` runs it on a host you control with TLS ingress, a local dashboard, engine upgrades and service units. Durable Object state lives in your own S3-compatible bucket. Today the engine is [celld](https://github.com/denoland/celld), Deno's Apache-2.0 runtime for Wrangler bundles.
 
-> **Status: pre-alpha.** Good for evaluation and testing, not for production. It runs on a single host on macOS arm64 or Linux arm64/x64. Read [what is and isn't supported](docs/compatibility.md) before you port an app.
+> **Status: pre-alpha.** Good for evaluation and testing, not for production. It runs on a single host by default (macOS arm64 or Linux arm64/x64); the native engine can share one bucket across several named nodes. Read [what is and isn't supported](docs/compatibility.md) before you port an app.
 
 Part of [Directionally Local](https://directionallylocal.com), an open-source stack for running coding agents on your own hardware, alongside [Autopilot](https://directionallylocal.com/autopilot/), [Hotcell](https://directionallylocal.com/hotcell/) and [Camouflage](https://github.com/sinameraji/camouflage). Product page: [directionallylocal.com/serverless-objects](https://directionallylocal.com/serverless-objects/).
 
 ## Quick start
 
-Requires Node.js 22 or newer.
+Requires Node.js 22.23.4+, 24.22.1+ or 26.12.1+ (older versions have CVE-2026-111497; the CLI warns).
 
 ```sh
 npm install --global serverless-objects
@@ -110,7 +110,7 @@ Not covered yet: sockets across a cell move between nodes, facets, PartyServer, 
 
 ## Engines
 
-Serverless Objects doesn't implement the Workers runtime itself. It drives an engine through a small contract: the Wrangler bundle, the Wrangler config, and a runtime protocol for health, deploy, inspection, alarms and metrics.
+celld is driven through a small contract: the Wrangler bundle, the Wrangler config, and a runtime protocol for health, deploy, inspection, alarms and metrics. The native engine implements the Workers surface in Node for trusted code.
 
 | Engine | Status | Notes |
 |---|---|---|

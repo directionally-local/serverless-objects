@@ -31,7 +31,7 @@ So the native engine is the right choice when the app is trusted and a few secon
 
 ## Results, 20 Oct 2026
 
-Client: Apple M1 Pro, Node.js 24.12. Local targets on loopback: serverless-objects 0.5.0 native engine, celld 0.6.2 (`celld dev`), Wrangler 4.150.0. Cloudflare: the same app deployed to a workers.dev subdomain on the free plan, served from Frankfurt (`colo=FRA`), about 130–200 ms of internet away from the client. One run each; treat differences under ~20% as noise.
+Client: Apple M1 Pro, Node.js 24.12. Local targets on loopback: the native engine (serverless-objects 0.5.0, the version measured here), celld 0.6.2 (`celld dev`), Wrangler 4.150.0. Cloudflare: the same app deployed to a workers.dev subdomain on the free plan, served from Frankfurt (`colo=FRA`), about 130–200 ms of internet away from the client. One run each; treat differences under ~20% as noise.
 
 ### Inside the Worker (no client network)
 

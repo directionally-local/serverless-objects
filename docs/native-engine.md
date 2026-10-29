@@ -6,7 +6,7 @@
 sobjects dev ./my-worker --engine native --port 8787
 ```
 
-It is for **trusted code**: there's no isolate between the app and the engine, and objects get full Node APIs. Use celld for apps you don't control. It needs Node.js 22.16 or newer.
+It is for **trusted code**: there's no isolate between the app and the engine, and objects get full Node APIs. Use celld for apps you don't control. It needs Node.js 22.23.4+, 24.22.1+ or 26.12.1+ (the CLI warns on versions with CVE-2026-111497).
 
 The app's own code is bundled with esbuild, which handles TypeScript and `define`. Its npm packages load from `node_modules` as in any Node program, so packages with native addons (for example `better-sqlite3`) and packages that read their own files work. `cloudflare:workers` and `cloudflare:email` resolve to the engine's shims, both for the app and for packages that import them.
 

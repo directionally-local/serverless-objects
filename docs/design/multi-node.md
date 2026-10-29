@@ -1,6 +1,6 @@
 # Design: native engine across several nodes (M4)
 
-Status: proposed, 20 Oct 2026. Nothing here is implemented yet.
+Status: implemented for the native engine (M4). This page records the design; [the native engine docs](../native-engine.md#several-nodes) describe the behavior that shipped. Still open: dashboard and admin views of nodes and leases, and a multi-node soak.
 
 ## Goal
 

@@ -3,9 +3,9 @@
 [![npm](https://img.shields.io/npm/v/serverless-objects)](https://www.npmjs.com/package/serverless-objects)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/directionally-local/serverless-objects/blob/main/LICENSE)
 
-`sobjects` runs Cloudflare Workers and Durable Objects apps on your own hardware. Deploy an ordinary Wrangler project and it runs on a host you control, with Durable Object state in your own S3-compatible bucket, plus TLS ingress, a local dashboard, engine upgrades and service units. The runtime underneath is [celld](https://github.com/denoland/celld) 0.6.2, which the CLI downloads and verifies by checksum.
+`sobjects` runs Cloudflare Workers and Durable Objects apps on your own hardware. Deploy an ordinary Wrangler project and it runs on a host you control, with Durable Object state in your own S3-compatible bucket, plus TLS ingress, a local dashboard, engine upgrades and service units. The default runtime is [celld](https://github.com/denoland/celld) 0.6.2, which the CLI downloads and verifies by checksum; `sobjects dev --engine native` runs the app in Node instead.
 
-> **Status: pre-alpha (0.1.x).** For evaluation and testing, not production. Single host; macOS arm64 or Linux arm64/x64; Node.js 22 or newer. See the [compatibility table](https://github.com/directionally-local/serverless-objects/blob/main/docs/compatibility.md).
+> **Status: pre-alpha (0.13.x).** For evaluation and testing, not production. Single host by default (the native engine can share a bucket across named nodes); macOS arm64 or Linux arm64/x64; Node.js 22.23.4+, 24.22.1+ or 26.12.1+. See the [compatibility table](https://github.com/directionally-local/serverless-objects/blob/main/docs/compatibility.md).
 
 Project home, roadmap and conformance results: [github.com/directionally-local/serverless-objects](https://github.com/directionally-local/serverless-objects).
 
@@ -60,7 +60,7 @@ npm install serverless-objects
 |---|---|
 | `sobjects dev [project] [celld dev options]` | Local development with celld. It doesn't run the ingress. With `--engine native`, it runs the app in Node instead ([native engine](https://github.com/directionally-local/serverless-objects/blob/main/docs/native-engine.md)). |
 | `sobjects deploy [project] [celld deploy options]` | Preflights the Wrangler config, bundles the app and uploads it to the bucket. Running nodes pick up the new version on their next poll. |
-| `sobjects up [--config PATH] [--detach]` | Starts celld plus the configured ingress and admin API from `./sobjects.toml`, in the foreground or in the background. |
+| `sobjects up [--config PATH] [--detach]` | Starts celld (or the native engine, with a `[native]` table) plus the configured ingress and admin API from `./sobjects.toml`, in the foreground or in the background. |
 | `sobjects status` / `logs [--supervisor] [--tail N]` / `down` | Inspect or stop a node started with `--detach`. `down` waits for celld to drain and release its lease. |
 | `sobjects supervise [--config PATH]` | Runs only the ingress and admin API in the foreground. |
 | `sobjects dashboard [--config PATH]` | Prints the admin dashboard URL, which carries the admin token. |
