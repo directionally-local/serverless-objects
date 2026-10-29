@@ -2,7 +2,24 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CellExecutor, DEFAULT_PACKAGE } from "../autopilot/cell-executor.js";
 import { RunHost } from "../autopilot/run-host.js";
-import { RUN, clock, ids, memoryDb } from "./autopilot-helpers.js";
+import { RUN, clock, memoryDb, uuids } from "./autopilot-helpers.js";
+
+// autopilot-ai 3.0.2's bridge (src/sdk/aster-cell.ts): UUID request ids, a
+// 250-event page, prompt de-duplication by turn id, and a session.end journaled
+// when the prompt's RPC reply arrives (a successful turn emits none itself).
+const MAX_EVENTS = 250;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const ALLOWED_COMMANDS = new Set(["new_session", "prompt", "abort", "get_state", "resolve_permission", "set_model", "set_mode"]);
+
+// The bridge registers the server's catalog entry for the model, and ignores
+// anything that isn't one for that model.
+function acceptModelInfo(value, model) {
+  if (!value || typeof value !== "object") return undefined;
+  const window = value.contextWindow;
+  if (value.id !== model || !Number.isInteger(window) || window < 1_000 || window > 100_000_000) return undefined;
+  if (!value.pricing || typeof value.pricing !== "object" || !value.supports || typeof value.supports !== "object") return undefined;
+  return value;
+}
 
 // A cell running the Autopilot bridge: control requests arrive as a JSON file
 // plus an exec of the control runner, as in autopilot's aster-cell.ts.
@@ -12,7 +29,7 @@ function fakeCell() {
     files: new Map(),
     processes: [],
     installs: 0,
-    bridge: { sessionId: null, initialized: false, activeRunId: null, seen: new Set(), events: [], cursor: 0 },
+    bridge: { sessionId: null, model: null, modelInfo: undefined, initialized: false, activeRunId: null, seen: new Set(), events: [], cursor: 0 },
     prompts: [],
     aborts: 0,
     failNext: 0,
@@ -46,26 +63,41 @@ function fakeCell() {
         this.failNext -= 1;
         return { exitCode: 1, stdout: "", stderr: "Error: cell_control_failed" };
       }
-      return { exitCode: 0, stdout: `${JSON.stringify(this.handle(request))}\n`, stderr: "" };
+      try {
+        return { exitCode: 0, stdout: `${JSON.stringify(this.handle(request))}\n`, stderr: "" };
+      } catch (error) {
+        // The control runner exits non-zero and prints the bridge's error.
+        return { exitCode: 1, stdout: "", stderr: `Error: ${error.message}` };
+      }
     },
     handle({ method, path, body }) {
       const bridge = this.bridge;
       if (!this.processes.length) throw new Error("bridge is not running");
       if (path === "/health") return { ok: true, initialized: bridge.initialized, sessionId: bridge.sessionId };
-      if (path === "/status") return { activeRunId: bridge.activeRunId, cursor: bridge.cursor };
+      if (path === "/status") return { initialized: bridge.initialized, sessionId: bridge.sessionId, activeRunId: bridge.activeRunId, cursor: bridge.cursor };
       if (path.startsWith("/events?after=")) {
         const after = Number(path.slice("/events?after=".length));
-        const events = bridge.events.filter((event) => event.cursor > after).slice(0, 2);
-        return { events, cursor: bridge.cursor, hasMore: events.length === 2 };
+        if (!Number.isSafeInteger(after) || after < 0) throw new Error("invalid_cursor");
+        const events = bridge.events.filter((event) => event.cursor > after).slice(0, MAX_EVENTS);
+        return { events, cursor: bridge.cursor, hasMore: events.length === MAX_EVENTS };
       }
       if (method === "POST" && path === "/rpc") {
+        if (!UUID_RE.test(body.id) || !ALLOWED_COMMANDS.has(body.type)) throw new Error("unsupported_command");
         if (body.type === "new_session") {
-          bridge.sessionId = body.sessionId;
-          bridge.initialized = true;
+          if (!UUID_RE.test(body.sessionId)) throw new Error("invalid_session_id");
+          if (bridge.initialized && bridge.sessionId !== body.sessionId) throw new Error("session_already_initialized");
+          if (!bridge.initialized) {
+            bridge.sessionId = body.sessionId;
+            bridge.model = body.config?.model;
+            bridge.modelInfo = acceptModelInfo(body.modelInfo, bridge.model);
+            bridge.initialized = true;
+          }
           return { type: "ok" };
         }
         if (body.type === "prompt") {
           if (bridge.seen.has(body.id)) return { accepted: true, runId: body.id, replay: true };
+          if (bridge.activeRunId) throw new Error("session_busy");
+          if (!bridge.initialized || typeof body.message !== "string" || !body.message.trim()) throw new Error("session_not_ready");
           bridge.seen.add(body.id);
           bridge.activeRunId = body.id;
           this.prompts.push(body);
@@ -81,6 +113,21 @@ function fakeCell() {
     emit(event, runId = this.bridge.activeRunId) {
       this.bridge.cursor += 1;
       this.bridge.events.push({ cursor: this.bridge.cursor, runId, event });
+      if (event.type === "session.end") this.bridge.activeRunId = null;
+    },
+    // The prompt's RPC reply: the bridge journals the turn's terminal event.
+    reply(runId = this.bridge.activeRunId, { type = "ok", error } = {}) {
+      if (runId !== this.bridge.activeRunId) return;
+      this.emit(type === "error"
+        ? { type: "session.end", reason: "error", error: error ?? "prompt_failed" }
+        : { type: "session.end", reason: "complete" }, runId);
+    },
+    // A bridge restart: the interrupted turn is journaled as an error.
+    restart() {
+      const interrupted = this.bridge.activeRunId;
+      this.bridge.activeRunId = null;
+      this.bridge.initialized = false;
+      if (interrupted) this.emit({ type: "session.end", reason: "error", error: "cell_runtime_restarted" }, interrupted);
     },
   };
   return cell;
@@ -89,7 +136,7 @@ function fakeCell() {
 async function setup({ run = {} } = {}) {
   const time = clock();
   const db = memoryDb();
-  const randomId = ids("id-");
+  const randomId = uuids();
   const cell = fakeCell();
   const created = [];
   const host = new RunHost({ db, now: time.now, randomId, setAlarm: () => {}, onWake: async () => {}, checkJob: async () => "completed", report: async () => {}, onEvent: () => {} });
@@ -175,6 +222,85 @@ test("maps the cell's events onto the run and its Camouflage log, then completes
   ]);
   const started = state.host.listSessionEvents().find((event) => event.event_type === "ToolExecutionStarted");
   assert.deepEqual(started.payload, { tool_id: "t1", tool: "bash", command: "npm test" });
+});
+
+test("records the 3.x session event set and ignores the events it does not map", async () => {
+  const state = await setup();
+  await state.executor.start();
+  const polling = await drive(state, (current) => current.step === "poll");
+  const { cell } = state;
+  cell.emit({ type: "session.start", sessionId: polling.sessionId, cwd: "/workspace" });
+  cell.emit({ type: "message.start", messageId: "u1", role: "user" });
+  cell.emit({ type: "message.end", messageId: "u1" });
+  cell.emit({ type: "status", status: "streaming" });
+  cell.emit({ type: "message.start", messageId: "m1", role: "assistant" });
+  cell.emit({ type: "message.delta", messageId: "m1", text: "Checking.\n" });
+  cell.emit({ type: "message.reasoning", messageId: "m1", text: "Think.\n" });
+  cell.emit({ type: "permission.request", requestId: "p1", toolName: "bash", args: { command: "ls" } });
+  cell.emit({ type: "permission.resolved", requestId: "p1", decision: "allow" });
+  cell.emit({ type: "tool.start", toolCallId: "t1", toolName: "bash", args: { command: "ls" } });
+  cell.emit({ type: "tool.result", toolCallId: "t1", toolName: "bash", result: "a.txt", isError: false });
+  cell.emit({ type: "usage", inputTokens: 900, outputTokens: 40, reasoningTokens: 12, cost: 0.001 });
+  cell.emit({ type: "tasks.update", tasks: [{ id: "a", title: "Check", status: "completed" }] });
+  cell.emit({ type: "hook.failed", hookId: "h1", event: "tool.before", failure: "timeout", reason: "slow", allowed: true, failClosed: false, count: 1, message: "hook timed out" });
+  cell.emit({ type: "context.compacted", tokensBefore: 90_000, tokensAfter: 40_000, turnsRemoved: 3, artifactsArchived: 1 });
+  cell.emit({ type: "worker.finished", workerId: "w1", index: 0, task: "scan", status: "completed", costUsd: 0.0002 });
+  cell.emit({ type: "warning", message: "model is slow" });
+  cell.emit({ type: "message.end", messageId: "m1" });
+  cell.reply(polling.turnId);
+  const done = await drive(state, (current) => current.step === "done");
+  assert.equal(done.cursor, 19);
+
+  const run = state.host.get();
+  assert.equal(run.status, "completed");
+  assert.equal(run.totalPromptTokens, 900);
+  assert.equal(run.totalCompletionTokens, 40);
+  assert.deepEqual(state.host.listEvents().map((event) => event.type), ["state", "state", "tool_intent", "tool_result", "usage", "checkpoint", "state"]);
+  assert.deepEqual(state.host.listSessionEvents().map((event) => event.event_type), [
+    "SessionStarted", "UserMessageCreated", "BackgroundTaskUpdate", "BackgroundTaskUpdate",
+    "AssistantStreamStarted", "AssistantTokenDelta", "AssistantReasoningDelta",
+    "ToolExecutionStarted", "ToolExecutionFinished", "StatusUpdate", "TodoListUpdate", "ShowToast",
+    "AssistantMessageCompleted",
+  ]);
+});
+
+test("a successful turn ends when the bridge journals the prompt reply", async () => {
+  const state = await setup();
+  await state.executor.start();
+  const polling = await drive(state, (current) => current.step === "poll");
+  state.cell.emit({ type: "message.start", messageId: "m1", role: "assistant" });
+  state.cell.emit({ type: "message.delta", messageId: "m1", text: "Done.\n" });
+  state.cell.emit({ type: "message.end", messageId: "m1" });
+  await tick(state);
+  assert.equal(state.host.get().status, "running");
+
+  state.cell.reply(polling.turnId);
+  await drive(state, (current) => current.step === "done");
+  assert.equal(state.host.get().status, "completed");
+  assert.equal(state.host.get().stopReason, "cell_session_complete");
+});
+
+test("pages through more than one page of events", async () => {
+  const state = await setup();
+  await state.executor.start();
+  const polling = await drive(state, (current) => current.step === "poll");
+  for (let index = 0; index < 260; index += 1) state.cell.emit({ type: "status", status: "streaming" });
+  state.cell.reply(polling.turnId);
+  const done = await drive(state, (current) => current.step === "done");
+  assert.equal(done.cursor, 261);
+  assert.equal(state.host.get().status, "completed");
+});
+
+test("a bridge restart ends the interrupted turn with its reason", async () => {
+  const state = await setup();
+  await state.executor.start();
+  await drive(state, (current) => current.step === "poll");
+  state.cell.emit({ type: "tool.start", toolCallId: "t1", toolName: "bash", args: "ls" });
+  await tick(state);
+  state.cell.restart();
+  await drive(state, (current) => current.step === "done");
+  assert.equal(state.host.get().status, "failed");
+  assert.equal(state.host.get().stopReason, "cell_runtime_restarted");
 });
 
 test("a restart resumes polling from the saved cursor without re-prompting", async () => {

@@ -33,4 +33,10 @@ export function ids(prefix = "t") {
   return () => `${prefix}${++next}`;
 }
 
+// Autopilot's cell bridge accepts only UUIDs for request, session and turn ids.
+export function uuids() {
+  let next = 0;
+  return () => `00000000-0000-4000-8000-${String(++next).padStart(12, "0")}`;
+}
+
 export const RUN = { id: "run-1", workspace: "acme", cwd: "/workspace", task: "Fix the flaky test" };
