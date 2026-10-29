@@ -57,7 +57,7 @@ The dashboard and admin API stay on loopback inside the container; don't publish
 
 ## Notes
 
-- **Pinned versions:** the image pins `serverless-objects` with the `SOBJECTS_VERSION` build argument (default `0.1.2`), and that CLI pins celld 0.6.2. To upgrade, change the argument and rebuild. The `local-s3` profile pins SeaweedFS (`chrislusf/seaweedfs:4.48`); change the tag in `compose.yaml` to move it.
+- **Pinned versions:** the image pins `serverless-objects` with the `SOBJECTS_VERSION` build argument (default `0.13.4`), and that CLI pins celld 0.6.2. To upgrade, change the argument and rebuild. The `local-s3` profile pins SeaweedFS (`chrislusf/seaweedfs:4.48`); change the tag in `compose.yaml` to move it.
 - **Graceful stop:** on stop, celld drains and releases its lease. `stop_grace_period` is 60 s; a stop took about 17 s in testing.
 - **Key permissions:** the private key must be readable by uid 999, the container's `sobjects` user, and by nobody else: `chmod 600 tls/privkey.pem && sudo chown 999 tls/privkey.pem`. Don't make it world-readable (`chmod 644`), which exposes it to every account on the host.
 - **Platforms:** linux/arm64 and linux/amd64. The full stack has been tested on arm64 (Docker on macOS). CI builds the amd64 image and checks that `sobjects` and `celld` run in it.

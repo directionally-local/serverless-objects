@@ -54,7 +54,7 @@ Before switching traffic, check for:
 - Cloudflare-only configuration fields, deployment hooks, observability and source-map upload behavior.
 - Assumptions about production networking, service bindings, outbound connections, Cache, or global coordination.
 - Durable Object migration operations beyond adding SQLite classes.
-- WebSocket hibernation, facets, cross-isolate RPC, or behavior across a cell move. These need separate verification; the current conformance run covers only basic WebSocket behavior.
-- Whether the app has been run through the actual `sobjects` CLI. A minimal Agents SDK app (state, SQL, schedules, WebSocket protocol) has run through `sobjects deploy` and `sobjects up`; the official samples, callable RPC, chat agents, MCP and Workflows have not.
+- WebSocket hibernation, facets, cross-isolate RPC, or behavior across a cell move. Hibernation and the Agents SDK client protocol (including `@callable()` RPC over WebSocket) pass in conformance on celld and the native engine; facets and cell moves are not covered.
+- Whether the app has been run through the actual `sobjects` CLI. A minimal Agents SDK app (state, SQL, schedules, WebSocket protocol) has run through `sobjects deploy` and `sobjects up`; the official samples, chat agents, MCP and Workflows have not. Callable RPC passes in the conformance suite but has not been exercised through `sobjects deploy`/`up`.
 
 Do not infer production Cloudflare behavior from local Wrangler results, or infer full celld compatibility from one passing sample. Record any mismatch as a conformance case and keep unsupported behavior visible.

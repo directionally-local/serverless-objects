@@ -31,7 +31,7 @@ The sample source code above was not modified, but `celld dev` rejected these co
 - `assets: {}` — celld requires `assets.directory` to be a string.
 - `build` and `upload_source_maps` — unsupported config keys.
 
-Removing only those entries from temporary config copies allowed the Worker/DO code paths to run. Classify this as an **above-runtime config adapter/validation issue**, not a deep runtime issue. The v0.1 CLI now rejects unknown top-level keys, strips `observability` and `upload_source_maps` with warnings, and runs `build.command`; it requires an explicit `assets.directory` and does not infer Vite-generated assets.
+Removing only those entries from temporary config copies allowed the Worker/DO code paths to run. Classify this as an **above-runtime config adapter/validation issue**, not a deep runtime issue. The v0.1 CLI now rejects unknown top-level keys, strips `observability` and `upload_source_maps` with warnings, and runs `build.command`; it requires an explicit `assets.directory` unless the project uses `@cloudflare/vite-plugin`, in which case it runs `vite build` and discovers the generated output directory.
 
 ## Gate and next work
 
