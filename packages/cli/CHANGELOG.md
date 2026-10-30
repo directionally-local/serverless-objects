@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.6](https://github.com/directionally-local/serverless-objects/compare/serverless-objects-v0.13.5...serverless-objects-v0.13.6) (2026-10-30)
+
+
+### Bug Fixes
+
+* **cli:** default AutopilotCellRun to autopilot-ai 3.0.2 ([d069623](https://github.com/directionally-local/serverless-objects/commit/d069623d6773cba4df08249a18f0f41ddaab3759))
+
 ## [0.13.5](https://github.com/directionally-local/serverless-objects/compare/serverless-objects-v0.13.4...serverless-objects-v0.13.5) (2026-10-29)
 
 
