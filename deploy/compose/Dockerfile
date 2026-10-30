@@ -5,7 +5,7 @@
 FROM node:22-bookworm-slim
 
 # x-release-please-start-version
-ARG SOBJECTS_VERSION=0.13.5
+ARG SOBJECTS_VERSION=0.13.6
 # x-release-please-end
 
 RUN npm install --global --no-audit --no-fund "serverless-objects@${SOBJECTS_VERSION}" \
