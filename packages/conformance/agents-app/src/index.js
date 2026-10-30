@@ -57,7 +57,7 @@ export class Probe extends Agent {
   }
 
   ticks() {
-    return { ticks: this.state.ticks, lastTick: this.state.lastTick ?? null };
+    return { ticks: this.state.ticks, lastTick: this.state.lastTick ?? null, schedules: this.getSchedules().length };
   }
 
   tick(payload) {
@@ -86,9 +86,13 @@ export default {
     if (url.pathname === "/cases") return json(Object.keys(CASES));
     if (url.pathname === "/schedule/arm") {
       const seconds = Number(url.searchParams.get("seconds") ?? 2);
-      return json({ pending: await (await probe(env, "fire")).arm(seconds) });
+      const agent = url.searchParams.get("agent") ?? "fire";
+      return json({ pending: await (await probe(env, agent)).arm(seconds) });
     }
-    if (url.pathname === "/schedule/status") return json(await (await probe(env, "fire")).ticks());
+    if (url.pathname === "/schedule/status") {
+      const agent = url.searchParams.get("agent") ?? "fire";
+      return json(await (await probe(env, agent)).ticks());
+    }
     if (url.pathname.startsWith("/case/")) {
       const name = url.pathname.slice("/case/".length);
       if (!CASES[name]) return json({ error: "unknown case" }, 404);

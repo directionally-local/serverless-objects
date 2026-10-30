@@ -176,6 +176,56 @@ export class Gate extends DurableObject {
   }
 }
 
+// Facets: a child object owned by a parent, created with ctx.facets.get().
+// The facet class is exported but not bound; the parent names it at startup.
+export class Facet extends DurableObject {
+  async setValue(value) {
+    await this.ctx.storage.put("value", value);
+    return value;
+  }
+
+  async getValue() {
+    return (await this.ctx.storage.get("value")) ?? null;
+  }
+
+  async setAlarmAt(time) {
+    await this.ctx.storage.setAlarm(time);
+  }
+}
+
+export class Facets extends DurableObject {
+  async run() {
+    await this.ctx.storage.deleteAll();
+    // A facet class is reached through ctx.exports, which yields a loopback
+    // DurableObjectClass; the exported class itself is not one.
+    const facetClass = this.ctx.exports.Facet;
+    const first = this.ctx.facets.get("child", () => ({ class: facetClass }));
+    await first.setValue({ n: 1 });
+    check("facet state", (await first.getValue())?.n === 1, await first.getValue());
+
+    // The same name resolves to the same facet, with its state intact.
+    const again = this.ctx.facets.get("child", () => ({ class: facetClass }));
+    check("facet identity", (await again.getValue())?.n === 1, await again.getValue());
+
+    // A different name is a different facet with its own storage.
+    const other = this.ctx.facets.get("other", () => ({ class: facetClass }));
+    check("facet isolation", (await other.getValue()) === null, await other.getValue());
+
+    // The facet's storage is separate from the parent's.
+    check("parent storage separate", (await this.ctx.storage.get("value")) === undefined);
+
+    // Facets cannot set alarms.
+    let threw = false;
+    try {
+      await first.setAlarmAt(Date.now() + 60_000);
+    } catch {
+      threw = true;
+    }
+    check("facets cannot set alarms", threw);
+    return "ctx.facets.get, state by name, isolation, separate storage, no alarms";
+  }
+}
+
 export class Sockets extends DurableObject {
   // A new value means the runtime constructed a new instance, e.g. after hibernation.
   instance = crypto.randomUUID();
@@ -293,11 +343,16 @@ function alarms(env, name) {
   return env.ALARMS.get(env.ALARMS.idFromName(name));
 }
 
+function facets(env) {
+  return env.FACETS.get(env.FACETS.idFromName("facets"));
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === "/cases") return json(Object.keys(CASES));
     if (url.pathname === "/pitr") return json(await pointInTimeRecovery(env).then((detail) => ({ pass: true, detail }), (error) => ({ pass: false, detail: String(error?.message ?? error) })));
+    if (url.pathname === "/facets") return json(await facets(env).run().then((detail) => ({ pass: true, detail }), (error) => ({ pass: false, detail: String(error?.message ?? error) })));
     if (url.pathname === "/socket") {
       return env.SOCKETS.get(env.SOCKETS.idFromName("sockets")).fetch(request);
     }

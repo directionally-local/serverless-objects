@@ -1,6 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { LedgerJournal, alarmGaps } from "../soak/journal.js";
+
+const SOAK_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "soak");
+
+test("the soak image requires an explicit SOBJECTS_VERSION", async () => {
+  const dockerfile = await readFile(path.join(SOAK_DIR, "Dockerfile"), "utf8");
+  const arg = /^ARG SOBJECTS_VERSION(.*)$/m.exec(dockerfile);
+  assert.ok(arg, "the Dockerfile declares ARG SOBJECTS_VERSION");
+  // A default would let a bare build silently test an old release.
+  assert.equal(arg[1].trim(), "", "ARG SOBJECTS_VERSION must not have a default");
+  assert.match(dockerfile, /test -n "\$SOBJECTS_VERSION"/, "the build fails when the version is missing");
+});
 
 test("an acknowledged append that is missing is a violation; unacknowledged ones are not", () => {
   const journal = new LedgerJournal();

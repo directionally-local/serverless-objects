@@ -26,7 +26,9 @@ Faults, one every ~45 minutes on average (weights in `soak.js`):
 Everything runs in one container: the engine, SeaweedFS as the bucket, and the load. The container needs no network (`--network none`) and publishes no ports.
 
 ```sh
-docker build --build-arg SOBJECTS_VERSION=0.9.1 -t sobjects-soak packages/conformance/soak
+# The release under test is required; there is no default, so a soak cannot
+# silently run an old CLI.
+docker build --build-arg SOBJECTS_VERSION=$(npm view serverless-objects version) -t sobjects-soak packages/conformance/soak
 # A small dedicated disk for the engine's data, so disk-full stays inside it:
 mkdir -p /opt/sobjects-soak/state /opt/sobjects-soak/data
 fallocate -l 2G /opt/sobjects-soak/data.img && mkfs.ext4 -q /opt/sobjects-soak/data.img
