@@ -71,6 +71,12 @@ CI also runs the Wrangler and native suites on `ubuntu-latest` x64 (Node 22) on 
 
 `npm run test:product --workspace=sobjects-conformance` deploys `agents-app` with `sobjects deploy` and serves it with `sobjects up --detach` behind TLS ingress, then runs the Agents SDK checks against the ingress rather than a runner's local server. One run on 2 Nov 2026 (macOS arm64, celld 0.6.2, SeaweedFS started with `--local-s3`) passed 6/6: state, SQL, schedules, addressing, the WebSocket client protocol with `@callable()` RPC, and a delayed schedule. It is not in CI because it needs Docker, a bucket and celld.
 
+## Soak
+
+The two-week fault-injection soak that gates beta is separate from these
+conformance runs. Its harness, procedure and current status are recorded in
+[soak.md](soak.md); the 14-day run has not been completed.
+
 ## Not covered
 
 This v0 run does not test hibernation on Wrangler, the alarm-across-restart check on Cloudflare or Wrangler, sockets across a cell move between nodes, all
