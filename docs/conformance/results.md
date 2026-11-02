@@ -39,9 +39,13 @@ The Cloudflare column is from `npm run test:cloudflare` (20 Oct 2026): 17/17. Th
 
 The native engine column is from `npm run test:native` on the same host (29 Oct 2026): 23/23, with `--idle-evict-seconds 2` for the hibernation checks; see [the native engine](../native-engine.md). The PartyServer suite needed one engine fix: the global `WebSocket` now exposes workerd's `READY_STATE_*` ready-state constants, which PartyServer reads when it filters hibernatable sockets.
 
+## Containers
+
+`npm run test:containers --workspace=sobjects-conformance` (2 Nov 2026) ran 8/8 checks on Linux arm64 in Docker Desktop 4.75.0's Linux VM with celld 0.6.2 and `@cloudflare/sandbox` 1.0.1. It covers `start()`, `exec()`, `getTcpPort().fetch()`, `enableInternet: false` (egress refused), idle eviction with the container kept alive and reattached, and a node restart destroying the container. `S3Mount` and `DirectoryBackup` are unsupported because celld rejects `interceptOutboundHttp`; `inspect()`, `snapshotDirectory()`, `snapshotContainer()` and `container.images` are also unavailable. The `exec()`-after-`start()` race is celld's fire-and-forget `start()`, not the CLI's. See [the containers record](containers.md).
+
 ## Platforms
 
-Every column above is one local run on macOS arm64. CI runs the Wrangler and native suites on Ubuntu x64 (Node 22) on every change, and builds the linux/amd64 Docker image and checks that `sobjects` and `celld` start in it; it does not run `test:celld` or `test:cloudflare`, and it records no results. Linux arm64 has no conformance evidence beyond the Compose stack on Docker Desktop. Treat the table as macOS arm64 evidence plus unrecorded Ubuntu x64 CI coverage, not as a cross-platform claim.
+Every column in the table above is one local run on macOS arm64. CI runs the Wrangler and native suites on Ubuntu x64 (Node 22) on every change, and builds the linux/amd64 Docker image and checks that `sobjects` and `celld` start in it; it does not run `test:celld`, `test:containers` or `test:cloudflare`, and it records no results. Linux arm64 has containers evidence from the containers suite on Docker Desktop's Linux VM; no bare-metal Linux host or Linux x64 run is recorded. Treat the table as macOS arm64 evidence plus unrecorded Ubuntu x64 CI coverage, not as a cross-platform claim.
 
 ## Product path
 

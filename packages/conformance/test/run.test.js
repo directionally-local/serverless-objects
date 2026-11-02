@@ -38,6 +38,12 @@ test("runs every suite unless one is selected", () => {
   assert.throws(() => parseArgs(["--suite", "partyserver"]), /--suite must be/);
 });
 
+test("containers is opt-in and needs celld", () => {
+  assert.deepEqual(parseArgs(["--target", "celld", "--suite", "containers"]).suites, ["containers"]);
+  assert.throws(() => parseArgs(["--suite", "containers"]), /requires --target celld/);
+  assert.throws(() => parseArgs(["--target", "native", "--suite", "containers"]), /requires --target celld/);
+});
+
 test("native runs on this checkout's CLI and checks an alarm across restart", () => {
   const options = parseArgs(["--target", "native"]);
   assert.equal(options.restartAfterAlarm, true);

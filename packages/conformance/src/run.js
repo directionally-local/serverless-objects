@@ -10,6 +10,7 @@ const SUITES = {
   core: path.join(PACKAGE_DIR, "app"),
   agents: path.join(PACKAGE_DIR, "agents-app"),
   party: path.join(PACKAGE_DIR, "party-app"),
+  containers: path.join(PACKAGE_DIR, "containers-app"),
 };
 const SOBJECTS_BIN = path.resolve(PACKAGE_DIR, "..", "cli", "bin", "sobjects.mjs");
 const DEFAULT_CELLD_BIN = path.join(os.homedir(), ".local/share/serverless-objects/engines/celld-0.6.2/celld");
@@ -22,7 +23,7 @@ export function parseArgs(args) {
     alarmDelayMs: undefined,
     restartAfterAlarm: undefined,
     celldBin: process.env.CELLD_BIN ?? DEFAULT_CELLD_BIN,
-    suites: Object.keys(SUITES),
+    suites: ["core", "agents", "party"],
   };
 
   for (let index = 0; index < args.length; index += 1) {
@@ -34,7 +35,7 @@ export function parseArgs(args) {
     else if (arg === "--celld-bin") options.celldBin = args[++index];
     else if (arg === "--suite") {
       const suite = args[++index];
-      options.suites = suite === "all" ? Object.keys(SUITES) : [suite];
+      options.suites = suite === "all" ? ["core", "agents", "party"] : [suite];
     }
     else if (arg === "--restart-after-alarm") options.restartAfterAlarm = true;
     else if (arg === "--keep-deployment") options.keepDeployment = true;
@@ -48,7 +49,8 @@ export function parseArgs(args) {
   if (options.help) return options;
   if (!["wrangler", "celld", "native", "cloudflare"].includes(options.target)) throw new Error("--target must be wrangler, celld, native or cloudflare");
   if (options.target === "cloudflare" && options.restartAfterAlarm) throw new Error("--restart-after-alarm is not possible on Cloudflare");
-  if (options.suites.some((suite) => !SUITES[suite])) throw new Error("--suite must be core, agents, party, or all");
+  if (options.suites.some((suite) => !SUITES[suite])) throw new Error("--suite must be core, agents, party, containers, or all");
+  if (options.suites.includes("containers") && options.target !== "celld") throw new Error("--suite containers requires --target celld");
   if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65_535) throw new Error("--port must be an integer from 1 to 65535");
   if (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 1_000) throw new Error("--timeout must be at least 1000 milliseconds");
   if (options.alarmDelayMs !== undefined && (!Number.isInteger(options.alarmDelayMs) || options.alarmDelayMs < 1_000)) {
@@ -76,7 +78,7 @@ function usage() {
     "  --timeout MS          Startup timeout (default: 60000)",
     "  --alarm-delay MS      Alarm delay (default: 2000; 30000 with restart)",
     "  --celld-bin PATH      celld executable (or set CELLD_BIN)",
-    "  --suite SUITE         core, agents, party, or all (default: all)",
+    "  --suite SUITE         core, agents, party, containers, or all (default: all)",
     "  --keep-deployment     cloudflare: leave the Workers deployed afterwards",
     "  --native-threads N    native: run the engine on N worker threads",
     "  --native-arg ARG      native: pass ARG to sobjects dev (repeatable)",
@@ -151,7 +153,7 @@ export async function waitForServer(child, baseUrl, timeoutMs) {
   throw new Error(`Target did not become ready within ${timeoutMs}ms${lastError ? `: ${lastError.message}` : ""}`);
 }
 
-export async function runCases(baseUrl) {
+export async function runCases(baseUrl, timeoutMs = 30_000) {
   const listResponse = await fetch(`${baseUrl}/cases`, { signal: AbortSignal.timeout(5_000) });
   if (!listResponse.ok) throw new Error(`/cases returned HTTP ${listResponse.status}`);
   const names = await listResponse.json();
@@ -161,7 +163,7 @@ export async function runCases(baseUrl) {
 
   const results = [];
   for (const name of names) {
-    const response = await fetch(`${baseUrl}/case/${encodeURIComponent(name)}`, { signal: AbortSignal.timeout(30_000) });
+    const response = await fetch(`${baseUrl}/case/${encodeURIComponent(name)}`, { signal: AbortSignal.timeout(timeoutMs) });
     const body = await response.json().catch(() => null);
     results.push(validateCaseResult(name, response, body));
   }
@@ -305,6 +307,48 @@ export async function runAgentsScheduleCheck(baseUrl) {
 async function runPitrCheck(baseUrl) {
   const response = await fetch(new URL("/pitr", baseUrl));
   return validateCaseResult("point-in-time-recovery", response, await response.json());
+}
+
+// Containers: the app's start() polls exec() for readiness because celld's
+// start() returns before the container exists. The sleep check relies on
+// CELLD_IDLE_EVICT_S (2s in the runner) and the container's inactivity window;
+// the restart check relies on the runner's process restart.
+async function containerJson(url, timeoutMs) {
+  const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  const body = await response.text();
+  if (!response.ok) throw new Error(`${url.pathname} returned HTTP ${response.status}: ${body.slice(0, 500)}`);
+  try {
+    return JSON.parse(body);
+  } catch {
+    throw new Error(`${url.pathname} returned non-JSON: ${body.slice(0, 500)}`);
+  }
+}
+
+async function runContainerSleepCheck(baseUrl) {
+  const first = await containerJson(new URL("/container/start?name=sleep&marker=sleep-marker", baseUrl), 300_000);
+  if (!first.running) throw new Error(`container did not start: ${JSON.stringify(first)}`);
+  // The object is evicted after CELLD_IDLE_EVICT_S; the container's default
+  // inactivity window (10 minutes) keeps the container itself alive.
+  await new Promise((resolve) => setTimeout(resolve, 8_000));
+  const after = await containerJson(new URL("/container/state?name=sleep", baseUrl), 60_000);
+  if (after.instance === first.instance) throw new Error("the object was not evicted while idle; sleep was not exercised");
+  if (!after.running) throw new Error(`the container did not survive the idle eviction: ${JSON.stringify(after)}`);
+  if (after.marker !== "sleep-marker") throw new Error(`the container lost its filesystem: ${JSON.stringify(after)}`);
+  if (after.hostname !== first.hostname) throw new Error(`a different container answered: ${JSON.stringify({ first, after })}`);
+  return { pass: true, detail: "the object was evicted while idle; the next request reached a new instance and the same running container" };
+}
+
+async function runContainerRestartCheck(baseUrl, restart) {
+  const first = await containerJson(new URL("/container/start?name=restart&marker=restart-marker", baseUrl), 300_000);
+  if (!first.running) throw new Error(`container did not start: ${JSON.stringify(first)}`);
+  await restart();
+  const after = await containerJson(new URL("/container/state?name=restart", baseUrl), 60_000);
+  if (after.running) throw new Error(`the container survived a node restart: ${JSON.stringify(after)}`);
+  if (after.marker !== null) throw new Error(`the container filesystem survived a node restart: ${JSON.stringify(after)}`);
+  const second = await containerJson(new URL("/container/start?name=restart&marker=restart-marker-2", baseUrl), 300_000);
+  if (!second.running) throw new Error(`the container did not start after the restart: ${JSON.stringify(second)}`);
+  if (second.hostname === first.hostname) throw new Error(`the same container answered after the restart: ${JSON.stringify({ first, second })}`);
+  return { pass: true, detail: "a node restart destroyed the container; the next start created a new one" };
 }
 
 // Facets are part of the Durable Objects contract. workerd and celld 0.6.2
@@ -483,7 +527,7 @@ async function runSuite(suite, options, scratchDir) {
 
   try {
     await start();
-    const results = await runCases(baseUrl);
+    const results = await runCases(baseUrl, suite === "containers" ? 300_000 : 30_000);
     // A check that throws is a failed check, not a failed run.
     const record = async (name, check) => {
       try {
@@ -505,6 +549,9 @@ async function runSuite(suite, options, scratchDir) {
       await record("client-protocol", () => runAgentsClientCheck(baseUrl));
       await record("schedule-fires", () => runAgentsScheduleCheck(baseUrl));
       if (options.restartAfterAlarm) await record("schedule-across-restart", () => runAgentsScheduleRestartCheck(baseUrl, restart));
+    } else if (suite === "containers") {
+      await record("sleep", () => runContainerSleepCheck(baseUrl));
+      if (options.restartAfterAlarm) await record("restart", () => runContainerRestartCheck(baseUrl, restart));
     } else {
       await record("websocket-broadcast", () => runPartyWebSocketCheck(baseUrl));
       // Wrangler's local runtime gives the runner no eviction control.

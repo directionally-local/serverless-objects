@@ -1,0 +1,17 @@
+{
+  "name": "sobjects-conformance-containers",
+  "main": "index.js",
+  "compatibility_date": "2026-02-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "containers": [
+    {
+      "class_name": "Box",
+      "image": "./Dockerfile",
+      "instance_type": "basic"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "BOX", "class_name": "Box" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Box"] }]
+}
