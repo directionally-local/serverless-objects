@@ -43,12 +43,17 @@ The native engine column is from `npm run test:native` on the same host (29 Oct 
 
 Every column above is one local run on macOS arm64. CI runs the Wrangler and native suites on Ubuntu x64 (Node 22) on every change, and builds the linux/amd64 Docker image and checks that `sobjects` and `celld` start in it; it does not run `test:celld` or `test:cloudflare`, and it records no results. Linux arm64 has no conformance evidence beyond the Compose stack on Docker Desktop. Treat the table as macOS arm64 evidence plus unrecorded Ubuntu x64 CI coverage, not as a cross-platform claim.
 
+## Product path
+
+`npm run test:product --workspace=sobjects-conformance` deploys `agents-app` with `sobjects deploy` and serves it with `sobjects up --detach` behind TLS ingress, then runs the Agents SDK checks against the ingress rather than a runner's local server. One run on 2 Nov 2026 (macOS arm64, celld 0.6.2, SeaweedFS started with `--local-s3`) passed 6/6: state, SQL, schedules, addressing, the WebSocket client protocol with `@callable()` RPC, and a delayed schedule. It is not in CI because it needs Docker, a bucket and celld.
+
 ## Not covered
 
 This v0 run does not test hibernation on Wrangler, the alarm-across-restart check on Cloudflare or Wrangler, sockets across a cell move between nodes, all
 compatibility flags, or
 Agents SDK chat agents, MCP, Workflows and streaming RPC. PartyServer is covered
 by its own suite on Wrangler, celld and the native engine, but not on Cloudflare,
-and not through `sobjects deploy`. These runners use `wrangler dev` and `celld dev` directly; they do not
-go through `sobjects deploy`. Those remain separate
+and not through `sobjects deploy`. The Wrangler, celld and native runners use
+`wrangler dev` and `celld dev` directly; only `test:product` goes through
+`sobjects deploy`/`up`, and only for the Agents app. Those remain separate
 conformance and product-level gates.
