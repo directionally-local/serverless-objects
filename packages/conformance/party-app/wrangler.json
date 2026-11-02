@@ -1,0 +1,10 @@
+{
+  "name": "sobjects-conformance-party",
+  "main": "src/index.js",
+  "compatibility_date": "2026-02-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [{ "name": "Chat", "class_name": "Chat" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Chat"] }]
+}
