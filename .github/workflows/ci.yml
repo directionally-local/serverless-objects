@@ -32,6 +32,12 @@ jobs:
       - run: npm run test:wrangler --workspace=sobjects-conformance
       - run: npm run test:native --workspace=sobjects-conformance
       - run: npm run test:native --workspace=sobjects-conformance -- --native-threads 3
+      # celld is an external binary, so install the pinned, checksum-verified
+      # release before running the suite against it. This is the Linux x64
+      # celld evidence recorded in docs/conformance/results.md.
+      - name: Install the pinned celld
+        run: node --input-type=module -e 'import { installCelld } from "./packages/cli/src/engine.js"; console.log(await installCelld());'
+      - run: npm run test:celld --workspace=sobjects-conformance
 
   docker:
     name: Docker image (linux/amd64)
