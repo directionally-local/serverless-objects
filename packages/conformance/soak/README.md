@@ -38,7 +38,7 @@ docker run -d --name sobjects-soak --restart unless-stopped --network none \
   -v /opt/sobjects-soak/data:/soak/data -v /opt/sobjects-soak/state:/soak/state sobjects-soak
 ```
 
-Read `/opt/sobjects-soak/state/report.json`, or the daily `report-YYYY-MM-DD.md` next to it. The runner saves its journal every minute and picks up where it left off if the container restarts.
+Read `/opt/sobjects-soak/state/report.json`, or the daily `report-YYYY-MM-DD.md` next to it. The runner saves its journal every minute and picks up where it left off if the container restarts. When it reaches `SOAK_DAYS` it writes the final report, stops the engine and the bucket, and exits 0, so a finished soak does not look like a container that is still running.
 
 Settings (environment): `SOAK_DAYS` (14), `SOAK_RATE` writes/s (20), `SOAK_FAULT_MINUTES` (45), `SOAK_VERIFY_MINUTES` (15), `SOAK_THREADS` (2), `SOAK_BACKUP_MODE` (`durable`, or `interval`), `SOAK_BACKUP_INTERVAL` seconds (10), `SOAK_FAULTS` (comma-separated subset), `SOAK_OUTAGE_SECONDS` (300), `SOAK_DISK_FULL_SECONDS` (180).
 

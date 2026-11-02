@@ -1,0 +1,39 @@
+{
+  "startedAt": "2026-11-02T08:26:15.941Z",
+  "hoursRun": 0.5,
+  "targetDays": 0.02,
+  "runnerStarts": 1,
+  "totals": {
+    "acked": 31802,
+    "failed": 62,
+    "verifications": 24,
+    "excusedLosses": 0,
+    "socketEchoes": 497,
+    "socketFailures": 0,
+    "socketConnects": 51,
+    "socketCloses": 51
+  },
+  "faults": {
+    "kill9": 3,
+    "sigterm": 3,
+    "wipe-restore": 2,
+    "crash-thread": 2
+  },
+  "violationCount": 0,
+  "recentViolations": [],
+  "trend": {
+    "engineRssMb": {
+      "firstHours": 203,
+      "last24h": 203
+    },
+    "engineFds": {
+      "firstHours": 225,
+      "last24h": 225
+    },
+    "p99Ms": {
+      "firstHours": 29,
+      "last24h": 29
+    },
+    "dataMb": 23
+  }
+}

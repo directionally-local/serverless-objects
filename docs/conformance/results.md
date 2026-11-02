@@ -43,6 +43,12 @@ The native engine column is from `npm run test:native` on the same host (29 Oct 
 
 Every column above is one local run on macOS arm64. CI runs the Wrangler and native suites on Ubuntu x64 (Node 22) on every change, and builds the linux/amd64 Docker image and checks that `sobjects` and `celld` start in it; it does not run `test:celld` or `test:cloudflare`, and it records no results. Linux arm64 has no conformance evidence beyond the Compose stack on Docker Desktop. Treat the table as macOS arm64 evidence plus unrecorded Ubuntu x64 CI coverage, not as a cross-platform claim.
 
+## Soak
+
+The two-week fault-injection soak that gates beta is separate from these
+conformance runs. Its harness, procedure and current status are recorded in
+[soak.md](soak.md); the 14-day run has not been completed.
+
 ## Not covered
 
 This v0 run does not test hibernation on Wrangler, the alarm-across-restart check on Cloudflare or Wrangler, sockets across a cell move between nodes, all

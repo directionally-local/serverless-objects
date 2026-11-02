@@ -65,6 +65,7 @@ let faultActive = null;
 let lastOutageEnd = 0;
 let hourSamples = [];
 let stopping = false;
+const sockets = [];
 
 const log = (message) => console.log(`${new Date().toISOString()} ${message}`);
 const sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
@@ -171,9 +172,12 @@ async function restartAfterCrash() {
   downtime.push([down, Date.now()]);
 }
 
+// A child killed by a signal has a null exitCode, so check both.
+const engineAlive = () => Boolean(engine) && engine.exitCode === null && engine.signalCode === null;
+
 async function stopEngine(signal) {
   const child = engine;
-  if (!child || child.exitCode !== null) return;
+  if (!engineAlive()) return;
   child.kill(signal);
   const timeout = sleep(30_000).then(() => "timeout");
   if ((await Promise.race([child.exited, timeout])) === "timeout") {
@@ -247,6 +251,7 @@ function startSockets() {
     const connect = () => {
       if (stopping) return;
       const socket = new WebSocket(`${ENGINE.replace("http", "ws")}/echo?name=echo-${index}`);
+      sockets.push(socket);
       const waiting = new Map();
       let timer;
       // A connection attempt made while the engine restarts can hang in the
@@ -404,7 +409,7 @@ async function injectFault(name) {
   } catch (error) {
     record.error = String(error?.message ?? error);
     violation("fault-recovery", `${name}: ${record.error}`);
-    if (engine?.exitCode !== null) await restartAfterCrash();
+    if (!engineAlive()) await restartAfterCrash();
   } finally {
     faultActive = null;
   }
@@ -543,10 +548,12 @@ async function main() {
   const loadTimer = setInterval(() => {
     if (Date.now() < endAt && faultActive !== "kill9" && faultActive !== "wipe-restore") void appendOnce();
   }, 1000 / CONFIG.writesPerSecond);
-  setInterval(save, 60_000);
-  setInterval(sampleHour, 3_600_000);
-  setInterval(writeDaily, 3_600_000);
-  setInterval(() => void verifyAlarms(), 30 * 60_000);
+  const timers = [
+    setInterval(save, 60_000),
+    setInterval(sampleHour, 3_600_000),
+    setInterval(writeDaily, 3_600_000),
+    setInterval(() => void verifyAlarms(), 30 * 60_000),
+  ];
   let nextVerify = Date.now() + CONFIG.verifyMinutes * 60_000;
   let nextFault = Date.now() + CONFIG.faultMinutes * 60_000 * (0.5 + Math.random());
   while (Date.now() < endAt) {
@@ -561,6 +568,16 @@ async function main() {
     }
   }
   clearInterval(loadTimer);
+  for (const timer of timers) clearInterval(timer);
+  // Stop the load and the sockets before the final check, so the report is
+  // final and the process can exit: a finished soak must not look like a
+  // container that is still running.
+  stopping = true;
+  for (const socket of sockets) {
+    try {
+      socket.close();
+    } catch {}
+  }
   await sleep(10_000);
   await verifyLedgers("final");
   await verifyAlarms();
@@ -569,6 +586,11 @@ async function main() {
   save();
   writeDaily();
   log(`soak finished: ${report.violationCount} violations`);
+  await stopEngine("SIGTERM");
+  weed?.kill("SIGTERM");
+  // Always 0: a non-zero exit would make `--restart unless-stopped` start the
+  // finished soak again. The report carries the verdict.
+  process.exit(0);
 }
 
 for (const signal of ["SIGTERM", "SIGINT"]) {
