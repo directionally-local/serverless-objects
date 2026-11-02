@@ -1,6 +1,6 @@
 # Compatibility and support status
 
-This table distinguishes behavior exercised by the project from functionality described by celld upstream. A celld capability is not automatically a Serverless Objects product guarantee. The conformance results are one local run on macOS arm64 using Wrangler 4.150.0, celld 0.6.2 and the native engine, plus one deployment to Cloudflare, and a celld-only containers run on Linux arm64 in Docker Desktop's Linux VM; they are not a cross-platform or Cloudflare production certification. CI runs the Wrangler and native suites on Ubuntu x64 but records no results, so the table is macOS arm64 evidence plus unrecorded Ubuntu x64 CI coverage, with the Containers row from the Linux arm64 run.
+This table distinguishes behavior exercised by the project from functionality described by celld upstream. A celld capability is not automatically a Serverless Objects product guarantee. The conformance results are local runs on macOS arm64, Linux arm64 and Linux x64 using Wrangler 4.150.0, celld 0.6.2 and the native engine, plus one deployment to Cloudflare from macOS arm64 and a celld-only containers run on Linux arm64 in Docker Desktop's Linux VM; they are not a cross-platform or Cloudflare production certification. CI runs the Wrangler, celld and native suites on Ubuntu x64 on every change.
 
 ## Product and runtime behavior
 
@@ -38,4 +38,4 @@ This table distinguishes behavior exercised by the project from functionality de
 
 - Full table and exact command: [conformance v0 results](conformance/results.md).
 - Runtime spike and sample caveats: [M0 celld findings](conformance/m0-celld.md).
-- Each report represents one local run. Repeat the suite on supported Linux architectures and add coverage before making broader compatibility claims.
+- Each report covers the hosts listed under [Platforms](conformance/results.md#platforms). Linux arm64 and Linux x64 were added on 2 Nov 2026 with no differences from macOS arm64; the Cloudflare column is still one deployment from macOS arm64.

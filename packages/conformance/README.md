@@ -53,8 +53,8 @@ VM. The suite is not part of `--suite all` because it needs Docker and is
 celld-only.
 
 See [the recorded results](../../docs/conformance/results.md) for tested
-versions and coverage boundaries. A green result is evidence for these cases
-and versions only; it is not a claim of complete Workers compatibility.
+versions, hosts and coverage boundaries. A green result is evidence for these
+cases and versions only; it is not a claim of complete Workers compatibility.
 
 ## Product path
 
@@ -75,3 +75,18 @@ The ingress listens on `--port` (default 18443), with celld, its operator
 listener and the admin API on the next three ports. `--keep` leaves the node,
 bucket and scratch directory running. It is not in CI because it needs Docker,
 a bucket and celld.
+
+## Other platforms
+
+The suites are host-agnostic. To repeat them on Linux, run them in a
+`node:22-bookworm` container with the repository mounted, then `npm ci` and
+install the pinned celld for that architecture:
+
+```sh
+node --input-type=module -e 'import { installCelld } from "./packages/cli/src/engine.js"; console.log(await installCelld())'
+```
+
+The runner finds celld at `$HOME/.local/share/serverless-objects/engines/celld-0.6.2/celld`
+unless `CELLD_BIN` or `--celld-bin` says otherwise. CI runs the Wrangler, celld
+and native suites on `ubuntu-latest` x64; the recorded Linux arm64 and x64 runs
+are described under [Platforms](../../docs/conformance/results.md#platforms).
