@@ -151,7 +151,7 @@ export async function waitForServer(child, baseUrl, timeoutMs) {
   throw new Error(`Target did not become ready within ${timeoutMs}ms${lastError ? `: ${lastError.message}` : ""}`);
 }
 
-async function runCases(baseUrl) {
+export async function runCases(baseUrl) {
   const listResponse = await fetch(`${baseUrl}/cases`, { signal: AbortSignal.timeout(5_000) });
   if (!listResponse.ok) throw new Error(`/cases returned HTTP ${listResponse.status}`);
   const names = await listResponse.json();
@@ -241,7 +241,7 @@ async function runWebSocketCheck(baseUrl) {
   }
 }
 
-async function runAgentsClientCheck(baseUrl) {
+export async function runAgentsClientCheck(baseUrl) {
   if (typeof WebSocket !== "function") throw new Error("This Node.js version does not provide the WebSocket client API");
   const name = `client-${Date.now()}`;
   const url = new URL(`/agents/probe/${name}`, baseUrl);
@@ -289,7 +289,7 @@ async function runAgentsClientCheck(baseUrl) {
   }
 }
 
-async function runAgentsScheduleCheck(baseUrl) {
+export async function runAgentsScheduleCheck(baseUrl) {
   const response = await fetch(`${baseUrl}/schedule/arm?seconds=2`, { signal: AbortSignal.timeout(5_000) });
   if (!response.ok) throw new Error(`/schedule/arm returned HTTP ${response.status}`);
   const deadline = Date.now() + 20_000;

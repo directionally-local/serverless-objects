@@ -36,3 +36,23 @@ with the documented Workers contract.
 See [the recorded results](../../docs/conformance/results.md) for tested
 versions and coverage boundaries. A green result is evidence for these cases
 and versions only; it is not a claim of complete Workers compatibility.
+
+## Product path
+
+The runners above start `wrangler dev` or `celld dev` directly. `src/product.js`
+instead exercises the product path for the Agents app: it copies `agents-app/`,
+writes an `sobjects.toml` with a self-signed TLS certificate, deploys with
+`sobjects deploy`, starts the node with `sobjects up --detach`, and runs the
+state, SQL, schedules, addressing, callable RPC and schedule checks against the
+TLS ingress.
+
+```sh
+npm run test:product --workspace=sobjects-conformance -- --local-s3
+```
+
+`--local-s3` starts a disposable SeaweedFS container and creates the bucket;
+without it, pass `--bucket`, `--endpoint` and credentials in the environment.
+The ingress listens on `--port` (default 18443), with celld, its operator
+listener and the admin API on the next three ports. `--keep` leaves the node,
+bucket and scratch directory running. It is not in CI because it needs Docker,
+a bucket and celld.

@@ -8,6 +8,7 @@
     "test:wrangler": "node src/run.js --target wrangler",
     "test:celld": "node src/run.js --target celld",
     "test:native": "node src/run.js --target native",
+    "test:product": "node src/product.js",
     "bench": "node src/bench.js",
     "test:cloudflare": "node src/run.js --target cloudflare"
   },
