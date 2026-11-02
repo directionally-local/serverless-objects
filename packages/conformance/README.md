@@ -3,11 +3,14 @@
 `app/` is a small Workers application whose Durable Objects run checks and
 return `{ pass, detail }` at `/case/<name>`. `/cases` lists the cases.
 `agents-app/` does the same for the Agents SDK (pinned `agents` 0.28.1, with
-`nodejs_compat`); the runner also drives its WebSocket client protocol. Select
-one with `--suite core|agents|all` (default `all`). The
+`nodejs_compat`); the runner also drives its WebSocket client protocol.
+`party-app/` does the same for PartyServer (pinned `partyserver` 0.5.10, with
+`nodejs_compat`): a `Server` with hibernation enabled, driven over
+`/parties/chat/<room>` and its WebSocket protocol. Select one with
+`--suite core|agents|party|all` (default `all`). The
 runner launches a disposable copy under the git-ignored `.runs/` directory,
-so the Agents app resolves the workspace's `node_modules`, and removes it
-afterwards.
+so the Agents and PartyServer apps resolve the workspace's `node_modules`, and
+removes it afterwards.
 
 Run the reference runner or celld runner from the repository root:
 

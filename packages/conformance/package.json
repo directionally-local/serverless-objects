@@ -13,6 +13,7 @@
   },
   "devDependencies": {
     "agents": "0.28.1",
+    "partyserver": "^0.5.10",
     "wrangler": "4.150.0"
   }
 }

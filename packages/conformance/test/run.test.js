@@ -31,9 +31,10 @@ test("case result validation preserves an explicit engine failure", () => {
 });
 
 test("runs every suite unless one is selected", () => {
-  assert.deepEqual(parseArgs([]).suites, ["core", "agents"]);
+  assert.deepEqual(parseArgs([]).suites, ["core", "agents", "party"]);
   assert.deepEqual(parseArgs(["--suite", "agents"]).suites, ["agents"]);
-  assert.deepEqual(parseArgs(["--suite", "all"]).suites, ["core", "agents"]);
+  assert.deepEqual(parseArgs(["--suite", "party"]).suites, ["party"]);
+  assert.deepEqual(parseArgs(["--suite", "all"]).suites, ["core", "agents", "party"]);
   assert.throws(() => parseArgs(["--suite", "partyserver"]), /--suite must be/);
 });
 

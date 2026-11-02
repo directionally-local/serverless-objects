@@ -9,6 +9,7 @@ const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const SUITES = {
   core: path.join(PACKAGE_DIR, "app"),
   agents: path.join(PACKAGE_DIR, "agents-app"),
+  party: path.join(PACKAGE_DIR, "party-app"),
 };
 const SOBJECTS_BIN = path.resolve(PACKAGE_DIR, "..", "cli", "bin", "sobjects.mjs");
 const DEFAULT_CELLD_BIN = path.join(os.homedir(), ".local/share/serverless-objects/engines/celld-0.6.2/celld");
@@ -47,7 +48,7 @@ export function parseArgs(args) {
   if (options.help) return options;
   if (!["wrangler", "celld", "native", "cloudflare"].includes(options.target)) throw new Error("--target must be wrangler, celld, native or cloudflare");
   if (options.target === "cloudflare" && options.restartAfterAlarm) throw new Error("--restart-after-alarm is not possible on Cloudflare");
-  if (options.suites.some((suite) => !SUITES[suite])) throw new Error("--suite must be core, agents, or all");
+  if (options.suites.some((suite) => !SUITES[suite])) throw new Error("--suite must be core, agents, party, or all");
   if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65_535) throw new Error("--port must be an integer from 1 to 65535");
   if (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 1_000) throw new Error("--timeout must be at least 1000 milliseconds");
   if (options.alarmDelayMs !== undefined && (!Number.isInteger(options.alarmDelayMs) || options.alarmDelayMs < 1_000)) {
@@ -75,7 +76,7 @@ function usage() {
     "  --timeout MS          Startup timeout (default: 60000)",
     "  --alarm-delay MS      Alarm delay (default: 2000; 30000 with restart)",
     "  --celld-bin PATH      celld executable (or set CELLD_BIN)",
-    "  --suite SUITE         core, agents, or all (default: all)",
+    "  --suite SUITE         core, agents, party, or all (default: all)",
     "  --keep-deployment     cloudflare: leave the Workers deployed afterwards",
     "  --native-threads N    native: run the engine on N worker threads",
     "  --native-arg ARG      native: pass ARG to sobjects dev (repeatable)",
@@ -344,6 +345,104 @@ async function runAgentsScheduleRestartCheck(baseUrl, restart) {
   throw new Error(`Schedule did not fire after restart before timeout: ${JSON.stringify(status)}`);
 }
 
+// Opens a PartyServer socket to /parties/chat/<room> and collects JSON frames.
+function openPartySocket(baseUrl, room) {
+  const url = new URL(`/parties/chat/${encodeURIComponent(room)}`, baseUrl);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  const socket = new WebSocket(url);
+  const frames = [];
+  const waiters = [];
+  socket.addEventListener("message", (event) => {
+    const frame = JSON.parse(String(event.data));
+    frames.push(frame);
+    for (const waiter of [...waiters]) if (waiter.match(frame)) waiter.resolve(frame);
+  });
+  const nextFrame = (match, label) => new Promise((resolve, reject) => {
+    const found = frames.find(match);
+    if (found) return resolve(found);
+    const waiter = {
+      match,
+      resolve: (frame) => {
+        clearTimeout(timer);
+        waiters.splice(waiters.indexOf(waiter), 1);
+        resolve(frame);
+      },
+    };
+    const timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}; frames: ${JSON.stringify(frames)}`)), 5_000);
+    waiters.push(waiter);
+  });
+  return { socket, frames, nextFrame };
+}
+
+function closePartySocket(socket) {
+  if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) socket.close();
+}
+
+// Two connections to one room: PartyServer's routing, welcome frames,
+// broadcast, connection manager and attachment API.
+async function runPartyWebSocketCheck(baseUrl) {
+  if (typeof WebSocket !== "function") throw new Error("This Node.js version does not provide the WebSocket client API");
+  const room = `broadcast-${Date.now()}`;
+  const first = openPartySocket(baseUrl, room);
+  const second = openPartySocket(baseUrl, room);
+  try {
+    await Promise.all([waitForWebSocketEvent(first.socket, "open"), waitForWebSocketEvent(second.socket, "open")]);
+    const firstWelcome = await first.nextFrame((frame) => frame.type === "welcome", "first welcome");
+    const secondWelcome = await second.nextFrame((frame) => frame.type === "welcome", "second welcome");
+    if (firstWelcome.room !== room || secondWelcome.room !== room) throw new Error(`room mismatch: ${JSON.stringify([firstWelcome, secondWelcome])}`);
+    if (firstWelcome.instance !== secondWelcome.instance) throw new Error("the two connections reached different instances");
+
+    first.socket.send(JSON.stringify({ type: "broadcast", body: "hello" }));
+    const [firstEcho, secondEcho] = await Promise.all([
+      first.nextFrame((frame) => frame.type === "broadcast", "first broadcast"),
+      second.nextFrame((frame) => frame.type === "broadcast", "second broadcast"),
+    ]);
+    if (firstEcho.from !== firstWelcome.id || secondEcho.from !== firstWelcome.id) throw new Error(`broadcast sender mismatch: ${JSON.stringify([firstEcho, secondEcho])}`);
+    if (firstEcho.body !== "hello" || secondEcho.body !== "hello") throw new Error(`broadcast body mismatch: ${JSON.stringify([firstEcho, secondEcho])}`);
+    if (firstEcho.connections !== 2) throw new Error(`connection count: ${JSON.stringify(firstEcho)}`);
+
+    first.socket.send(JSON.stringify({ type: "attach", value: { tag: "party" } }));
+    const attached = await first.nextFrame((frame) => frame.type === "attached", "attachment reply");
+    if (attached.attachment?.tag !== "party") throw new Error(`attachment mismatch: ${JSON.stringify(attached)}`);
+
+    second.socket.send(JSON.stringify({ type: "store", body: "from-socket" }));
+    const stored = await second.nextFrame((frame) => frame.type === "stored", "stored reply");
+    if (!stored.messages.includes("from-socket")) throw new Error(`stored messages: ${JSON.stringify(stored)}`);
+
+    return { pass: true, detail: "routing, welcome frames, broadcast to both connections, connection count, attachment and this.sql over a socket" };
+  } finally {
+    closePartySocket(first.socket);
+    closePartySocket(second.socket);
+  }
+}
+
+// PartyServer's hibernation path: the object is evicted with the socket open,
+// and the next message must reach a new instance with the connection
+// attachment rehydrated from the socket.
+async function runPartyHibernationCheck(baseUrl, idleMs = 8_000) {
+  const room = `hibernate-${Date.now()}`;
+  const { socket, nextFrame } = openPartySocket(baseUrl, room);
+  try {
+    await waitForWebSocketEvent(socket, "open");
+    const welcome = await nextFrame((frame) => frame.type === "welcome", "welcome");
+    socket.send(JSON.stringify({ type: "attach", value: { tag: "hibernation" } }));
+    const attached = await nextFrame((frame) => frame.type === "attached", "attachment reply");
+    if (attached.attachment?.tag !== "hibernation") throw new Error(`attachment mismatch: ${JSON.stringify(attached)}`);
+
+    await new Promise((resolve) => setTimeout(resolve, idleMs));
+    if (socket.readyState !== WebSocket.OPEN) throw new Error("the socket closed while the object was idle");
+
+    socket.send(JSON.stringify({ type: "attachment" }));
+    const after = await nextFrame((frame) => frame.type === "attachment", "attachment after idle");
+    if (after.instance === welcome.instance) throw new Error("the object was not evicted while idle; hibernation was not exercised");
+    if (after.attachment?.tag !== "hibernation") throw new Error(`attachment lost across hibernation: ${JSON.stringify(after)}`);
+    if (after.connections < 1) throw new Error(`connection lost across hibernation: ${JSON.stringify(after)}`);
+    return { pass: true, detail: "evicted with the socket open; a new instance received the next message with the connection attachment intact" };
+  } finally {
+    closePartySocket(socket);
+  }
+}
+
 // Deploys a suite's app to the Cloudflare account Wrangler is logged in to
 // and returns its workers.dev URL.
 async function deployToCloudflare(projectDir) {
@@ -402,10 +501,14 @@ async function runSuite(suite, options, scratchDir) {
       if (options.target !== "native") await record("facets", () => runFacetCheck(baseUrl));
       // Point-in-time recovery needs the native engine's durable mode (a bucket).
       if (options.target === "native" && (options.nativeArgs ?? []).includes("durable")) await record("point-in-time-recovery", () => runPitrCheck(baseUrl));
-    } else {
+    } else if (suite === "agents") {
       await record("client-protocol", () => runAgentsClientCheck(baseUrl));
       await record("schedule-fires", () => runAgentsScheduleCheck(baseUrl));
       if (options.restartAfterAlarm) await record("schedule-across-restart", () => runAgentsScheduleRestartCheck(baseUrl, restart));
+    } else {
+      await record("websocket-broadcast", () => runPartyWebSocketCheck(baseUrl));
+      // Wrangler's local runtime gives the runner no eviction control.
+      if (options.target !== "wrangler") await record("websocket-hibernation", () => runPartyHibernationCheck(baseUrl));
     }
     return suite === "core" ? results : results.map((result) => ({ ...result, name: `${suite}/${result.name}` }));
   } finally {
@@ -434,9 +537,12 @@ async function runCloudflareSuite(suite, options, projectDir) {
       await record("websocket-hibernation", () => runHibernationCheck(baseUrl, 30_000));
       await record("facets", () => runFacetCheck(baseUrl));
       await record("point-in-time-recovery", () => runPitrCheck(baseUrl));
-    } else {
+    } else if (suite === "agents") {
       await record("client-protocol", () => runAgentsClientCheck(baseUrl));
       await record("schedule-fires", () => runAgentsScheduleCheck(baseUrl));
+    } else {
+      await record("websocket-broadcast", () => runPartyWebSocketCheck(baseUrl));
+      await record("websocket-hibernation", () => runPartyHibernationCheck(baseUrl, 30_000));
     }
     return suite === "core" ? results : results.map((result) => ({ ...result, name: `${suite}/${result.name}` }));
   } finally {
