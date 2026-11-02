@@ -7,12 +7,14 @@
     "test": "node --test test/*.test.js",
     "test:wrangler": "node src/run.js --target wrangler",
     "test:celld": "node src/run.js --target celld",
+    "test:containers": "node src/run.js --target celld --suite containers",
     "test:native": "node src/run.js --target native",
     "test:product": "node src/product.js",
     "bench": "node src/bench.js",
     "test:cloudflare": "node src/run.js --target cloudflare"
   },
   "devDependencies": {
+    "@cloudflare/sandbox": "1.0.1",
     "agents": "0.28.1",
     "partyserver": "^0.5.10",
     "wrangler": "4.150.0"

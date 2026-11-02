@@ -6,11 +6,16 @@ return `{ pass, detail }` at `/case/<name>`. `/cases` lists the cases.
 `nodejs_compat`); the runner also drives its WebSocket client protocol.
 `party-app/` does the same for PartyServer (pinned `partyserver` 0.5.10, with
 `nodejs_compat`): a `Server` with hibernation enabled, driven over
-`/parties/chat/<room>` and its WebSocket protocol. Select one with
-`--suite core|agents|party|all` (default `all`). The
+`/parties/chat/<room>` and its WebSocket protocol. `containers-app/` is a
+celld-only suite for `ctx.container` and `@cloudflare/sandbox` 1.0.1: it starts
+a container, runs `exec()` and `getTcpPort().fetch()`, checks
+`enableInternet: false`, records the `exec()`-after-`start()` race, attempts
+`S3Mount` and `DirectoryBackup`, and drives sleep and restart checks. Select
+one with `--suite core|agents|party|containers|all` (default `all`; `all`
+excludes `containers`, which needs Docker and celld). The
 runner launches a disposable copy under the git-ignored `.runs/` directory,
-so the Agents and PartyServer apps resolve the workspace's `node_modules`, and
-removes it afterwards.
+so the Agents, PartyServer and containers apps resolve the workspace's
+`node_modules`, and removes it afterwards.
 
 Run the reference runner or celld runner from the repository root:
 
@@ -32,6 +37,20 @@ can override it.
 The app uses compatibility date `2026-02-24`, when Cloudflare changed
 `deleteAll()` to clear a Durable Object alarm. This keeps the alarm case aligned
 with the documented Workers contract.
+
+The containers suite is celld-only and needs a Docker or Podman engine on a
+Linux host. Run it with:
+
+```sh
+npm run test:containers --workspace=sobjects-conformance
+```
+
+It builds `containers-app/Dockerfile` (Python plus `fuse3`, `s3fs-fuse` and the
+`sandbox-shim` from `cloudflare/sandbox:1.0.1`) and starts `celld dev` with
+`CELLD_IDLE_EVICT_S=2`. On macOS celld reaches a container through a published
+port, and the suite's `getTcpPort()` check fails; use a Linux host or a Linux
+VM. The suite is not part of `--suite all` because it needs Docker and is
+celld-only.
 
 See [the recorded results](../../docs/conformance/results.md) for tested
 versions and coverage boundaries. A green result is evidence for these cases
