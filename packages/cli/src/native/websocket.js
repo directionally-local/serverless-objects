@@ -37,6 +37,12 @@ export class WorkersWebSocket extends EventTarget {
   static OPEN = 1;
   static CLOSING = 2;
   static CLOSED = 3;
+  // workerd exposes both spellings; libraries such as PartyServer read the
+  // READY_STATE_* statics when they check a socket's state.
+  static READY_STATE_CONNECTING = 0;
+  static READY_STATE_OPEN = 1;
+  static READY_STATE_CLOSING = 2;
+  static READY_STATE_CLOSED = 3;
 
   #peer;
   #owner;

@@ -432,6 +432,11 @@ function installWorkersGlobals() {
       value: (value) => value instanceof WorkersWebSocket || nativeHasInstance.call(ClientWebSocket, value),
       configurable: true,
     });
+    // workerd's WebSocket exposes both spellings of the ready-state constants;
+    // libraries such as PartyServer read the READY_STATE_* ones.
+    for (const [name, value] of Object.entries({ READY_STATE_CONNECTING: 0, READY_STATE_OPEN: 1, READY_STATE_CLOSING: 2, READY_STATE_CLOSED: 3 })) {
+      if (!(name in ClientWebSocket)) Object.defineProperty(ClientWebSocket, name, { value, configurable: true });
+    }
     Object.defineProperty(ClientWebSocket, RESPONSE_PATCHED, { value: true });
   }
   if (globalThis.Response[RESPONSE_PATCHED]) return;

@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { FrameParser, WebSocketPair, acceptKey, encodeFrame } from "../src/native/websocket.js";
+import { FrameParser, WebSocketPair, WorkersWebSocket, acceptKey, encodeFrame } from "../src/native/websocket.js";
 import { NativeEngine, loadProjectConfig } from "../src/native/engine.js";
 
 const directories = [];
@@ -64,6 +64,11 @@ test("parsing stays linear for large frames and floods of empty fragments", () =
 });
 
 test("pair ends deliver messages after accept(), keep attachments, and close both sides", async () => {
+  // workerd exposes both spellings; PartyServer reads the READY_STATE_* ones.
+  assert.deepEqual(
+    [WorkersWebSocket.READY_STATE_CONNECTING, WorkersWebSocket.READY_STATE_OPEN, WorkersWebSocket.READY_STATE_CLOSING, WorkersWebSocket.READY_STATE_CLOSED],
+    [0, 1, 2, 3],
+  );
   const [client, server] = new WebSocketPair();
   const received = [];
   server.addEventListener("message", (event) => received.push(event.data));
@@ -139,6 +144,10 @@ test("Durable Objects accept hibernatable WebSockets through the engine", async 
   await engine.start();
   const { port } = await engine.listen({ port: 0 });
   try {
+    // The global WebSocket is Node's client class; the engine adds workerd's
+    // ready-state constants to it, which PartyServer reads.
+    assert.equal(globalThis.WebSocket.READY_STATE_OPEN, 1);
+    assert.equal(globalThis.WebSocket.READY_STATE_CLOSED, 3);
     const plain = await fetch(`http://127.0.0.1:${port}/`);
     assert.equal(plain.status, 426);
 
