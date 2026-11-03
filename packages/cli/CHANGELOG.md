@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.7](https://github.com/directionally-local/serverless-objects/compare/serverless-objects-v0.13.6...serverless-objects-v0.13.7) (2026-11-02)
+
+
+### Bug Fixes
+
+* **cli:** expose workerd's WebSocket ready-state constants in the native engine ([7584982](https://github.com/directionally-local/serverless-objects/commit/7584982ded9fa0142f9b8a09057851f750028fcb))
+
 ## [0.13.6](https://github.com/directionally-local/serverless-objects/compare/serverless-objects-v0.13.5...serverless-objects-v0.13.6) (2026-10-30)
 
 
