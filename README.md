@@ -10,7 +10,7 @@ Serverless Objects is the operating layer around a Workers-compatible engine. Yo
 
 > **Status: pre-alpha.** Good for evaluation and testing, not for production. It runs on a single host by default (macOS arm64 or Linux arm64/x64); the native engine can share one bucket across several named nodes. Read [what is and isn't supported](docs/compatibility.md) before you port an app.
 
-Part of [Directionally Local](https://directionallylocal.com), an open-source stack for running coding agents on your own hardware, alongside [Autopilot](https://directionallylocal.com/autopilot/), [Hotcell](https://directionallylocal.com/hotcell/) and [Camouflage](https://github.com/sinameraji/camouflage). Product page: [directionallylocal.com/serverless-objects](https://directionallylocal.com/serverless-objects/).
+Part of [Directionally Local](https://directionallylocal.com), an open-source stack for running coding agents on your own hardware, alongside [Autopilot](https://directionallylocal.com/autopilot/), [Hotcell](https://directionallylocal.com/hotcell/) and [Camouflage](https://github.com/sinameraji/camouflage). Product page: [directionallylocal.com/serverless-objects](https://directionallylocal.com/serverless-objects/). Start a coding agent on your computer at [dl.new](https://dl.new).
 
 ## Quick start
 
